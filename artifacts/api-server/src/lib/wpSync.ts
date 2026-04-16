@@ -209,12 +209,21 @@ export async function testConnection(config: WpConfig): Promise<{ success: boole
   const endpoint =
     config.authMode === "api_key"
       ? `${baseUrl}/wp-json/ai-cms/v1/status`
-      : `${baseUrl}/wp-json/wp/v2/`;
+      : `${baseUrl}/wp-json/wp/v2/users/me?context=edit`;
 
   try {
     const response = await fetch(endpoint, { headers, signal: AbortSignal.timeout(10000) });
     if (!response.ok) {
       const body = await response.text().catch(() => "");
+      if (response.status === 401 || response.status === 403) {
+        return {
+          success: false,
+          message:
+            config.authMode === "api_key"
+              ? `Plugin rejected API key (${response.status}). Re-download and install the companion plugin.`
+              : `Auth failed (${response.status}). Check username/application-password, or switch to Plugin API Key mode — some hosts (e.g. Hostinger) strip the Authorization header, which breaks Basic auth.`,
+        };
+      }
       return { success: false, message: `WordPress API returned ${response.status}: ${body.slice(0, 200)}` };
     }
     const data = (await response.json()) as Record<string, unknown>;
@@ -226,10 +235,19 @@ export async function testConnection(config: WpConfig): Promise<{ success: boole
         siteTitle: String(data.site_name ?? "WordPress Site"),
       };
     }
+    // Verify the authenticated user can actually publish pages
+    const caps = (data.capabilities ?? {}) as Record<string, unknown>;
+    const canPublish = Boolean(caps.publish_pages || caps.edit_pages || caps.manage_options);
+    if (!canPublish) {
+      return {
+        success: false,
+        message: `User "${String(data.name ?? data.slug ?? "unknown")}" lacks publish_pages capability. Use an Editor or Administrator account.`,
+      };
+    }
     return {
       success: true,
-      message: "Connection successful",
-      wpVersion: String(data.namespaces ? "REST API active" : "Connected"),
+      message: `Authenticated as ${String(data.name ?? data.slug ?? "user")}`,
+      wpVersion: "REST API active",
       siteTitle: String(data.name || "WordPress Site"),
     };
   } catch (err: unknown) {
