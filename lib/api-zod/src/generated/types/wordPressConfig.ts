@@ -5,10 +5,13 @@
  * WP Bridge AI API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { WordPressConfigAuthMode } from "./wordPressConfigAuthMode";
 
 export interface WordPressConfig {
   wpUrl: string;
-  wpUsername: string;
-  wpAppPassword: string;
+  wpUsername?: string | null;
+  wpAppPassword?: string | null;
+  wpApiKey?: string | null;
+  authMode?: WordPressConfigAuthMode;
   useAcf?: boolean;
 }

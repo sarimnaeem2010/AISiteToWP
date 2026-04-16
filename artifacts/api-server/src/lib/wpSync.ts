@@ -54,9 +54,23 @@ async function assertSafeUrl(rawUrl: string): Promise<URL> {
 
 interface WpConfig {
   wpUrl: string;
-  wpUsername: string;
-  wpAppPassword: string;
+  wpUsername?: string | null;
+  wpAppPassword?: string | null;
+  wpApiKey?: string | null;
+  authMode?: "basic" | "api_key";
   useAcf?: boolean;
+}
+
+function buildHeaders(config: WpConfig): Record<string, string> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (config.authMode === "api_key") {
+    if (!config.wpApiKey) throw new Error("API key not set");
+    headers["X-Api-Key"] = config.wpApiKey;
+  } else {
+    if (!config.wpUsername || !config.wpAppPassword) throw new Error("WordPress username/app-password not set");
+    headers.Authorization = `Basic ${Buffer.from(`${config.wpUsername}:${config.wpAppPassword}`).toString("base64")}`;
+  }
+  return headers;
 }
 
 interface WpBlock {
@@ -177,28 +191,41 @@ function blocksToGutenbergContent(blocks: WpBlock[]): string {
 }
 
 export async function testConnection(config: WpConfig): Promise<{ success: boolean; message: string; wpVersion?: string; siteTitle?: string }> {
-  const { wpUrl, wpUsername, wpAppPassword } = config;
   try {
-    await assertSafeUrl(wpUrl);
+    await assertSafeUrl(config.wpUrl);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     return { success: false, message: `URL rejected: ${msg}` };
   }
-  const baseUrl = wpUrl.replace(/\/$/, "");
-  const auth = Buffer.from(`${wpUsername}:${wpAppPassword}`).toString("base64");
+  const baseUrl = config.wpUrl.replace(/\/$/, "");
+
+  let headers: Record<string, string>;
+  try {
+    headers = buildHeaders(config);
+  } catch (err: unknown) {
+    return { success: false, message: err instanceof Error ? err.message : String(err) };
+  }
+
+  const endpoint =
+    config.authMode === "api_key"
+      ? `${baseUrl}/wp-json/ai-cms/v1/status`
+      : `${baseUrl}/wp-json/wp/v2/`;
 
   try {
-    const response = await fetch(`${baseUrl}/wp-json/wp/v2/`, {
-      headers: { Authorization: `Basic ${auth}` },
-      signal: AbortSignal.timeout(10000),
-    });
-
+    const response = await fetch(endpoint, { headers, signal: AbortSignal.timeout(10000) });
     if (!response.ok) {
       const body = await response.text().catch(() => "");
       return { success: false, message: `WordPress API returned ${response.status}: ${body.slice(0, 200)}` };
     }
-
     const data = (await response.json()) as Record<string, unknown>;
+    if (config.authMode === "api_key") {
+      return {
+        success: Boolean(data.active),
+        message: data.active ? "Plugin active" : "Plugin inactive",
+        wpVersion: String(data.wp_version ?? "Connected"),
+        siteTitle: String(data.site_name ?? "WordPress Site"),
+      };
+    }
     return {
       success: true,
       message: "Connection successful",
@@ -215,20 +242,61 @@ export async function pushToWordPress(
   config: WpConfig,
   wpStructure: WpStructure
 ): Promise<PushResult> {
-  const { wpUrl, wpUsername, wpAppPassword } = config;
-  await assertSafeUrl(wpUrl);
-  const baseUrl = wpUrl.replace(/\/$/, "");
-  const auth = Buffer.from(`${wpUsername}:${wpAppPassword}`).toString("base64");
-  const headers = {
-    Authorization: `Basic ${auth}`,
-    "Content-Type": "application/json",
-  };
+  await assertSafeUrl(config.wpUrl);
+  const baseUrl = config.wpUrl.replace(/\/$/, "");
+  const headers = buildHeaders(config);
 
   let pagesCreated = 0;
   let pagesUpdated = 0;
   const errors: string[] = [];
   const wpPageUrls: string[] = [];
   const log: PushLogEntry[] = [];
+
+  // API-key path: send whole payload to plugin import endpoint in one call
+  if (config.authMode === "api_key") {
+    try {
+      const res = await fetch(`${baseUrl}/wp-json/ai-cms/v1/import`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ pages: wpStructure.pages }),
+        signal: AbortSignal.timeout(60000),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new Error(`Plugin import failed: ${res.status} ${body.slice(0, 300)}`);
+      }
+      const data = (await res.json()) as {
+        results?: Array<{ page: string; id?: number; url?: string; status: string; error?: string }>;
+      };
+      for (const r of data.results ?? []) {
+        if (r.status === "error") {
+          errors.push(`${r.page}: ${r.error ?? "unknown"}`);
+          log.push({ pageName: r.page, status: "error", wpId: null, wpUrl: null, error: r.error ?? null, createdAt: new Date().toISOString() });
+        } else {
+          if (r.status === "updated") pagesUpdated++;
+          else pagesCreated++;
+          if (r.url) wpPageUrls.push(r.url);
+          log.push({ pageName: r.page, status: "success", wpId: r.id ?? null, wpUrl: r.url ?? null, error: null, createdAt: new Date().toISOString() });
+        }
+      }
+      return {
+        success: errors.length === 0,
+        pagesCreated,
+        pagesUpdated,
+        mediaUploaded: 0,
+        errors,
+        wpPageUrls,
+        log,
+      };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      for (const page of wpStructure.pages) {
+        errors.push(`${page.title}: ${msg}`);
+        log.push({ pageName: page.title, status: "error", wpId: null, wpUrl: null, error: msg, createdAt: new Date().toISOString() });
+      }
+      return { success: false, pagesCreated: 0, pagesUpdated: 0, mediaUploaded: 0, errors, wpPageUrls: [], log };
+    }
+  }
 
   for (const page of wpStructure.pages) {
     try {

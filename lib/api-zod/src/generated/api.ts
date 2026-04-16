@@ -44,6 +44,7 @@ export const GetProjectParams = zod.object({
   id: zod.coerce.string(),
 });
 
+export const getProjectResponseTwoWpConfigAuthModeDefault = `basic`;
 export const getProjectResponseTwoWpConfigUseAcfDefault = true;
 
 export const GetProjectResponse = zod
@@ -100,8 +101,12 @@ export const GetProjectResponse = zod
       wpConfig: zod
         .object({
           wpUrl: zod.string(),
-          wpUsername: zod.string(),
-          wpAppPassword: zod.string(),
+          wpUsername: zod.string().nullish(),
+          wpAppPassword: zod.string().nullish(),
+          wpApiKey: zod.string().nullish(),
+          authMode: zod
+            .enum(["basic", "api_key"])
+            .default(getProjectResponseTwoWpConfigAuthModeDefault),
           useAcf: zod
             .boolean()
             .default(getProjectResponseTwoWpConfigUseAcfDefault),
@@ -207,12 +212,17 @@ export const UpdateWordPressConfigParams = zod.object({
   id: zod.coerce.string(),
 });
 
+export const updateWordPressConfigBodyAuthModeDefault = `basic`;
 export const updateWordPressConfigBodyUseAcfDefault = true;
 
 export const UpdateWordPressConfigBody = zod.object({
   wpUrl: zod.string(),
-  wpUsername: zod.string(),
-  wpAppPassword: zod.string(),
+  wpUsername: zod.string().nullish(),
+  wpAppPassword: zod.string().nullish(),
+  wpApiKey: zod.string().nullish(),
+  authMode: zod
+    .enum(["basic", "api_key"])
+    .default(updateWordPressConfigBodyAuthModeDefault),
   useAcf: zod.boolean().default(updateWordPressConfigBodyUseAcfDefault),
 });
 
@@ -268,6 +278,81 @@ export const GeneratePluginResponse = zod.object({
   phpCode: zod.string(),
   filename: zod.string(),
   apiKey: zod.string(),
+});
+
+/**
+ * @summary Upload a ZIP archive of an HTML site and parse its index page
+ */
+export const UploadProjectZipParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+export const UploadProjectZipBody = zod.object({
+  file: zod.instanceof(File),
+});
+
+export const UploadProjectZipResponse = zod.object({
+  fileCount: zod.number(),
+  indexPath: zod.string(),
+  parsedSite: zod.object({
+    pages: zod.array(
+      zod.object({
+        name: zod.string(),
+        slug: zod.string(),
+        sections: zod.array(
+          zod.object({
+            type: zod.enum([
+              "hero",
+              "about",
+              "features",
+              "testimonials",
+              "pricing",
+              "faq",
+              "cta",
+              "footer",
+              "gallery",
+              "blog",
+              "contact",
+              "custom",
+            ]),
+            content: zod.record(zod.string(), zod.unknown()),
+            rawHtml: zod.string().optional(),
+          }),
+        ),
+      }),
+    ),
+  }),
+  designSystem: zod.object({
+    font: zod.string(),
+    colors: zod.array(zod.string()),
+    buttonStyle: zod.string(),
+    headingStyle: zod.string(),
+  }),
+  wpStructure: zod.object({
+    pages: zod.array(
+      zod.object({
+        title: zod.string(),
+        slug: zod.string(),
+        blocks: zod.array(
+          zod.object({
+            blockType: zod.string(),
+            acfGroup: zod.string().nullish(),
+            fields: zod.record(zod.string(), zod.unknown()),
+            innerBlocks: zod
+              .array(zod.record(zod.string(), zod.unknown()))
+              .optional(),
+          }),
+        ),
+      }),
+    ),
+  }),
+});
+
+/**
+ * @summary Download the project as an Astro site ZIP
+ */
+export const ExportProjectAstroParams = zod.object({
+  id: zod.coerce.string(),
 });
 
 /**

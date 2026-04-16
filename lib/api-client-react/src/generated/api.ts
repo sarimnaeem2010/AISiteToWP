@@ -27,7 +27,9 @@ import type {
   ProjectDetail,
   ProjectStats,
   PushResult,
+  UploadProjectZipBody,
   WordPressConfig,
+  ZipUploadResult,
 } from "./api.schemas";
 
 import { customFetch } from "../custom-fetch";
@@ -868,6 +870,182 @@ export function useGeneratePlugin<
   },
 ): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
   const queryOptions = getGeneratePluginQueryOptions(id, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Upload a ZIP archive of an HTML site and parse its index page
+ */
+export const getUploadProjectZipUrl = (id: string) => {
+  return `/api/projects/${id}/upload-zip`;
+};
+
+export const uploadProjectZip = async (
+  id: string,
+  uploadProjectZipBody: UploadProjectZipBody,
+  options?: RequestInit,
+): Promise<ZipUploadResult> => {
+  const formData = new FormData();
+  formData.append(`file`, uploadProjectZipBody.file);
+
+  return customFetch<ZipUploadResult>(getUploadProjectZipUrl(id), {
+    ...options,
+    method: "POST",
+    body: formData,
+  });
+};
+
+export const getUploadProjectZipMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof uploadProjectZip>>,
+    TError,
+    { id: string; data: BodyType<UploadProjectZipBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof uploadProjectZip>>,
+  TError,
+  { id: string; data: BodyType<UploadProjectZipBody> },
+  TContext
+> => {
+  const mutationKey = ["uploadProjectZip"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof uploadProjectZip>>,
+    { id: string; data: BodyType<UploadProjectZipBody> }
+  > = (props) => {
+    const { id, data } = props ?? {};
+
+    return uploadProjectZip(id, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UploadProjectZipMutationResult = NonNullable<
+  Awaited<ReturnType<typeof uploadProjectZip>>
+>;
+export type UploadProjectZipMutationBody = BodyType<UploadProjectZipBody>;
+export type UploadProjectZipMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Upload a ZIP archive of an HTML site and parse its index page
+ */
+export const useUploadProjectZip = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof uploadProjectZip>>,
+    TError,
+    { id: string; data: BodyType<UploadProjectZipBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof uploadProjectZip>>,
+  TError,
+  { id: string; data: BodyType<UploadProjectZipBody> },
+  TContext
+> => {
+  return useMutation(getUploadProjectZipMutationOptions(options));
+};
+
+/**
+ * @summary Download the project as an Astro site ZIP
+ */
+export const getExportProjectAstroUrl = (id: string) => {
+  return `/api/projects/${id}/astro-export`;
+};
+
+export const exportProjectAstro = async (
+  id: string,
+  options?: RequestInit,
+): Promise<Blob> => {
+  return customFetch<Blob>(getExportProjectAstroUrl(id), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getExportProjectAstroQueryKey = (id: string) => {
+  return [`/api/projects/${id}/astro-export`] as const;
+};
+
+export const getExportProjectAstroQueryOptions = <
+  TData = Awaited<ReturnType<typeof exportProjectAstro>>,
+  TError = ErrorType<unknown>,
+>(
+  id: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof exportProjectAstro>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getExportProjectAstroQueryKey(id);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof exportProjectAstro>>
+  > = ({ signal }) => exportProjectAstro(id, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!id,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof exportProjectAstro>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ExportProjectAstroQueryResult = NonNullable<
+  Awaited<ReturnType<typeof exportProjectAstro>>
+>;
+export type ExportProjectAstroQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Download the project as an Astro site ZIP
+ */
+
+export function useExportProjectAstro<
+  TData = Awaited<ReturnType<typeof exportProjectAstro>>,
+  TError = ErrorType<unknown>,
+>(
+  id: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof exportProjectAstro>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getExportProjectAstroQueryOptions(id, options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;

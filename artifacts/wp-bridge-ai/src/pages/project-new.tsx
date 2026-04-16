@@ -26,7 +26,9 @@ export default function NewProject() {
   
   const [htmlContent, setHtmlContent] = useState("");
   const [sourceUrl, setSourceUrl] = useState("");
-  const [inputType, setInputType] = useState<"html" | "url">("html");
+  const [inputType, setInputType] = useState<"html" | "url" | "zip">("html");
+  const [zipFile, setZipFile] = useState<File | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
 
   const createProject = useCreateProject();
   const parseProject = useParseProject();
@@ -54,8 +56,40 @@ export default function NewProject() {
     });
   };
 
-  const onParseSubmit = () => {
+  const onParseSubmit = async () => {
     if (!projectId) return;
+
+    if (inputType === "zip") {
+      if (!zipFile) {
+        toast({ title: "Error", description: "Please select a ZIP file", variant: "destructive" });
+        return;
+      }
+      setIsUploading(true);
+      try {
+        const fd = new FormData();
+        fd.append("file", zipFile);
+        const base = import.meta.env.BASE_URL;
+        const res = await fetch(`${base}api/projects/${projectId}/upload-zip`, {
+          method: "POST",
+          body: fd,
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: "Upload failed" }));
+          throw new Error(err.error || `Upload failed (${res.status})`);
+        }
+        toast({ title: "ZIP extracted and parsed", description: "Site structure analyzed." });
+        setLocation(`/projects/${projectId}`);
+      } catch (err) {
+        toast({
+          title: "ZIP upload failed",
+          description: err instanceof Error ? err.message : String(err),
+          variant: "destructive",
+        });
+      } finally {
+        setIsUploading(false);
+      }
+      return;
+    }
 
     if (inputType === "html" && !htmlContent.trim()) {
       toast({ title: "Error", description: "Please paste HTML content", variant: "destructive" });
@@ -68,7 +102,7 @@ export default function NewProject() {
 
     const parsePayload = {
       htmlContent: inputType === "html" ? htmlContent : sourceUrl,
-      sourceType: inputType
+      sourceType: inputType as "html" | "url",
     };
 
     parseProject.mutate({ id: projectId, data: parsePayload }, {
@@ -166,17 +200,41 @@ export default function NewProject() {
             <CardDescription>Paste HTML or provide a URL to parse the site structure.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
-            <Tabs defaultValue="html" onValueChange={(v) => setInputType(v as "html" | "url")} className="w-full">
-              <TabsList className="grid w-full grid-cols-2">
+            <Tabs defaultValue="html" onValueChange={(v) => setInputType(v as "html" | "url" | "zip")} className="w-full">
+              <TabsList className="grid w-full grid-cols-3">
                 <TabsTrigger value="html" className="font-mono">
                   <Code2 className="mr-2 h-4 w-4" />
                   Paste HTML
+                </TabsTrigger>
+                <TabsTrigger value="zip" className="font-mono">
+                  <Upload className="mr-2 h-4 w-4" />
+                  Upload ZIP
                 </TabsTrigger>
                 <TabsTrigger value="url" className="font-mono">
                   <LinkIcon className="mr-2 h-4 w-4" />
                   URL Extract
                 </TabsTrigger>
               </TabsList>
+              <TabsContent value="zip" className="mt-4">
+                <div className="space-y-2">
+                  <Label htmlFor="zip-input" className="font-mono text-xs uppercase tracking-wider text-muted-foreground">Site Archive (ZIP)</Label>
+                  <Input
+                    id="zip-input"
+                    type="file"
+                    accept=".zip,application/zip"
+                    className="font-mono cursor-pointer"
+                    onChange={(e) => setZipFile(e.target.files?.[0] ?? null)}
+                  />
+                  {zipFile && (
+                    <p className="text-xs text-muted-foreground font-mono">
+                      {zipFile.name} — {(zipFile.size / 1024).toFixed(1)} KB
+                    </p>
+                  )}
+                  <p className="text-xs text-muted-foreground">
+                    Upload a ZIP export of your HTML/CSS/JS site. We'll locate the index page and extract the structure.
+                  </p>
+                </div>
+              </TabsContent>
               <TabsContent value="html" className="mt-4">
                 <div className="space-y-2">
                   <Label htmlFor="html-content" className="font-mono text-xs uppercase tracking-wider text-muted-foreground">Raw HTML Output</Label>
@@ -211,12 +269,12 @@ export default function NewProject() {
             </Tabs>
           </CardContent>
           <CardFooter className="flex justify-between border-t bg-muted/20 px-6 py-4">
-            <Button variant="ghost" onClick={() => setStep(1)} disabled={parseProject.isPending} className="font-mono">
+            <Button variant="ghost" onClick={() => setStep(1)} disabled={parseProject.isPending || isUploading} className="font-mono">
               Back
             </Button>
-            <Button onClick={onParseSubmit} disabled={parseProject.isPending} className="font-mono">
-              {parseProject.isPending ? "Parsing Structure..." : "Parse & Continue"}
-              {!parseProject.isPending && <ArrowRight className="ml-2 h-4 w-4" />}
+            <Button onClick={onParseSubmit} disabled={parseProject.isPending || isUploading} className="font-mono">
+              {parseProject.isPending || isUploading ? "Parsing Structure..." : "Parse & Continue"}
+              {!(parseProject.isPending || isUploading) && <ArrowRight className="ml-2 h-4 w-4" />}
             </Button>
           </CardFooter>
         </Card>

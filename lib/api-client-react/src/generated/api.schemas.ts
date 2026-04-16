@@ -73,10 +73,20 @@ export interface DesignSystem {
   headingStyle: string;
 }
 
+export type WordPressConfigAuthMode =
+  (typeof WordPressConfigAuthMode)[keyof typeof WordPressConfigAuthMode];
+
+export const WordPressConfigAuthMode = {
+  basic: "basic",
+  api_key: "api_key",
+} as const;
+
 export interface WordPressConfig {
   wpUrl: string;
-  wpUsername: string;
-  wpAppPassword: string;
+  wpUsername?: string | null;
+  wpAppPassword?: string | null;
+  wpApiKey?: string | null;
+  authMode?: WordPressConfigAuthMode;
   useAcf?: boolean;
 }
 
@@ -172,9 +182,21 @@ export interface PluginOutput {
   apiKey: string;
 }
 
+export interface ZipUploadResult {
+  fileCount: number;
+  indexPath: string;
+  parsedSite: ParsedSite;
+  designSystem: DesignSystem;
+  wpStructure: WpStructure;
+}
+
 export interface ProjectStats {
   totalProjects: number;
   parsedProjects: number;
   pushedProjects: number;
   totalPagesConverted: number;
 }
+
+export type UploadProjectZipBody = {
+  file: Blob;
+};

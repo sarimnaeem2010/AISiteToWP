@@ -1,4 +1,5 @@
 import { Router, type IRouter } from "express";
+import multer from "multer";
 import { eq, desc, count, sql } from "drizzle-orm";
 import { db, projectsTable, pushLogsTable } from "@workspace/db";
 import {
@@ -17,6 +18,13 @@ import { parseHtml } from "../lib/parser";
 import { mapToWordPress } from "../lib/wpMapper";
 import { testConnection, pushToWordPress } from "../lib/wpSync";
 import { generateApiKey, generateWordPressPlugin } from "../lib/pluginGenerator";
+import { extractZip } from "../lib/zipUpload";
+import { generateAstroProject } from "../lib/astroGenerator";
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 },
+});
 
 const router: IRouter = Router();
 
@@ -124,8 +132,10 @@ router.get("/projects/:id", async (req, res): Promise<void> => {
     wpConfig: project.wpUrl
       ? {
           wpUrl: project.wpUrl,
+          authMode: project.authMode === "api_key" ? "api_key" : "basic",
           wpUsername: project.wpUsername ?? "",
           wpAppPassword: project.wpAppPassword ? "••••••••" : "",
+          wpApiKey: project.wpApiKey ? "••••••••" : "",
           useAcf: project.useAcf === "true",
         }
       : null,
@@ -217,12 +227,17 @@ router.put("/projects/:id/wordpress-config", async (req, res): Promise<void> => 
     return;
   }
 
+  const authMode = (body.data as { authMode?: string }).authMode === "api_key" ? "api_key" : "basic";
+  const wpApiKeyFromBody = (body.data as { wpApiKey?: string }).wpApiKey;
+
   const [project] = await db
     .update(projectsTable)
     .set({
       wpUrl: body.data.wpUrl,
-      wpUsername: body.data.wpUsername,
-      wpAppPassword: body.data.wpAppPassword,
+      wpUsername: body.data.wpUsername ?? null,
+      wpAppPassword: body.data.wpAppPassword ?? null,
+      wpApiKey: wpApiKeyFromBody ?? undefined,
+      authMode,
       useAcf: String(body.data.useAcf ?? true),
       status: "configured",
     })
@@ -264,8 +279,17 @@ router.post("/projects/:id/test-connection", async (req, res): Promise<void> => 
     return;
   }
 
-  if (!project.wpUrl || !project.wpUsername || !project.wpAppPassword) {
-    res.json({ success: false, message: "WordPress credentials not configured" });
+  if (!project.wpUrl) {
+    res.json({ success: false, message: "WordPress URL not configured" });
+    return;
+  }
+  const authMode = (project.authMode === "api_key" ? "api_key" : "basic") as "basic" | "api_key";
+  if (authMode === "basic" && (!project.wpUsername || !project.wpAppPassword)) {
+    res.json({ success: false, message: "WordPress username/app-password not configured" });
+    return;
+  }
+  if (authMode === "api_key" && !project.wpApiKey) {
+    res.json({ success: false, message: "Plugin API key not configured" });
     return;
   }
 
@@ -273,6 +297,8 @@ router.post("/projects/:id/test-connection", async (req, res): Promise<void> => 
     wpUrl: project.wpUrl,
     wpUsername: project.wpUsername,
     wpAppPassword: project.wpAppPassword,
+    wpApiKey: project.wpApiKey,
+    authMode,
   });
 
   res.json(result);
@@ -296,8 +322,17 @@ router.post("/projects/:id/push", async (req, res): Promise<void> => {
     return;
   }
 
-  if (!project.wpUrl || !project.wpUsername || !project.wpAppPassword) {
-    res.status(400).json({ error: "WordPress credentials not configured" });
+  if (!project.wpUrl) {
+    res.status(400).json({ error: "WordPress URL not configured" });
+    return;
+  }
+  const authMode = (project.authMode === "api_key" ? "api_key" : "basic") as "basic" | "api_key";
+  if (authMode === "basic" && (!project.wpUsername || !project.wpAppPassword)) {
+    res.status(400).json({ error: "WordPress username/app-password not configured" });
+    return;
+  }
+  if (authMode === "api_key" && !project.wpApiKey) {
+    res.status(400).json({ error: "Plugin API key not configured" });
     return;
   }
 
@@ -313,6 +348,8 @@ router.post("/projects/:id/push", async (req, res): Promise<void> => {
       wpUrl: project.wpUrl,
       wpUsername: project.wpUsername,
       wpAppPassword: project.wpAppPassword,
+      wpApiKey: project.wpApiKey,
+      authMode,
       useAcf: project.useAcf === "true",
     },
     wpStructure
@@ -365,10 +402,103 @@ router.get("/projects/:id/plugin", async (req, res): Promise<void> => {
     return;
   }
 
-  const apiKey = generateApiKey();
+  let apiKey = project.wpApiKey;
+  if (!apiKey) {
+    apiKey = generateApiKey();
+    await db.update(projectsTable).set({ wpApiKey: apiKey }).where(eq(projectsTable.id, project.id));
+  }
   const { phpCode, filename } = generateWordPressPlugin(project.name, apiKey);
 
   res.json({ phpCode, filename, apiKey });
+});
+
+router.post("/projects/:id/upload-zip", upload.single("file"), async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const params = ParseProjectParams.safeParse({ id: raw });
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+  if (!req.file) {
+    res.status(400).json({ error: "No file uploaded (field name: file)" });
+    return;
+  }
+
+  const [project] = await db
+    .select()
+    .from(projectsTable)
+    .where(eq(projectsTable.id, Number(params.data.id)));
+
+  if (!project) {
+    res.status(404).json({ error: "Project not found" });
+    return;
+  }
+
+  let extracted;
+  try {
+    extracted = extractZip(req.file.buffer);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ error: `ZIP extraction failed: ${msg}` });
+    return;
+  }
+
+  const { parsedSite, designSystem } = parseHtml(extracted.indexHtml);
+  const wpStructure = mapToWordPress(parsedSite);
+
+  await db
+    .update(projectsTable)
+    .set({
+      status: "parsed",
+      parsedSite: parsedSite as never,
+      designSystem: designSystem as never,
+      wpStructure: wpStructure as never,
+      uploadedFiles: { files: extracted.files, indexPath: extracted.indexPath } as never,
+      pageCount: parsedSite.pages.length,
+    })
+    .where(eq(projectsTable.id, project.id));
+
+  res.json({
+    fileCount: extracted.files.length,
+    indexPath: extracted.indexPath,
+    parsedSite,
+    designSystem,
+    wpStructure,
+  });
+});
+
+router.get("/projects/:id/astro-export", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const params = GetProjectParams.safeParse({ id: raw });
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+
+  const [project] = await db
+    .select()
+    .from(projectsTable)
+    .where(eq(projectsTable.id, Number(params.data.id)));
+
+  if (!project) {
+    res.status(404).json({ error: "Project not found" });
+    return;
+  }
+  if (!project.parsedSite) {
+    res.status(400).json({ error: "Project has not been parsed yet" });
+    return;
+  }
+
+  const zipBuffer = generateAstroProject(
+    project.name,
+    project.parsedSite as never,
+    (project.designSystem as never) ?? null
+  );
+
+  const safeName = project.name.toLowerCase().replace(/[^a-z0-9-]+/g, "-") || "astro-site";
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", `attachment; filename="${safeName}-astro.zip"`);
+  res.send(zipBuffer);
 });
 
 export default router;

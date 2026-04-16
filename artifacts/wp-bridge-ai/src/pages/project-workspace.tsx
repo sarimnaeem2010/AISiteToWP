@@ -16,12 +16,23 @@ import { useToast } from "@/hooks/use-toast";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
-const wpConfigSchema = z.object({
-  wpUrl: z.string().url("Must be a valid URL"),
-  wpUsername: z.string().min(1, "Username is required"),
-  wpAppPassword: z.string().min(1, "App Password is required"),
-  useAcf: z.boolean().default(true),
-});
+const wpConfigSchema = z
+  .object({
+    wpUrl: z.string().url("Must be a valid URL"),
+    authMode: z.enum(["basic", "api_key"]).default("basic"),
+    wpUsername: z.string().default(""),
+    wpAppPassword: z.string().default(""),
+    wpApiKey: z.string().default(""),
+    useAcf: z.boolean().default(true),
+  })
+  .refine(
+    (d) => d.authMode !== "basic" || (d.wpUsername.length > 0 && d.wpAppPassword.length > 0),
+    { message: "Username and app password are required for basic auth", path: ["wpAppPassword"] }
+  )
+  .refine(
+    (d) => d.authMode !== "api_key" || d.wpApiKey.length > 0,
+    { message: "API key is required", path: ["wpApiKey"] }
+  );
 
 export default function ProjectWorkspace() {
   const { id } = useParams<{ id: string }>();
@@ -41,24 +52,29 @@ export default function ProjectWorkspace() {
     resolver: zodResolver(wpConfigSchema),
     defaultValues: {
       wpUrl: project?.wpConfig?.wpUrl || "",
+      authMode: (project?.wpConfig?.authMode as "basic" | "api_key") || "basic",
       wpUsername: project?.wpConfig?.wpUsername || "",
       wpAppPassword: project?.wpConfig?.wpAppPassword || "",
+      wpApiKey: project?.wpConfig?.wpApiKey || "",
       useAcf: project?.wpConfig?.useAcf ?? true,
     },
   });
 
-  // Update form when data loads
+  const currentAuthMode = form.watch("authMode");
+
   useEffect(() => {
     if (project?.wpConfig) {
       form.reset({
         wpUrl: project.wpConfig.wpUrl,
-        wpUsername: project.wpConfig.wpUsername,
-        wpAppPassword: project.wpConfig.wpAppPassword === "••••••••" ? "" : project.wpConfig.wpAppPassword,
+        authMode: (project.wpConfig.authMode as "basic" | "api_key") || "basic",
+        wpUsername: project.wpConfig.wpUsername ?? "",
+        wpAppPassword: project.wpConfig.wpAppPassword === "••••••••" ? "" : (project.wpConfig.wpAppPassword ?? ""),
+        wpApiKey: project.wpConfig.wpApiKey === "••••••••" ? "" : (project.wpConfig.wpApiKey ?? ""),
         useAcf: project.wpConfig.useAcf ?? true,
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project?.wpConfig?.wpUrl, project?.wpConfig?.wpUsername, project?.wpConfig?.useAcf]);
+  }, [project?.wpConfig?.wpUrl, project?.wpConfig?.wpUsername, project?.wpConfig?.authMode, project?.wpConfig?.useAcf]);
 
   if (isLoading || !project) {
     return <div className="p-8 text-center font-mono text-muted-foreground">Loading project workspace...</div>;
@@ -137,6 +153,19 @@ export default function ProjectWorkspace() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {project.status !== "created" && (
+            <Button
+              variant="outline"
+              className="font-mono"
+              onClick={() => {
+                const base = import.meta.env.BASE_URL;
+                window.location.href = `${base}api/projects/${id}/astro-export`;
+              }}
+            >
+              <FileCode2 className="mr-2 h-4 w-4" />
+              Export Astro
+            </Button>
+          )}
           <Link href={`/projects/${id}/plugin`}>
             <Button variant="outline" className="font-mono">
               <Download className="mr-2 h-4 w-4" />
@@ -257,35 +286,81 @@ export default function ProjectWorkspace() {
                         </FormItem>
                       )}
                     />
-                    <div className="grid grid-cols-2 gap-4">
+                    <FormField
+                      control={form.control}
+                      name="authMode"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel className="font-mono">Auth Mode</FormLabel>
+                          <div className="grid grid-cols-2 gap-2">
+                            <button
+                              type="button"
+                              onClick={() => field.onChange("basic")}
+                              className={`text-left rounded-md border p-3 text-xs font-mono ${field.value === "basic" ? "border-primary bg-primary/10" : "border-border bg-muted/20"}`}
+                            >
+                              <div className="font-semibold uppercase tracking-wider">Application Password</div>
+                              <div className="text-muted-foreground mt-1">Admin user + app password via WP REST</div>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => field.onChange("api_key")}
+                              className={`text-left rounded-md border p-3 text-xs font-mono ${field.value === "api_key" ? "border-primary bg-primary/10" : "border-border bg-muted/20"}`}
+                            >
+                              <div className="font-semibold uppercase tracking-wider">Plugin API Key</div>
+                              <div className="text-muted-foreground mt-1">Install bridge plugin, paste its API key</div>
+                            </button>
+                          </div>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    {currentAuthMode === "basic" && (
+                      <div className="grid grid-cols-2 gap-4">
+                        <FormField
+                          control={form.control}
+                          name="wpUsername"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel className="font-mono">Admin Username</FormLabel>
+                              <FormControl>
+                                <Input placeholder="admin" className="font-mono bg-muted/20" {...field} />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        <FormField
+                          control={form.control}
+                          name="wpAppPassword"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel className="font-mono">Application Password</FormLabel>
+                              <FormControl>
+                                <Input type="password" placeholder="xxxx xxxx xxxx xxxx" className="font-mono bg-muted/20" {...field} />
+                              </FormControl>
+                              <FormDescription className="text-[10px]">Generate in WP Profile settings</FormDescription>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      </div>
+                    )}
+                    {currentAuthMode === "api_key" && (
                       <FormField
                         control={form.control}
-                        name="wpUsername"
+                        name="wpApiKey"
                         render={({ field }) => (
                           <FormItem>
-                            <FormLabel className="font-mono">Admin Username</FormLabel>
+                            <FormLabel className="font-mono">Plugin API Key</FormLabel>
                             <FormControl>
-                              <Input placeholder="admin" className="font-mono bg-muted/20" {...field} />
+                              <Input type="password" placeholder="paste key from Get Plugin screen" className="font-mono bg-muted/20" {...field} />
                             </FormControl>
+                            <FormDescription className="text-[10px]">Generated and embedded by the bridge plugin PHP file (see Get Plugin).</FormDescription>
                             <FormMessage />
                           </FormItem>
                         )}
                       />
-                      <FormField
-                        control={form.control}
-                        name="wpAppPassword"
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel className="font-mono">Application Password</FormLabel>
-                            <FormControl>
-                              <Input type="password" placeholder="xxxx xxxx xxxx xxxx" className="font-mono bg-muted/20" {...field} />
-                            </FormControl>
-                            <FormDescription className="text-[10px]">Generate in WP Profile settings</FormDescription>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-                    </div>
+                    )}
                     <FormField
                       control={form.control}
                       name="useAcf"
