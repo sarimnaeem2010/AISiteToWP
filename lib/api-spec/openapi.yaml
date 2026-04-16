@@ -3,13 +3,21 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: WP Bridge AI API specification
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: projects
+    description: Conversion project management
+  - name: parse
+    description: Site parsing operations
+  - name: wordpress
+    description: WordPress sync operations
+  - name: plugin
+    description: WordPress plugin generation
 paths:
   /healthz:
     get:
@@ -24,6 +32,193 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /projects:
+    get:
+      operationId: listProjects
+      tags: [projects]
+      summary: List all projects
+      responses:
+        "200":
+          description: List of projects
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Project"
+    post:
+      operationId: createProject
+      tags: [projects]
+      summary: Create a new project
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProjectBody"
+      responses:
+        "201":
+          description: Created project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+
+  /projects/{id}:
+    get:
+      operationId: getProject
+      tags: [projects]
+      summary: Get a project by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Project detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectDetail"
+        "404":
+          description: Not found
+    delete:
+      operationId: deleteProject
+      tags: [projects]
+      summary: Delete a project
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+
+  /projects/{id}/parse:
+    post:
+      operationId: parseProject
+      tags: [parse]
+      summary: Parse uploaded HTML into structured JSON
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ParseProjectBody"
+      responses:
+        "200":
+          description: Parsed site structure
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ParseResult"
+
+  /projects/{id}/wordpress-config:
+    put:
+      operationId: updateWordPressConfig
+      tags: [wordpress]
+      summary: Save WordPress connection settings
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WordPressConfig"
+      responses:
+        "200":
+          description: Updated project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+
+  /projects/{id}/test-connection:
+    post:
+      operationId: testWordPressConnection
+      tags: [wordpress]
+      summary: Test WordPress REST API connection
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Connection test result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectionTestResult"
+
+  /projects/{id}/push:
+    post:
+      operationId: pushToWordPress
+      tags: [wordpress]
+      summary: Push parsed site structure to WordPress
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Push result with per-page outcomes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PushResult"
+
+  /projects/{id}/plugin:
+    get:
+      operationId: generatePlugin
+      tags: [plugin]
+      summary: Generate WordPress plugin PHP file for this project
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Plugin PHP content
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PluginOutput"
+
+  /projects/stats:
+    get:
+      operationId: getProjectStats
+      tags: [projects]
+      summary: Aggregate stats across all projects
+      responses:
+        "200":
+          description: Stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectStats"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +229,308 @@ components:
       required:
         - status
 
+    Project:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [created, parsed, configured, pushed, error]
+        wpUrl:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+        pageCount:
+          type: integer
+          nullable: true
+        lastPushedAt:
+          type: string
+          nullable: true
+      required:
+        - id
+        - name
+        - status
+        - createdAt
+        - updatedAt
+
+    ProjectDetail:
+      allOf:
+        - $ref: "#/components/schemas/Project"
+        - type: object
+          properties:
+            parsedSite:
+              $ref: "#/components/schemas/ParsedSite"
+              nullable: true
+            designSystem:
+              $ref: "#/components/schemas/DesignSystem"
+              nullable: true
+            wpConfig:
+              $ref: "#/components/schemas/WordPressConfig"
+              nullable: true
+            pushLog:
+              type: array
+              items:
+                $ref: "#/components/schemas/PushLogEntry"
+
+    CreateProjectBody:
+      type: object
+      properties:
+        name:
+          type: string
+      required:
+        - name
+
+    ParseProjectBody:
+      type: object
+      properties:
+        htmlContent:
+          type: string
+          description: Raw HTML string to parse
+        sourceType:
+          type: string
+          enum: [html, url]
+          default: html
+      required:
+        - htmlContent
+
+    ParseResult:
+      type: object
+      properties:
+        parsedSite:
+          $ref: "#/components/schemas/ParsedSite"
+        designSystem:
+          $ref: "#/components/schemas/DesignSystem"
+        wpStructure:
+          $ref: "#/components/schemas/WpStructure"
+      required:
+        - parsedSite
+        - designSystem
+        - wpStructure
+
+    ParsedSite:
+      type: object
+      properties:
+        pages:
+          type: array
+          items:
+            $ref: "#/components/schemas/ParsedPage"
+      required:
+        - pages
+
+    ParsedPage:
+      type: object
+      properties:
+        name:
+          type: string
+        slug:
+          type: string
+        sections:
+          type: array
+          items:
+            $ref: "#/components/schemas/ParsedSection"
+      required:
+        - name
+        - slug
+        - sections
+
+    ParsedSection:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [hero, about, features, testimonials, pricing, faq, cta, footer, gallery, blog, contact, custom]
+        content:
+          type: object
+          additionalProperties: true
+        rawHtml:
+          type: string
+      required:
+        - type
+        - content
+
+    DesignSystem:
+      type: object
+      properties:
+        font:
+          type: string
+        colors:
+          type: array
+          items:
+            type: string
+        buttonStyle:
+          type: string
+        headingStyle:
+          type: string
+      required:
+        - font
+        - colors
+        - buttonStyle
+        - headingStyle
+
+    WpStructure:
+      type: object
+      properties:
+        pages:
+          type: array
+          items:
+            $ref: "#/components/schemas/WpPage"
+      required:
+        - pages
+
+    WpPage:
+      type: object
+      properties:
+        title:
+          type: string
+        slug:
+          type: string
+        blocks:
+          type: array
+          items:
+            $ref: "#/components/schemas/WpBlock"
+      required:
+        - title
+        - slug
+        - blocks
+
+    WpBlock:
+      type: object
+      properties:
+        blockType:
+          type: string
+        acfGroup:
+          type: string
+          nullable: true
+        fields:
+          type: object
+          additionalProperties: true
+        innerBlocks:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+      required:
+        - blockType
+        - fields
+
+    WordPressConfig:
+      type: object
+      properties:
+        wpUrl:
+          type: string
+        wpUsername:
+          type: string
+        wpAppPassword:
+          type: string
+        useAcf:
+          type: boolean
+          default: true
+      required:
+        - wpUrl
+        - wpUsername
+        - wpAppPassword
+
+    ConnectionTestResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        wpVersion:
+          type: string
+          nullable: true
+        siteTitle:
+          type: string
+          nullable: true
+      required:
+        - success
+        - message
+
+    PushResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        pagesCreated:
+          type: integer
+        pagesUpdated:
+          type: integer
+        mediaUploaded:
+          type: integer
+        errors:
+          type: array
+          items:
+            type: string
+        wpPageUrls:
+          type: array
+          items:
+            type: string
+      required:
+        - success
+        - pagesCreated
+        - pagesUpdated
+        - mediaUploaded
+        - errors
+        - wpPageUrls
+
+    PushLogEntry:
+      type: object
+      properties:
+        pageName:
+          type: string
+        status:
+          type: string
+          enum: [success, error, skipped]
+        wpId:
+          type: integer
+          nullable: true
+        wpUrl:
+          type: string
+          nullable: true
+        error:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+      required:
+        - pageName
+        - status
+        - createdAt
+
+    PluginOutput:
+      type: object
+      properties:
+        phpCode:
+          type: string
+        filename:
+          type: string
+        apiKey:
+          type: string
+      required:
+        - phpCode
+        - filename
+        - apiKey
+
+    ProjectStats:
+      type: object
+      properties:
+        totalProjects:
+          type: integer
+        parsedProjects:
+          type: integer
+        pushedProjects:
+          type: integer
+        totalPagesConverted:
+          type: integer
+      required:
+        - totalProjects
+        - parsedProjects
+        - pushedProjects
+        - totalPagesConverted

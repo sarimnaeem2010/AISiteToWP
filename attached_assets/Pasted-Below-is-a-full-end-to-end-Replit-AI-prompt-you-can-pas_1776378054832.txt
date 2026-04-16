@@ -1,0 +1,283 @@
+Below is a full end-to-end Replit AI prompt you can paste directly. It is designed to build your system as a working MVP first, then scale into a full product.
+
+⸻
+
+🚀 REPLIT AI BUILD PROMPT (COPY EVERYTHING BELOW)
+
+You are a senior full-stack engineer and system architect.
+
+Build a production-ready web application called:
+
+“AI → WordPress CMS Converter Platform”
+
+⸻
+
+🧠 CORE PURPOSE
+
+The system allows users to:
+	1.	Upload or paste an existing AI-generated website (HTML / Astro / React export)
+	2.	System automatically analyzes and converts it into a structured design system
+	3.	Convert it into WordPress-compatible CMS structure (Gutenberg + ACF format)
+	4.	Push it to a connected WordPress site via API
+	5.	Make all content editable inside WordPress without breaking layout
+
+This is NOT a page builder.
+This is a conversion + CMS mapping engine.
+
+⸻
+
+⚙️ TECH STACK
+
+Use:
+
+Frontend:
+	•	Next.js (App Router)
+	•	TailwindCSS
+	•	Simple admin dashboard UI
+
+Backend:
+	•	Node.js API routes (inside Next.js)
+	•	File parser engine
+	•	JSON transformation engine
+
+Database:
+	•	SQLite (for MVP)
+	•	Tables must be simple and structured
+
+Integrations:
+	•	WordPress REST API
+	•	Optional: JWT authentication for WP plugin
+
+⸻
+
+🧱 CORE SYSTEM MODULES
+
+1. USER DASHBOARD
+
+User can:
+	•	Upload ZIP (HTML/Astro export)
+	•	Paste website URL (optional later)
+	•	View parsed structure
+	•	Map sections manually if needed
+	•	Connect WordPress site
+	•	Push site to WordPress
+
+⸻
+
+2. SITE PARSER ENGINE (MOST IMPORTANT)
+
+You must build a parser that converts raw frontend code into:
+
+OUTPUT STRUCTURE:
+
+{
+  "site": {
+    "pages": [
+      {
+        "name": "Home",
+        "sections": [
+          {
+            "type": "hero",
+            "content": {
+              "title": "",
+              "subtitle": "",
+              "cta": ""
+            }
+          },
+          {
+            "type": "features",
+            "items": []
+          }
+        ]
+      }
+    ]
+  }
+}
+
+REQUIREMENTS:
+	•	Detect sections from HTML structure
+	•	Identify headings, buttons, images
+	•	Group DOM into logical blocks:
+	•	hero
+	•	about
+	•	features
+	•	testimonials
+	•	pricing
+	•	footer
+	•	Must be heuristic-based for MVP (no AI dependency required initially)
+
+⸻
+
+3. WORDPRESS MAPPER ENGINE
+
+Convert parsed JSON into WordPress structure:
+
+Mapping rules:
+
+Section Type	WordPress Output
+hero	Gutenberg block or ACF group
+features	repeater field
+testimonials	CPT (custom post type)
+blog	WP posts
+pricing	structured ACF layout
+images	media library upload
+
+
+⸻
+
+Output format example:
+
+{
+  "wp_pages": [
+    {
+      "title": "Home",
+      "slug": "home",
+      "blocks": []
+    }
+  ]
+}
+
+
+⸻
+
+4. WORDPRESS SYNC ENGINE
+
+Create API integration to push data:
+
+Must implement:
+	•	Create page via:
+POST /wp-json/wp/v2/pages
+	•	Upload media:
+POST /wp-json/wp/v2/media
+	•	Create custom fields using ACF if available
+	•	Update page content dynamically
+
+⸻
+
+5. WORDPRESS PLUGIN (REQUIRED)
+
+Build a minimal plugin:
+
+Purpose:
+	•	Accept incoming structured JSON
+	•	Convert JSON → Gutenberg blocks or ACF fields
+	•	Store mapping metadata
+
+Plugin must include:
+	•	REST API endpoint:
+/wp-json/ai-cms/v1/import
+	•	Authentication via API key
+
+⸻
+
+6. DESIGN SYSTEM ENGINE
+
+Create a simple design consistency layer:
+	•	Detect typography styles
+	•	Detect button styles
+	•	Normalize spacing
+	•	Store as:
+
+{
+  "design_system": {
+    "font": "",
+    "colors": [],
+    "button_style": ""
+  }
+}
+
+
+⸻
+
+7. MEDIA HANDLING
+	•	Extract all images from uploaded site
+	•	Upload to WordPress media library
+	•	Replace image URLs automatically
+
+⸻
+
+8. CORE USER FLOW
+
+Step 1:
+
+User uploads ZIP or HTML site
+
+Step 2:
+
+System parses into structured JSON
+
+Step 3:
+
+User previews structure
+
+Step 4:
+
+User connects WordPress site:
+	•	URL
+	•	Username
+	•	Application password or API key
+
+Step 5:
+
+User clicks:
+
+👉 “Convert & Push to WordPress”
+
+Step 6:
+
+System:
+	•	creates pages
+	•	uploads media
+	•	maps blocks
+	•	pushes CMS structure
+
+⸻
+
+🧠 IMPORTANT RULES
+	•	Keep design intact
+	•	Do NOT rebuild UI manually
+	•	Always preserve structure
+	•	Only transform into CMS layers
+	•	Must support multi-page sites
+	•	Must be extendable for SaaS later
+
+⸻
+
+🧪 MVP PRIORITY
+
+Focus on:
+	1.	HTML upload
+	2.	Parsing engine
+	3.	WordPress page creation
+	4.	Basic block mapping
+
+Ignore advanced AI features for now.
+
+⸻
+
+🚀 FINAL OUTPUT REQUIREMENT
+
+System must successfully:
+
+✔ Upload site
+✔ Convert into structured JSON
+✔ Map to WordPress format
+✔ Push to WordPress site
+✔ Show editable result in WP admin
+
+⸻
+
+💡 NAME OF SYSTEM
+
+Call it:
+
+👉 “WP Bridge AI”
+
+⸻
+
+If you want next step, I can also:
+	•	￼ design database schema
+	•	￼ build WordPress plugin code
+	•	or ￼ break this into 7-day Replit build plan
+
+Just tell me.

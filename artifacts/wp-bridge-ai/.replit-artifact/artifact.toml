@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "WP Bridge AI"
+version = "1.0.0"
+id = "artifacts/wp-bridge-ai"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 23026
+
+[services.development]
+run = "pnpm --filter @workspace/wp-bridge-ai run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/wp-bridge-ai", "run", "build" ]
+publicDir = "artifacts/wp-bridge-ai/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "23026"
+BASE_PATH = "/"
