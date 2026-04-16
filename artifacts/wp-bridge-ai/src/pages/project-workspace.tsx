@@ -97,14 +97,34 @@ export default function ProjectWorkspace() {
     });
   };
 
-  const onTestConnection = () => {
+  const onTestConnection = async () => {
     setTestResult(null);
+    const data = form.getValues();
+    if (!data.wpUrl) {
+      setTestResult({ success: false, message: "Enter a WordPress URL first." });
+      return;
+    }
+    if (data.authMode === "api_key" && !data.wpApiKey) {
+      setTestResult({ success: false, message: "Paste the Plugin API Key first (see Companion Plugin page)." });
+      return;
+    }
+    if (data.authMode === "basic" && (!data.wpUsername || !data.wpAppPassword)) {
+      setTestResult({ success: false, message: "Enter username and application password first." });
+      return;
+    }
+    // Auto-save so Test Connection reflects what's in the form
+    try {
+      await updateConfig.mutateAsync({ id, data });
+    } catch (err) {
+      setTestResult({ success: false, message: err instanceof Error ? err.message : String(err) });
+      return;
+    }
     testConnection.mutate({ id }, {
       onSuccess: (res) => {
         setTestResult(res);
         if (res.success) {
           toast({ title: "Connection Successful", description: `Connected to ${res.siteTitle || "WordPress"}` });
-          refetch(); // might update status to configured
+          refetch();
         }
       },
       onError: (err) => {
