@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Link, useParams, useLocation } from "wouter";
 import { z } from "zod";
 import { useForm } from "react-hook-form";
@@ -48,16 +48,17 @@ export default function ProjectWorkspace() {
   });
 
   // Update form when data loads
-  useState(() => {
+  useEffect(() => {
     if (project?.wpConfig) {
       form.reset({
         wpUrl: project.wpConfig.wpUrl,
         wpUsername: project.wpConfig.wpUsername,
-        wpAppPassword: project.wpConfig.wpAppPassword,
+        wpAppPassword: project.wpConfig.wpAppPassword === "••••••••" ? "" : project.wpConfig.wpAppPassword,
         useAcf: project.wpConfig.useAcf ?? true,
       });
     }
-  });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project?.wpConfig?.wpUrl, project?.wpConfig?.wpUsername, project?.wpConfig?.useAcf]);
 
   if (isLoading || !project) {
     return <div className="p-8 text-center font-mono text-muted-foreground">Loading project workspace...</div>;
@@ -410,7 +411,3 @@ export default function ProjectWorkspace() {
   );
 }
 
-// Just importing AlertCircle up here
-import { AlertCircle } from "lucide-react";
-// Adding useLocation import for standard routing needs
-import { useLocation as useWouterLocation } from "wouter";

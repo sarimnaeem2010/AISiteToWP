@@ -1,4 +1,3 @@
-import { useQuery } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { ArrowRight, Box, CheckCircle2, FileCode2, Globe, LayoutTemplate, AlertCircle, Clock, Plus } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -6,18 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatDistanceToNow } from "date-fns";
-import { customFetch } from "@workspace/api-client-react/src/custom-fetch";
-import { Project, ProjectStats } from "@workspace/api-client-react/src/generated/api.schemas";
-import { useListProjects } from "@workspace/api-client-react";
-
-// Assuming we need a custom hook if not exported, but the prompt says useGetProjectStats is available.
-// If it's not exported from api.ts, we'll make a quick query here just in case.
-function useGetProjectStats() {
-  return useQuery({
-    queryKey: ["/api/projects/stats"],
-    queryFn: () => customFetch<ProjectStats>("/api/projects/stats", { method: "GET" }),
-  });
-}
+import { useListProjects, useGetProjectStats } from "@workspace/api-client-react";
 
 const statusConfig: Record<string, { label: string; color: string; icon: React.ElementType }> = {
   created: { label: "Created", color: "bg-muted text-muted-foreground", icon: Clock },

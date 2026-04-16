@@ -1,4 +1,56 @@
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import { logger } from "./logger";
+
+function isPrivateIPv4(ip: string): boolean {
+  const parts = ip.split(".").map((n) => Number(n));
+  if (parts.length !== 4 || parts.some((n) => Number.isNaN(n))) return true;
+  const [a, b] = parts;
+  if (a === 10) return true;
+  if (a === 127) return true;
+  if (a === 0) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a >= 224) return true;
+  return false;
+}
+
+function isPrivateIPv6(ip: string): boolean {
+  const lower = ip.toLowerCase();
+  if (lower === "::1" || lower === "::") return true;
+  if (lower.startsWith("fc") || lower.startsWith("fd")) return true;
+  if (lower.startsWith("fe80")) return true;
+  if (lower.startsWith("::ffff:")) {
+    const v4 = lower.slice(7);
+    return isPrivateIPv4(v4);
+  }
+  return false;
+}
+
+async function assertSafeUrl(rawUrl: string): Promise<URL> {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error("Invalid URL");
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error("Only http(s) URLs are allowed");
+  }
+  const host = parsed.hostname;
+  const ipVersion = isIP(host);
+  if (ipVersion === 4 && isPrivateIPv4(host)) throw new Error("Private/loopback addresses are not allowed");
+  if (ipVersion === 6 && isPrivateIPv6(host)) throw new Error("Private/loopback addresses are not allowed");
+  if (ipVersion === 0) {
+    const addrs = await lookup(host, { all: true });
+    for (const a of addrs) {
+      if (a.family === 4 && isPrivateIPv4(a.address)) throw new Error("Host resolves to a private address");
+      if (a.family === 6 && isPrivateIPv6(a.address)) throw new Error("Host resolves to a private address");
+    }
+  }
+  return parsed;
+}
 
 interface WpConfig {
   wpUrl: string;
@@ -126,6 +178,12 @@ function blocksToGutenbergContent(blocks: WpBlock[]): string {
 
 export async function testConnection(config: WpConfig): Promise<{ success: boolean; message: string; wpVersion?: string; siteTitle?: string }> {
   const { wpUrl, wpUsername, wpAppPassword } = config;
+  try {
+    await assertSafeUrl(wpUrl);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { success: false, message: `URL rejected: ${msg}` };
+  }
   const baseUrl = wpUrl.replace(/\/$/, "");
   const auth = Buffer.from(`${wpUsername}:${wpAppPassword}`).toString("base64");
 
@@ -158,6 +216,7 @@ export async function pushToWordPress(
   wpStructure: WpStructure
 ): Promise<PushResult> {
   const { wpUrl, wpUsername, wpAppPassword } = config;
+  await assertSafeUrl(wpUrl);
   const baseUrl = wpUrl.replace(/\/$/, "");
   const auth = Buffer.from(`${wpUsername}:${wpAppPassword}`).toString("base64");
   const headers = {
