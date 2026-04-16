@@ -229,7 +229,20 @@ router.put("/projects/:id/wordpress-config", async (req, res): Promise<void> => 
   }
 
   const authMode = (body.data as { authMode?: string }).authMode === "api_key" ? "api_key" : "basic";
-  const wpApiKeyFromBody = (body.data as { wpApiKey?: string }).wpApiKey;
+  let wpApiKeyFromBody = (body.data as { wpApiKey?: string }).wpApiKey;
+  // Ignore masked placeholder so we don't overwrite a valid stored key with bullets
+  if (wpApiKeyFromBody && /^•+$/.test(wpApiKeyFromBody)) {
+    wpApiKeyFromBody = undefined;
+  }
+  // Validate: must be plain ASCII token (no whitespace, no PHP paste, ≤128 chars)
+  if (wpApiKeyFromBody !== undefined && wpApiKeyFromBody !== "") {
+    if (wpApiKeyFromBody.length > 128 || !/^[A-Za-z0-9_\-]+$/.test(wpApiKeyFromBody)) {
+      res.status(400).json({
+        error: "Invalid API key format. Paste only the hex key (the value inside the quotes of WP_BRIDGE_API_KEY), not the whole PHP file.",
+      });
+      return;
+    }
+  }
 
   const [project] = await db
     .update(projectsTable)

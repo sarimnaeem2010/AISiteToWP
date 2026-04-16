@@ -1,6 +1,6 @@
 import { useParams, Link } from "wouter";
 import { useGetProject, useGeneratePlugin } from "@workspace/api-client-react";
-import { ArrowLeft, Download, FileCode2, Copy, Check } from "lucide-react";
+import { ArrowLeft, Download, FileCode2, Copy, Check, Key } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
@@ -11,6 +11,7 @@ export default function ProjectPlugin() {
   const { id } = useParams<{ id: string }>();
   const { toast } = useToast();
   const [copied, setCopied] = useState(false);
+  const [keyCopied, setKeyCopied] = useState(false);
 
   const { data: project } = useGetProject(id || "", { query: { enabled: !!id } });
   const { data: pluginData, isLoading } = useGeneratePlugin(id || "", { query: { enabled: !!id } });
@@ -21,6 +22,15 @@ export default function ProjectPlugin() {
       setCopied(true);
       toast({ title: "Copied to clipboard" });
       setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const handleCopyKey = () => {
+    if (pluginData?.apiKey) {
+      navigator.clipboard.writeText(pluginData.apiKey);
+      setKeyCopied(true);
+      toast({ title: "API key copied" });
+      setTimeout(() => setKeyCopied(false), 2000);
     }
   };
 
@@ -43,6 +53,32 @@ export default function ProjectPlugin() {
           <p className="text-muted-foreground text-sm">Install this on your target WordPress instance.</p>
         </div>
       </div>
+
+      {pluginData?.apiKey && (
+        <Card className="border-primary/40 shadow-md">
+          <CardHeader className="pb-3">
+            <CardTitle className="font-mono flex items-center gap-2 text-base">
+              <Key className="h-4 w-4 text-primary" />
+              Plugin API Key
+            </CardTitle>
+            <CardDescription>
+              Copy this value (only this value) into the <strong>Plugin API Key</strong> field in WordPress Config.
+              It's already baked into the plugin ZIP you installed.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 bg-muted px-3 py-2 rounded border font-mono text-xs break-all select-all">
+                {pluginData.apiKey}
+              </code>
+              <Button variant="outline" onClick={handleCopyKey} className="font-mono shrink-0">
+                {keyCopied ? <Check className="mr-2 h-4 w-4" /> : <Copy className="mr-2 h-4 w-4" />}
+                Copy Key
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <Card className="border-primary/20 shadow-md">
         <CardHeader className="bg-primary/5 border-b pb-4">
