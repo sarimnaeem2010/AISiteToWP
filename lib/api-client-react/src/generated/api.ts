@@ -879,6 +879,93 @@ export function useGeneratePlugin<
 }
 
 /**
+ * @summary Download installable WordPress plugin ZIP
+ */
+export const getDownloadPluginZipUrl = (id: string) => {
+  return `/api/projects/${id}/plugin-zip`;
+};
+
+export const downloadPluginZip = async (
+  id: string,
+  options?: RequestInit,
+): Promise<Blob> => {
+  return customFetch<Blob>(getDownloadPluginZipUrl(id), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getDownloadPluginZipQueryKey = (id: string) => {
+  return [`/api/projects/${id}/plugin-zip`] as const;
+};
+
+export const getDownloadPluginZipQueryOptions = <
+  TData = Awaited<ReturnType<typeof downloadPluginZip>>,
+  TError = ErrorType<unknown>,
+>(
+  id: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof downloadPluginZip>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getDownloadPluginZipQueryKey(id);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof downloadPluginZip>>
+  > = ({ signal }) => downloadPluginZip(id, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!id,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof downloadPluginZip>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type DownloadPluginZipQueryResult = NonNullable<
+  Awaited<ReturnType<typeof downloadPluginZip>>
+>;
+export type DownloadPluginZipQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Download installable WordPress plugin ZIP
+ */
+
+export function useDownloadPluginZip<
+  TData = Awaited<ReturnType<typeof downloadPluginZip>>,
+  TError = ErrorType<unknown>,
+>(
+  id: string,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof downloadPluginZip>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getDownloadPluginZipQueryOptions(id, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
  * @summary Upload a ZIP archive of an HTML site and parse its index page
  */
 export const getUploadProjectZipUrl = (id: string) => {

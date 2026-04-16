@@ -281,6 +281,13 @@ export const GeneratePluginResponse = zod.object({
 });
 
 /**
+ * @summary Download installable WordPress plugin ZIP
+ */
+export const DownloadPluginZipParams = zod.object({
+  id: zod.coerce.string(),
+});
+
+/**
  * @summary Upload a ZIP archive of an HTML site and parse its index page
  */
 export const UploadProjectZipParams = zod.object({

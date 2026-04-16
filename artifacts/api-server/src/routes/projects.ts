@@ -20,6 +20,7 @@ import { testConnection, pushToWordPress } from "../lib/wpSync";
 import { generateApiKey, generateWordPressPlugin } from "../lib/pluginGenerator";
 import { extractZip } from "../lib/zipUpload";
 import { generateAstroProject } from "../lib/astroGenerator";
+import AdmZip from "adm-zip";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -410,6 +411,64 @@ router.get("/projects/:id/plugin", async (req, res): Promise<void> => {
   const { phpCode, filename } = generateWordPressPlugin(project.name, apiKey);
 
   res.json({ phpCode, filename, apiKey });
+});
+
+router.get("/projects/:id/plugin-zip", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const params = GeneratePluginParams.safeParse({ id: raw });
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+
+  const [project] = await db
+    .select()
+    .from(projectsTable)
+    .where(eq(projectsTable.id, Number(params.data.id)));
+
+  if (!project) {
+    res.status(404).json({ error: "Project not found" });
+    return;
+  }
+
+  let apiKey = project.wpApiKey;
+  if (!apiKey) {
+    apiKey = generateApiKey();
+    await db.update(projectsTable).set({ wpApiKey: apiKey }).where(eq(projectsTable.id, project.id));
+  }
+  const { phpCode, filename } = generateWordPressPlugin(project.name, apiKey);
+
+  // WordPress requires plugin files inside a named folder at the ZIP root
+  const slug = filename.replace(/\.php$/, "");
+  const readme = `=== WP Bridge AI Importer ===
+Contributors: wpbridgeai
+Tags: rest-api, importer, acf, gutenberg
+Requires at least: 6.0
+Tested up to: 6.5
+Stable tag: 1.0.0
+License: MIT
+
+Receives structured JSON from WP Bridge AI and converts it to WordPress pages with Gutenberg blocks and ACF fields.
+
+== Installation ==
+
+1. Upload the plugin zip via Plugins > Add New > Upload Plugin.
+2. Activate the plugin through the Plugins menu in WordPress.
+3. Copy the API key embedded in the plugin PHP file (constant WP_BRIDGE_API_KEY) into the WP Bridge AI dashboard.
+
+== Endpoints ==
+
+* POST /wp-json/ai-cms/v1/import — receives page payload (X-Api-Key header required)
+* GET  /wp-json/ai-cms/v1/status — reports plugin status
+`;
+
+  const zip = new AdmZip();
+  zip.addFile(`${slug}/${slug}.php`, Buffer.from(phpCode, "utf8"));
+  zip.addFile(`${slug}/readme.txt`, Buffer.from(readme, "utf8"));
+
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", `attachment; filename="${slug}.zip"`);
+  res.send(zip.toBuffer());
 });
 
 router.post("/projects/:id/upload-zip", upload.single("file"), async (req, res): Promise<void> => {

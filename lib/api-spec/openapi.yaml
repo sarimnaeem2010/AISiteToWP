@@ -206,6 +206,26 @@ paths:
               schema:
                 $ref: "#/components/schemas/PluginOutput"
 
+  /projects/{id}/plugin-zip:
+    get:
+      operationId: downloadPluginZip
+      tags: [plugin]
+      summary: Download installable WordPress plugin ZIP
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Plugin ZIP ready for WordPress Upload Plugin
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+
   /projects/{id}/upload-zip:
     post:
       operationId: uploadProjectZip

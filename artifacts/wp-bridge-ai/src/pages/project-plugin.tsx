@@ -25,17 +25,9 @@ export default function ProjectPlugin() {
   };
 
   const handleDownload = () => {
-    if (pluginData?.phpCode && pluginData?.filename) {
-      const blob = new Blob([pluginData.phpCode], { type: "application/x-php" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = pluginData.filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }
+    if (!id) return;
+    const base = import.meta.env.BASE_URL;
+    window.location.href = `${base}api/projects/${id}/plugin-zip`;
   };
 
   return (
