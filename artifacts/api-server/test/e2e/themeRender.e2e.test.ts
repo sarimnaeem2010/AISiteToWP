@@ -656,6 +656,123 @@ test("uploaded themes render end-to-end inside WordPress", { skip: ENABLED ? fal
         `original list item "${original}" should not survive mutation`,
       );
     }
+
+    // 5. Icon group — two-phase mutation.
+    //
+    // Phase A: swap the font-icon class. Editor changes the class
+    // string in the Icon group's TEXT control; the rendered <i>
+    // should carry the new class and the original class should be
+    // gone. The data-wpb-icon marker must be stripped so it doesn't
+    // leak into the user-visible DOM.
+    //
+    // Phase B: upload an SVG. Editor picks an SVG from the media
+    // library, populating the Icon group's MEDIA control with
+    // { id: 0, url: "..." } (id=0 means "external upload not yet
+    // attached" — the swap pass keys off the URL, not the id). The
+    // rendered output should swap the entire <i> for an
+    // <img src="..."> pointing at the upload, regardless of what
+    // class string was set in Phase A.
+    const iconGroup = allGroups.find((g) => g.kind === "icon");
+    assert.ok(iconGroup, "expected at least one icon group (simple-page should declare a leaf <i class=fa-...>)");
+    const iconCtl = iconGroup!.controls.find((c) => c.type === "icons");
+    assert.ok(iconCtl, "icon group must expose a single ICONS control");
+    const iconOriginalClass = iconCtl!.default;
+    const iconMutatedClass = "fa fa-rocket wpb-mutated-icon";
+    // Phase A: font-icon library — value is the class string. The
+    // ICONS reducer in wpb_settings_to_attrs surfaces this through the
+    // {{ATTR:k}} substitution that rewrites the <i>'s class attribute.
+    iconGroup!.settings[iconCtl!.key] = { value: iconMutatedClass, library: "fa-solid" };
+
+    const applyIconClass = run(
+      "php",
+      [path.join(__dirname, "apply-elementor.php"), WP_DIR, projectSlug, pageSlug, projectName],
+      { input: JSON.stringify(elementorData) },
+    );
+    assert.equal(
+      applyIconClass.status,
+      0,
+      `apply-elementor.php (icon class phase) failed:\n${applyIconClass.stderr}`,
+    );
+    const iconClassPageId = parseInt(applyIconClass.stdout.trim(), 10);
+    assert.ok(Number.isFinite(iconClassPageId) && iconClassPageId > 0);
+
+    const iconClassRes = await fetch(`${base}/?page_id=${iconClassPageId}`);
+    assert.equal(iconClassRes.status, 200);
+    const iconClassHtml = await iconClassRes.text();
+    const iconClassDom = new JSDOM(iconClassHtml);
+    const mutatedIconEl = iconClassDom.window.document.querySelector("i.wpb-mutated-icon");
+    assert.ok(
+      mutatedIconEl,
+      `mutated icon class "${iconMutatedClass}" should appear on an <i> in the rendered DOM`,
+    );
+    const mutatedIconClassAttr = mutatedIconEl!.getAttribute("class") ?? "";
+    assert.equal(
+      mutatedIconClassAttr,
+      iconMutatedClass,
+      `<i> class must be the full mutated class string, got "${mutatedIconClassAttr}"`,
+    );
+    assert.ok(
+      !mutatedIconEl!.hasAttribute("data-wpb-icon"),
+      "data-wpb-icon marker must be stripped from rendered output even when no SVG is set",
+    );
+    // The original class string must not survive the mutation. We
+    // check the unique non-`fa`/`fa-star` token to avoid colliding
+    // with any class on a different element that happens to share
+    // generic Font Awesome tokens.
+    const originalUniqueToken = iconOriginalClass
+      .split(/\s+/)
+      .find((t) => t !== "fa" && !t.startsWith("fa-")) ?? iconOriginalClass;
+    assert.ok(
+      !iconClassHtml.includes(originalUniqueToken),
+      `original icon class token "${originalUniqueToken}" should not survive mutation`,
+    );
+
+    // Phase B: pick an SVG from the media library. The ICONS control
+    // posts back { library: 'svg', value: { id, url } } in this case;
+    // the renderer's __icon_svg synthetic attr triggers the swap pass
+    // that replaces the entire <i> with an <img src="..."> upload.
+    const iconSvgUrl = "https://example.com/mutated-icon.svg";
+    iconGroup!.settings[iconCtl!.key] = { library: "svg", value: { id: 0, url: iconSvgUrl } };
+
+    const applyIconSvg = run(
+      "php",
+      [path.join(__dirname, "apply-elementor.php"), WP_DIR, projectSlug, pageSlug, projectName],
+      { input: JSON.stringify(elementorData) },
+    );
+    assert.equal(
+      applyIconSvg.status,
+      0,
+      `apply-elementor.php (icon svg phase) failed:\n${applyIconSvg.stderr}`,
+    );
+    const iconSvgPageId = parseInt(applyIconSvg.stdout.trim(), 10);
+    assert.ok(Number.isFinite(iconSvgPageId) && iconSvgPageId > 0);
+
+    const iconSvgRes = await fetch(`${base}/?page_id=${iconSvgPageId}`);
+    assert.equal(iconSvgRes.status, 200);
+    const iconSvgHtml = await iconSvgRes.text();
+    const iconSvgDom = new JSDOM(iconSvgHtml);
+    const swappedImg = Array.from(iconSvgDom.window.document.querySelectorAll("img"))
+      .find((img) => img.getAttribute("src") === iconSvgUrl);
+    assert.ok(
+      swappedImg,
+      `<img src="${iconSvgUrl}"> should appear after SVG upload swap; ` +
+        `present <img src> values: ${
+          Array.from(iconSvgDom.window.document.querySelectorAll("img"))
+            .map((i) => i.getAttribute("src"))
+            .join(", ")
+        }`,
+    );
+    // The original <i> (regardless of class string) should be gone:
+    // the swap pass replaces the entire element. The Phase-A class
+    // token must not survive either.
+    assert.ok(
+      !iconSvgDom.window.document.querySelector("i.wpb-mutated-icon"),
+      "the <i> carrying the icon class must be replaced by <img> after SVG upload",
+    );
+    assert.ok(
+      !iconSvgHtml.includes("data-wpb-icon"),
+      "data-wpb-icon marker must be stripped from rendered output after SVG swap",
+    );
   });
 
   for (const fx of FIXTURES) {
