@@ -751,15 +751,21 @@ router.post("/projects/:id/push", async (req, res): Promise<void> => {
     res.status(400).json({ error: "WordPress URL not configured" });
     return;
   }
-  const authMode = (project.authMode === "api_key" ? "api_key" : "basic") as "basic" | "api_key";
-  if (authMode === "basic" && (!project.wpUsername || !project.wpAppPassword)) {
-    res.status(400).json({ error: "WordPress username/app-password not configured" });
+  // Elementor-only pivot: push requires the WP Bridge AI companion
+  // plugin (api_key auth). The legacy basic-auth Gutenberg fallback was
+  // removed — Elementor data lives in postmeta and cannot be installed
+  // via the public REST API. Reject any other auth mode up front so the
+  // user gets an actionable error instead of a per-page failure log.
+  if (project.authMode !== "api_key" || !project.wpApiKey) {
+    res.status(400).json({
+      error:
+        "Push requires the WP Bridge AI companion plugin (api_key auth). " +
+        "Install the plugin ZIP from this project, set its API key, and " +
+        "switch this project's WordPress credentials to api_key auth.",
+    });
     return;
   }
-  if (authMode === "api_key" && !project.wpApiKey) {
-    res.status(400).json({ error: "Plugin API key not configured" });
-    return;
-  }
+  const authMode = "api_key" as const;
 
   if (!project.wpStructure) {
     res.status(400).json({ error: "Site not parsed yet" });

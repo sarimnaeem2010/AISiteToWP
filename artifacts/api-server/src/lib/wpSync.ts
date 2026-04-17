@@ -240,111 +240,6 @@ interface PushResult {
   log: PushLogEntry[];
 }
 
-function buildInjectedCssBlock(css: string | null | undefined): string {
-  if (!css) return "";
-  // Strip any closing </style> in source CSS (extremely unlikely but safe).
-  const safe = css.replace(/<\/style>/gi, "<\\/style>");
-  return `<!-- wp:html -->\n<style id="wp-bridge-injected-css">\n${safe}\n</style>\n<!-- /wp:html -->`;
-}
-
-function blocksToGutenbergContent(blocks: WpBlock[], injectedCss?: string | null): string {
-  const lines: string[] = [];
-
-  const cssBlock = buildInjectedCssBlock(injectedCss);
-  if (cssBlock) lines.push(cssBlock);
-
-  for (const block of blocks) {
-    const { blockType, fields, innerBlocks } = block;
-
-    if (blockType === "core/html") {
-      const content = typeof fields.content === "string" ? fields.content : "";
-      if (content) {
-        lines.push(`<!-- wp:html -->\n${content}\n<!-- /wp:html -->`);
-        continue;
-      }
-    }
-
-    if (blockType === "core/cover") {
-      const headline = fields.headline ? String(fields.headline) : "";
-      const subheadline = fields.subheadline ? String(fields.subheadline) : "";
-      const ctaText = fields.cta_text ? String(fields.cta_text) : "";
-      const bgImage = fields.background_image ? String(fields.background_image) : "";
-      // Skip empty covers (would otherwise render as the theme's default placeholder pattern)
-      if (!headline && !subheadline && !ctaText && !bgImage) continue;
-      if (bgImage) {
-        lines.push(`<!-- wp:cover {"url":"${bgImage}","dimRatio":50} -->`);
-        lines.push(`<div class="wp-block-cover"><img class="wp-block-cover__image-background" src="${bgImage}" alt=""/><span aria-hidden="true" class="wp-block-cover__background has-background-dim"></span><div class="wp-block-cover__inner-container">`);
-      } else {
-        lines.push(`<!-- wp:group {"layout":{"type":"constrained"}} -->`);
-        lines.push(`<div class="wp-block-group">`);
-      }
-      if (headline) {
-        lines.push(`<!-- wp:heading --><h2 class="wp-block-heading">${headline}</h2><!-- /wp:heading -->`);
-      }
-      if (subheadline) {
-        lines.push(`<!-- wp:paragraph --><p>${subheadline}</p><!-- /wp:paragraph -->`);
-      }
-      if (ctaText) {
-        const ctaUrl = String(fields.cta_url || "#");
-        lines.push(`<!-- wp:buttons --><div class="wp-block-buttons"><!-- wp:button --><div class="wp-block-button"><a class="wp-block-button__link" href="${ctaUrl}">${ctaText}</a></div><!-- /wp:button --></div><!-- /wp:buttons -->`);
-      }
-      if (bgImage) {
-        lines.push(`</div></div><!-- /wp:cover -->`);
-      } else {
-        lines.push(`</div><!-- /wp:group -->`);
-      }
-      continue;
-    }
-
-    if (blockType === "core/columns" || blockType === "core/group") {
-      lines.push(`<!-- wp:group {"layout":{"type":"constrained"}} -->`);
-      lines.push(`<div class="wp-block-group">`);
-      if (fields.section_title || fields.heading) {
-        lines.push(`<!-- wp:heading --><h2 class="wp-block-heading">${String(fields.section_title || fields.heading || "")}</h2><!-- /wp:heading -->`);
-      }
-      if (fields.section_subtitle || fields.subheading || fields.body) {
-        lines.push(`<!-- wp:paragraph --><p>${String(fields.section_subtitle || fields.subheading || fields.body || "")}</p><!-- /wp:paragraph -->`);
-      }
-      if (innerBlocks && innerBlocks.length > 0) {
-        for (const inner of innerBlocks) {
-          const innerBlock = inner as unknown as WpBlock;
-          if (innerBlock.fields.title || innerBlock.fields.description || innerBlock.fields.quote) {
-            lines.push(`<!-- wp:group --><div class="wp-block-group">`);
-            if (innerBlock.fields.title) lines.push(`<!-- wp:heading {"level":3} --><h3 class="wp-block-heading">${String(innerBlock.fields.title)}</h3><!-- /wp:heading -->`);
-            if (innerBlock.fields.description) lines.push(`<!-- wp:paragraph --><p>${String(innerBlock.fields.description)}</p><!-- /wp:paragraph -->`);
-            if (innerBlock.fields.quote) lines.push(`<!-- wp:quote --><blockquote class="wp-block-quote"><p>${String(innerBlock.fields.quote)}</p><cite>${String(innerBlock.fields.author_name || "")}</cite></blockquote><!-- /wp:quote -->`);
-            if (innerBlock.fields.question) {
-              lines.push(`<!-- wp:details --><details class="wp-block-details"><summary>${String(innerBlock.fields.question)}</summary><div class="wp-block-details__content"><!-- wp:paragraph --><p>${String(innerBlock.fields.answer || "")}</p><!-- /wp:paragraph --></div></details><!-- /wp:details -->`);
-            }
-            lines.push(`</div><!-- /wp:group -->`);
-          }
-        }
-      }
-      lines.push(`</div><!-- /wp:group -->`);
-      continue;
-    }
-
-    if (blockType === "core/gallery") {
-      lines.push(`<!-- wp:gallery --><figure class="wp-block-gallery"></figure><!-- /wp:gallery -->`);
-      continue;
-    }
-
-    if (blockType === "core/query") {
-      lines.push(`<!-- wp:query {"query":{"perPage":${Number(fields.posts_per_page || 3)},"postType":"post"}} -->`);
-      lines.push(`<div class="wp-block-query"><!-- wp:post-template --><!-- wp:post-title /--><!-- wp:post-excerpt /--><!-- /wp:post-template --></div><!-- /wp:query -->`);
-      continue;
-    }
-
-    if (fields.section_title || fields.heading) {
-      lines.push(`<!-- wp:heading --><h2 class="wp-block-heading">${String(fields.section_title || fields.heading || "")}</h2><!-- /wp:heading -->`);
-    }
-    if (fields.section_body || fields.description || fields.body) {
-      lines.push(`<!-- wp:paragraph --><p>${String(fields.section_body || fields.description || fields.body || "")}</p><!-- /wp:paragraph -->`);
-    }
-  }
-
-  return lines.join("\n");
-}
 
 export async function testConnection(config: WpConfig): Promise<{
   success: boolean;
@@ -539,93 +434,32 @@ export async function pushToWordPress(
     }
   }
 
+  // Elementor-only pivot: there is no Gutenberg / raw-HTML push path.
+  // Basic-auth pushes can no longer write the rendered Elementor child
+  // theme via the public REST API (Elementor data lives in postmeta and
+  // requires the companion plugin to install the theme + import the
+  // structured payload). Any non-api_key configuration is therefore
+  // rejected with a clear, user-actionable error.
+  const fallbackMsg =
+    "Push requires the WP Bridge AI companion plugin (api_key auth). " +
+    "Install the plugin ZIP from this project, set its API key, and " +
+    "switch this project's WordPress credentials to api_key auth.";
   for (const page of wpStructure.pages) {
-    try {
-      const content = blocksToGutenbergContent(page.blocks, wpStructure.injectedCss);
-
-      const existingRes = await fetch(
-        `${baseUrl}/wp-json/wp/v2/pages?slug=${encodeURIComponent(page.slug)}&status=any`,
-        { headers }
-      );
-      const existing = (await existingRes.json()) as Array<{ id: number; link: string }>;
-
-      let wpId: number;
-      let wpLink: string;
-
-      if (Array.isArray(existing) && existing.length > 0) {
-        const updateRes = await fetch(`${baseUrl}/wp-json/wp/v2/pages/${existing[0].id}`, {
-          method: "PUT",
-          headers,
-          body: JSON.stringify({
-            title: page.title,
-            content,
-            slug: page.slug,
-            status: "publish",
-          }),
-        });
-
-        if (!updateRes.ok) {
-          const errBody = await updateRes.text().catch(() => "");
-          throw new Error(`Update failed: ${updateRes.status} ${errBody.slice(0, 200)}`);
-        }
-
-        const updated = (await updateRes.json()) as { id: number; link: string };
-        wpId = updated.id;
-        wpLink = updated.link;
-        pagesUpdated++;
-      } else {
-        const createRes = await fetch(`${baseUrl}/wp-json/wp/v2/pages`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            title: page.title,
-            content,
-            slug: page.slug,
-            status: "publish",
-          }),
-        });
-
-        if (!createRes.ok) {
-          const errBody = await createRes.text().catch(() => "");
-          throw new Error(`Create failed: ${createRes.status} ${errBody.slice(0, 200)}`);
-        }
-
-        const created = (await createRes.json()) as { id: number; link: string };
-        wpId = created.id;
-        wpLink = created.link;
-        pagesCreated++;
-      }
-
-      wpPageUrls.push(wpLink);
-      log.push({
-        pageName: page.title,
-        status: "success",
-        wpId,
-        wpUrl: wpLink,
-        error: null,
-        createdAt: new Date().toISOString(),
-      });
-
-      logger.info({ page: page.title, wpId }, "Page pushed to WordPress");
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      errors.push(`${page.title}: ${msg}`);
-      log.push({
-        pageName: page.title,
-        status: "error",
-        wpId: null,
-        wpUrl: null,
-        error: msg,
-        createdAt: new Date().toISOString(),
-      });
-      logger.error({ page: page.title, err: msg }, "Failed to push page");
-    }
+    errors.push(`${page.title}: ${fallbackMsg}`);
+    log.push({
+      pageName: page.title,
+      status: "error",
+      wpId: null,
+      wpUrl: null,
+      error: fallbackMsg,
+      createdAt: new Date().toISOString(),
+    });
   }
-
+  logger.warn({ baseUrl, authMode: config.authMode }, "Rejected non-api_key push");
   return {
-    success: errors.length === 0,
-    pagesCreated,
-    pagesUpdated,
+    success: false,
+    pagesCreated: 0,
+    pagesUpdated: 0,
     mediaUploaded: 0,
     errors,
     wpPageUrls,
