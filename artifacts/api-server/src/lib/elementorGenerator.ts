@@ -61,7 +61,7 @@ function blockToElementor(block: WpBlock): ElementorElement[] {
       const inner: ElementorElement[] = [];
       if (f.section_title || f.heading) inner.push(widget("heading", { title: String(f.section_title || f.heading), header_size: "h2" }));
       if (f.section_subtitle || f.subheading || f.body) inner.push(widget("text-editor", { editor: `<p>${String(f.section_subtitle || f.subheading || f.body)}</p>` }));
-      const innerBlocks = (block.innerBlocks ?? []) as WpBlock[];
+      const innerBlocks = (block.innerBlocks ?? []) as unknown as WpBlock[];
       if (innerBlocks.length > 0) {
         const columnCount = Math.max(1, Math.min(innerBlocks.length, 4));
         const columnSize = Math.floor(100 / columnCount);

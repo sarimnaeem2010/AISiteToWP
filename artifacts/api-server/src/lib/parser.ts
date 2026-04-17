@@ -258,11 +258,11 @@ function parseHtmlHeuristic(html: string): {
     "Home";
 
   const body = document.body;
-  const topLevelSections = Array.from(
+  const topLevelSections = (Array.from(
     body.querySelectorAll(
       "section, article, header, footer, main > div, body > div, [id], [data-section]"
     )
-  ).filter((el) => {
+  ) as Element[]).filter((el) => {
     const parent = el.parentElement;
     if (!parent) return true;
     const tagName = parent.tagName.toLowerCase();

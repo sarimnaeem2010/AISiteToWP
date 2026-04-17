@@ -763,7 +763,7 @@ router.post("/projects/:id/push", async (req, res): Promise<void> => {
       useAcf: project.useAcf === "true",
     },
     {
-      pages: pagesPayload,
+      pages: pagesPayload as never,
       cptItems: wpStructure.cptItems ?? [],
       renderer,
       elementorPages,

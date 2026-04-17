@@ -95,7 +95,7 @@ interface CptItem {
 interface WpStructure {
   pages: WpPage[];
   cptItems?: CptItem[];
-  renderer?: "gutenberg" | "elementor";
+  renderer?: "gutenberg" | "elementor" | "raw_html";
   elementorPages?: Array<{ slug: string; data: unknown[] }>;
   injectedCss?: string | null;
 }
@@ -186,7 +186,7 @@ function blocksToGutenbergContent(blocks: WpBlock[], injectedCss?: string | null
       }
       if (innerBlocks && innerBlocks.length > 0) {
         for (const inner of innerBlocks) {
-          const innerBlock = inner as WpBlock;
+          const innerBlock = inner as unknown as WpBlock;
           if (innerBlock.fields.title || innerBlock.fields.description || innerBlock.fields.quote) {
             lines.push(`<!-- wp:group --><div class="wp-block-group">`);
             if (innerBlock.fields.title) lines.push(`<!-- wp:heading {"level":3} --><h3 class="wp-block-heading">${String(innerBlock.fields.title)}</h3><!-- /wp:heading -->`);
