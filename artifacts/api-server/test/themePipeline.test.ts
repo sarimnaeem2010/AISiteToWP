@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import vm from "node:vm";
 import AdmZip from "adm-zip";
 
 import { extractSectionsFromPage } from "../src/lib/sectionFieldExtractor";
@@ -203,4 +204,76 @@ test("checkPhpSyntax flags a mismatched bracket type", () => {
   const result = checkPhpSyntax(broken, "broken.php");
   assert.equal(result.ok, false);
   assert.match(result.error ?? "", /mismatched bracket|unmatched closing/);
+});
+
+function checkJsSyntax(src: string, filename: string): { ok: boolean; error?: string } {
+  try {
+    new vm.Script(src, { filename });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+test("every JS file in the generated theme parses cleanly", () => {
+  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG);
+  const buf = generateThemeZip({
+    projectName: "Fixture Site",
+    projectSlug: PROJECT_SLUG,
+    combinedCss: "body{margin:0}",
+    combinedJs: "window.__wpb = { ready: true };",
+    pages: [{ slug: PAGE_SLUG, title: "Home", sections }],
+    sourceZip: null,
+  });
+  const zip = new AdmZip(buf);
+  const jsEntries = zip.getEntries().filter((e) => !e.isDirectory && e.entryName.endsWith(".js"));
+  assert.ok(jsEntries.length > 0, "theme must contain JS files");
+
+  const names = jsEntries.map((e) => e.entryName.replace(/\\/g, "/"));
+  assert.ok(names.some((n) => n.endsWith("/assets/editor.js")), "expected editor.js in the theme");
+  assert.ok(names.some((n) => n.endsWith("/assets/template.js")), "expected template.js when combinedJs provided");
+
+  for (const entry of jsEntries) {
+    const src = entry.getData().toString("utf8");
+    const result = checkJsSyntax(src, entry.entryName);
+    assert.ok(result.ok, `JS syntax error in ${entry.entryName}: ${result.error}`);
+  }
+});
+
+test("checkJsSyntax accepts the editor.js shape the generator emits", () => {
+  const sample = `(function(){
+    var x = { a: 1, b: [1,2,3] };
+    function f(n){ return "v:" + n; }
+    return f(x.a);
+  })();`;
+  const result = checkJsSyntax(sample, "sample.js");
+  assert.ok(result.ok, `expected sample to pass: ${result.error}`);
+});
+
+test("checkJsSyntax catches a syntax error introduced into a generated JS template", () => {
+  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG);
+  const buf = generateThemeZip({
+    projectName: "Fixture Site",
+    projectSlug: PROJECT_SLUG,
+    combinedCss: "body{margin:0}",
+    combinedJs: "",
+    pages: [{ slug: PAGE_SLUG, title: "Home", sections }],
+    sourceZip: null,
+  });
+  const zip = new AdmZip(buf);
+  const editor = zip.getEntries().find((e) => e.entryName.endsWith("/assets/editor.js"))!;
+  const original = editor.getData().toString("utf8");
+
+  // Drop the trailing `})();` — the kind of typo a future edit to EDITOR_JS could ship.
+  const broken = original.replace(/\}\)\(\)\s*;\s*$/m, "");
+  assert.notEqual(broken, original, "test scaffolding failed to mutate editor.js");
+
+  const result = checkJsSyntax(broken, "assets/editor.js");
+  assert.equal(result.ok, false, "validator must flag the unbalanced IIFE");
+});
+
+test("checkJsSyntax flags an unterminated string", () => {
+  const broken = `var x = 'oops;\n`;
+  const result = checkJsSyntax(broken, "broken.js");
+  assert.equal(result.ok, false);
 });
