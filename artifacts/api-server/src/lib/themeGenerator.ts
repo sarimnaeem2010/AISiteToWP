@@ -594,6 +594,11 @@ export function generateThemeZip(input: ThemeInput): Buffer {
     for (const section of page.sections) {
       if (seen.has(section.blockName)) continue;
       seen.add(section.blockName);
+      // Sections that ship as a native Elementor `section → column → widget`
+      // tree don't need a PHP widget class — Elementor's built-in widgets
+      // (heading / image / button / icon / icon-list / text-editor / html)
+      // render them directly. Skip the per-section PHP file and template.
+      if (section.nativeElementor) continue;
       allBlockNames.push(section.blockName);
       const safeDir = section.blockName.split("/")[1];
       // Templates live under widgets/templates/<safeDir>/template.html so the

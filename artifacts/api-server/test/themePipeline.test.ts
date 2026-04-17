@@ -38,25 +38,47 @@ test("extractSectionsFromPage finds the expected top-level sections", () => {
 
   for (const s of sections) {
     assert.match(s.blockName, /^wpb-fixture-site\/sec-\d+-[a-z]+-[0-9a-f]{8}$/);
-    assert.ok(s.fields.length > 0, `${s.blockName} should expose at least one field`);
+    // Each section must produce SOMETHING editable: either the legacy
+    // custom-widget fields OR a native Elementor section tree.
+    assert.ok(
+      (s.fields && s.fields.length > 0) || s.nativeElementor,
+      `${s.blockName} should expose either legacy fields or a native Elementor tree`,
+    );
   }
 
-  // Hero section should contain a text field, a url field (signup link or img) and an image alt attr
+  // Hero section: native path expresses text/url/image as widgets;
+  // legacy path expresses them as fields. Verify whichever shape the
+  // extractor chose carries equivalent surfaces.
   const hero = sections.find((s) => s.category === "hero")!;
-  const types = new Set(hero.fields.map((f) => f.type));
-  assert.ok(types.has("text"), "hero should expose text fields");
-  assert.ok(types.has("url"), "hero should expose url fields");
-  assert.ok(types.has("attr"), "hero should expose attr fields (image alt)");
+  if (hero.nativeElementor) {
+    const json = JSON.stringify(hero.nativeElementor);
+    assert.match(json, /"widgetType":"heading"/, "hero must include a heading widget");
+    assert.match(json, /"widgetType":"image"/, "hero must include an image widget");
+    assert.match(json, /"alt":"/, "hero image must carry alt text");
+    assert.match(json, /"url":"/, "hero must reference at least one URL");
+  } else {
+    const types = new Set(hero.fields.map((f) => f.type));
+    assert.ok(types.has("text"), "hero should expose text fields");
+    assert.ok(types.has("url"), "hero should expose url fields");
+    assert.ok(types.has("attr"), "hero should expose attr fields (image alt)");
+  }
 
-  // Features section's <ul><li>...</li></ul> must be picked up as a
-  // list group with one REPEATER control whose default value seeds the
-  // repeater rows from the items joined by newlines.
+  // Features section: native path expresses a `<ul>` as an icon-list
+  // widget; legacy path exposes a list group repeater. Verify either.
   const features = sections.find((s) => s.category === "features")!;
-  const listGroup = features.groups.find((g) => g.kind === "list");
-  assert.ok(listGroup, "features section must expose a list group");
-  assert.equal(listGroup!.controls.length, 1);
-  assert.equal(listGroup!.controls[0].type, "repeater");
-  assert.equal(listGroup!.controls[0].default, "Fast\nReliable\nAffordable");
+  if (features.nativeElementor) {
+    const json = JSON.stringify(features.nativeElementor);
+    assert.match(json, /"widgetType":"icon-list"/, "features must include an icon-list widget");
+    assert.match(json, /"text":"Fast"/, "features list must preserve item text");
+    assert.match(json, /"text":"Reliable"/, "features list must preserve item text");
+    assert.match(json, /"text":"Affordable"/, "features list must preserve item text");
+  } else {
+    const listGroup = features.groups.find((g) => g.kind === "list");
+    assert.ok(listGroup, "features section must expose a list group");
+    assert.equal(listGroup!.controls.length, 1);
+    assert.equal(listGroup!.controls[0].type, "repeater");
+    assert.equal(listGroup!.controls[0].default, "Fast\nReliable\nAffordable");
+  }
 });
 
 test("linked images yield BOTH a link/button group and an image group", () => {
@@ -70,6 +92,40 @@ test("linked images yield BOTH a link/button group and an image group", () => {
   </section></body></html>`;
   const sections = extractSectionsFromPage(html, "home", "fixture-link-img");
   assert.ok(sections.length > 0, "extractor must find the hero section");
+  const native = sections.find((s) => s.nativeElementor);
+  if (native) {
+    // Native path: a `<a><img></a>` becomes a single Image widget with
+    // `link_to: custom` + the original href, and the image's src/alt
+    // exposed as the `image` setting. Both surfaces remain editable
+    // from Elementor's sidebar (Content → Image, Content → Link).
+    const json = JSON.stringify(native.nativeElementor);
+    assert.match(
+      json,
+      /"widgetType":"image"/,
+      "linked image must produce an Elementor image widget",
+    );
+    assert.match(
+      json,
+      /"link_to":"custom"/,
+      "linked image must mark the image widget as link_to=custom",
+    );
+    assert.match(
+      json,
+      /"url":"https:\/\/example\.com\/landing"/,
+      "linked image must carry the original href on the image widget",
+    );
+    assert.match(
+      json,
+      /"alt":"Acme logo"/,
+      "linked image must preserve the alt text on the image setting",
+    );
+    assert.match(
+      json,
+      /logo\.png/,
+      "linked image must reference the original src file",
+    );
+    return;
+  }
   const allGroups = sections.flatMap((s) => s.groups);
   const linkGroup = allGroups.find((g) => g.kind === "link" || g.kind === "button");
   const imageGroup = allGroups.find((g) => g.kind === "image");
@@ -147,11 +203,25 @@ test("generateThemeZip produces a valid Elementor-only child theme bundle", () =
   const styleCss = zip.getEntry(`${root}/style.css`)!.getData().toString("utf8");
   assert.match(styleCss, /Theme Name:\s*Fixture Site/);
 
-  // One widget PHP file + one template.html per extracted section
+  // Per-section widget PHP + template.html pair is only emitted for
+  // sections that fell back to the legacy custom-widget path. Sections
+  // produced as native Elementor `section → column → widget` trees are
+  // rendered by Elementor's built-in widgets and need no PHP class.
   for (const section of sections) {
     const dir = section.blockName.split("/")[1];
-    assert.ok(entries.includes(`${root}/widgets/widget-${dir}.php`), `missing widget for ${section.blockName}`);
-    assert.ok(entries.includes(`${root}/widgets/templates/${dir}/template.html`), `missing template for ${section.blockName}`);
+    if (section.nativeElementor) {
+      assert.ok(
+        !entries.includes(`${root}/widgets/widget-${dir}.php`),
+        `native section ${section.blockName} should not register a PHP widget`,
+      );
+      assert.ok(
+        !entries.includes(`${root}/widgets/templates/${dir}/template.html`),
+        `native section ${section.blockName} should not ship a template file`,
+      );
+    } else {
+      assert.ok(entries.includes(`${root}/widgets/widget-${dir}.php`), `missing widget for ${section.blockName}`);
+      assert.ok(entries.includes(`${root}/widgets/templates/${dir}/template.html`), `missing template for ${section.blockName}`);
+    }
   }
 });
 
@@ -176,7 +246,15 @@ test("every PHP file in the generated theme parses cleanly", () => {
       `expected generated theme to include ${required}`,
     );
   }
-  assert.ok(names.some((n) => /\/widgets\/widget-[^/]+\.php$/.test(n)), "expected at least one widget-*.php");
+  // Per-section widget PHP files are only emitted for sections that
+  // fall back to the legacy custom-widget renderer. When EVERY section
+  // is decomposed into native Elementor widgets (the modern default),
+  // no `widget-*.php` file is generated, so this is informational only.
+  // The base widget class file is always required, though.
+  assert.ok(
+    names.some((n) => n.endsWith("/widgets/_base-widget.php")),
+    "theme must always ship the base widget class",
+  );
 
   for (const entry of phpEntries) {
     const src = entry.getData().toString("utf8");
@@ -400,12 +478,24 @@ for (const fx of ALL_FIXTURES) {
     );
 
     for (const s of sections) {
-      assert.ok(s.fields.length > 0, `${fx.file}: ${s.blockName} produced zero fields`);
-      const keys = s.fields.map((f) => f.key);
-      assert.equal(new Set(keys).size, keys.length, `${fx.file}: duplicate field keys in ${s.blockName}: ${keys.join(",")}`);
-      // Every section must also expose at least one semantic group so
-      // the Elementor sidebar has something to render.
-      assert.ok(s.groups.length > 0, `${fx.file}: ${s.blockName} produced zero groups`);
+      // Each section is rendered EITHER as a native Elementor section
+      // (real heading / image / button / etc. widgets — no PHP widget
+      // class needed) OR as the legacy custom widget (fields + groups
+      // + template). Both shapes are valid; assert one of them holds.
+      if (s.nativeElementor) {
+        assert.equal(s.fields.length, 0, `${fx.file}: native section ${s.blockName} should not produce flat fields`);
+        assert.equal(s.groups.length, 0, `${fx.file}: native section ${s.blockName} should not produce semantic groups`);
+        assert.equal(s.template, "", `${fx.file}: native section ${s.blockName} should not produce a template string`);
+      } else {
+        assert.ok(s.fields.length > 0, `${fx.file}: ${s.blockName} produced zero fields`);
+        const keys = s.fields.map((f) => f.key);
+        assert.equal(
+          new Set(keys).size,
+          keys.length,
+          `${fx.file}: duplicate field keys in ${s.blockName}: ${keys.join(",")}`,
+        );
+        assert.ok(s.groups.length > 0, `${fx.file}: ${s.blockName} produced zero groups`);
+      }
     }
 
     const buf = generateThemeZip({
@@ -428,6 +518,19 @@ for (const fx of ALL_FIXTURES) {
     }
     for (const section of sections) {
       const dir = section.blockName.split("/")[1];
+      if (section.nativeElementor) {
+        // Native sections must NOT ship a PHP widget class or template
+        // file — Elementor's built-in widgets render them directly.
+        assert.ok(
+          !entries.includes(`${fx.projectSlug}/widgets/widget-${dir}.php`),
+          `${fx.file}: native section ${section.blockName} should not register a PHP widget class`,
+        );
+        assert.ok(
+          !entries.includes(`${fx.projectSlug}/widgets/templates/${dir}/template.html`),
+          `${fx.file}: native section ${section.blockName} should not ship a template file`,
+        );
+        continue;
+      }
       assert.ok(
         entries.includes(`${fx.projectSlug}/widgets/widget-${dir}.php`),
         `${fx.file}: missing widget for ${section.blockName}`,
@@ -460,11 +563,132 @@ test("[complex-page.html] image-heavy hero rebases inline background-image to {{
   const sections = extractSectionsFromPage(html, "complex-home", "complex-fixture-site");
   const hero = sections.find((s) => s.category === "hero");
   assert.ok(hero, "complex-page.html should produce a hero section");
-  assert.match(
-    hero!.template,
-    /background-image:url\(\{\{THEME_URI\}\}\/assets\/images\/hero-bg\.jpg\)/,
-    "hero inline background-image url() must be rewritten to a {{THEME_URI}}/assets/ placeholder",
-  );
-  const urlFields = hero!.fields.filter((f) => f.type === "url");
-  assert.ok(urlFields.length >= 2, `hero should expose multiple url fields, got ${urlFields.length}`);
+  if (hero!.nativeElementor) {
+    // Native path: the hero's inline background-image is promoted to an
+    // Elementor section background setting (so it's editable from the
+    // sidebar) and its URL is rebased to {{THEME_URI}}/assets/.
+    const json = JSON.stringify(hero!.nativeElementor);
+    assert.match(
+      json,
+      /\{\{THEME_URI\}\}\/assets\/images\/hero-bg\.jpg/,
+      "hero background-image must be rebased and exposed in native section settings",
+    );
+    assert.match(json, /"background_background":"classic"/, "hero must enable the classic background");
+    // Hero is expected to expose multiple link/image targets — buttons,
+    // images, etc. — somewhere in its native widget tree.
+    const urlMatches = json.match(/"url":"[^"]+"/g) ?? [];
+    assert.ok(urlMatches.length >= 2, `hero should reference multiple URLs, got ${urlMatches.length}`);
+  } else {
+    assert.match(
+      hero!.template,
+      /background-image:url\(\{\{THEME_URI\}\}\/assets\/images\/hero-bg\.jpg\)/,
+      "hero inline background-image url() must be rewritten to a {{THEME_URI}}/assets/ placeholder",
+    );
+    const urlFields = hero!.fields.filter((f) => f.type === "url");
+    assert.ok(urlFields.length >= 2, `hero should expose multiple url fields, got ${urlFields.length}`);
+  }
+});
+
+// ----------------------------------------------------------------------
+// Native Elementor decomposer — Phase 1 coverage
+// ----------------------------------------------------------------------
+
+test("native decomposer turns a hero into heading + text + button + image widgets", () => {
+  const html = `<!doctype html><html><body>
+    <section class="hero">
+      <div class="container">
+        <h1>Build it fast</h1>
+        <p>End-to-end automation for product teams.</p>
+        <div class="cta-row">
+          <a href="/signup" class="btn primary">Start free</a>
+        </div>
+        <img src="/img/hero.png" alt="Product screenshot">
+      </div>
+    </section>
+  </body></html>`;
+  const sections = extractSectionsFromPage(html, "home", "hero-fixture");
+  const hero = sections.find((s) => s.category === "hero");
+  assert.ok(hero, "hero section must be found");
+  assert.ok(hero!.nativeElementor, "hero must be decomposed natively");
+  const json = JSON.stringify(hero!.nativeElementor);
+  assert.match(json, /"widgetType":"heading"/, "must emit a heading widget");
+  assert.match(json, /"title":"Build it fast"/);
+  assert.match(json, /"widgetType":"text-editor"/, "must emit a text-editor widget for the paragraph");
+  assert.match(json, /"widgetType":"button"/, "must emit a button widget for the CTA");
+  assert.match(json, /"text":"Start free"/);
+  assert.match(json, /"widgetType":"image"/, "must emit an image widget");
+  assert.match(json, /"alt":"Product screenshot"/);
+});
+
+test("native decomposer plans 3 columns from a flex/grid 3-card row", () => {
+  const html = `<!doctype html><html><body>
+    <section class="features">
+      <div class="grid three-col">
+        <article class="card"><h3>Reliable</h3><p>99.99% uptime.</p><a href="/r" class="btn">Learn</a></article>
+        <article class="card"><h3>Secure</h3><p>SOC2 audited.</p><a href="/s" class="btn">Learn</a></article>
+        <article class="card"><h3>Fast</h3><p>Edge cached.</p><a href="/f" class="btn">Learn</a></article>
+      </div>
+    </section>
+  </body></html>`;
+  const sections = extractSectionsFromPage(html, "home", "features-fixture");
+  const features = sections[0];
+  assert.ok(features.nativeElementor, "features must be decomposed natively");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sec = features.nativeElementor as any;
+  assert.equal(sec.elType, "section");
+  assert.equal(sec.elements.length, 3, "features row should plan 3 columns");
+  for (const col of sec.elements) {
+    assert.equal(col.elType, "column");
+    const widgetTypes = col.elements.map((w: { widgetType: string }) => w.widgetType);
+    assert.ok(widgetTypes.includes("heading"), `column missing heading: ${widgetTypes.join(",")}`);
+    assert.ok(widgetTypes.includes("text-editor"), `column missing text-editor: ${widgetTypes.join(",")}`);
+    assert.ok(widgetTypes.includes("button"), `column missing button: ${widgetTypes.join(",")}`);
+  }
+});
+
+test("native decomposer preserves a <form> as html fallback while keeping siblings native", () => {
+  const html = `<!doctype html><html><body>
+    <section class="contact">
+      <h2>Get in touch</h2>
+      <form action="/submit" method="post">
+        <label>Email <input type="email" name="email"></label>
+        <button type="submit">Send</button>
+      </form>
+    </section>
+  </body></html>`;
+  const sections = extractSectionsFromPage(html, "home", "contact-fixture");
+  const contact = sections[0];
+  assert.ok(contact.nativeElementor, "contact section must be decomposed natively");
+  const json = JSON.stringify(contact.nativeElementor);
+  assert.match(json, /"widgetType":"heading"/, "heading must be a native widget");
+  assert.match(json, /"title":"Get in touch"/);
+  assert.match(json, /"widgetType":"html"/, "form must be preserved via html-fallback widget");
+  assert.match(json, /<form[^>]+action=/, "html fallback must contain the original <form> markup");
+});
+
+test("composer + theme generator: native page emits zero widget-*.php files", () => {
+  const html = `<!doctype html><html><body>
+    <section class="hero"><h1>Hello</h1><p>World</p><a href="/x" class="btn">Go</a></section>
+    <section class="features"><div class="grid three-col">
+      <div class="card"><h3>A</h3><p>1</p></div>
+      <div class="card"><h3>B</h3><p>2</p></div>
+      <div class="card"><h3>C</h3><p>3</p></div>
+    </div></section>
+  </body></html>`;
+  const sections = extractSectionsFromPage(html, "home", "native-only-fixture");
+  assert.ok(sections.every((s) => s.nativeElementor), "every section must go native");
+  const buf = generateThemeZip({
+    projectName: "Native Only",
+    projectSlug: "native-only-fixture",
+    combinedCss: "body{margin:0}",
+    combinedJs: "",
+    pages: [{ slug: "home", title: "Home", sections }],
+    sourceZip: null,
+  });
+  const zip = new AdmZip(buf);
+  const widgetFiles = zip
+    .getEntries()
+    .map((e) => e.entryName.replace(/\\/g, "/"))
+    .filter((n) => /\/widgets\/widget-[^/]+\.php$/.test(n));
+  assert.equal(widgetFiles.length, 0, `native-only theme must emit zero widget-*.php files, got ${widgetFiles.join(",")}`);
 });

@@ -19,6 +19,12 @@ function elementorId(seed: string): string {
  */
 export function composeElementorData(page: ExtractedPage): unknown[] {
   return page.sections.map((s) => {
+    // Native-widget path: the extractor already produced a complete
+    // Elementor section tree (with real `heading` / `image` / `button` /
+    // etc. widgets). Use it verbatim — no PHP widget is registered for
+    // this section, the editing UX matches a normal Envato theme.
+    if (s.nativeElementor) return s.nativeElementor;
+
     const safeId = s.blockName.split("/")[1].replace(/[^a-zA-Z0-9_]/g, "_");
     const widgetType = `wpb_${safeId}`;
     // Settings shape mirrors what the Elementor controls registered in

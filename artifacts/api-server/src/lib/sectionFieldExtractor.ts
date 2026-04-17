@@ -1,5 +1,6 @@
 import { JSDOM } from "jsdom";
 import crypto from "node:crypto";
+import { decomposeSectionToNative } from "./nativeElementorDecomposer";
 
 export type FieldType = "text" | "url" | "attr" | "tag";
 
@@ -55,10 +56,22 @@ export interface ExtractedSection {
   category: string;
   template: string;
   /** Flat field list derived from `groups`. Drives `{{...}}` substitution
-   *  inside the template + powers the legacy block.json attribute schema. */
+   *  inside the template + powers the legacy block.json attribute schema.
+   *  Empty for sections that emit a native Elementor tree (no PHP widget
+   *  is registered for those, so there's nothing to substitute). */
   fields: ExtractedField[];
-  /** Semantic groups for the Elementor sidebar UI. */
+  /** Semantic groups for the Elementor sidebar UI. Empty when this section
+   *  is rendered via native Elementor widgets — see `nativeElementor`. */
   groups: ExtractedGroup[];
+  /**
+   * When set, this section is rendered as a real Elementor
+   * `Section → Column → native widget` tree (heading / image / button /
+   * etc.) instead of one big custom widget. The composer returns this
+   * JSON verbatim and the theme generator skips registering a PHP
+   * widget class for the section. Sections that fall back to the
+   * legacy custom-widget path leave this undefined.
+   */
+  nativeElementor?: unknown;
 }
 
 export interface ExtractedPage {
@@ -607,8 +620,38 @@ export function extractSectionsFromPage(
     const blockName = `wpb-${projectSlug}/sec-${idx}-${category}-${hash}`
       .toLowerCase()
       .replace(/[^a-z0-9/-]/g, "-");
-    const { template, fields, groups } = buildSectionTemplate(el);
-    sections.push({ id, blockName, label: `${label} (${category})`, category, template, fields, groups });
+
+    // Native-widget decomposition runs first against a CLEAN clone of
+    // the section element (the legacy custom-widget pipeline mutates
+    // its argument, replacing text content with `{{...}}` placeholders).
+    // When decomposition succeeds we ship the native Elementor tree and
+    // skip the custom widget entirely — fields/groups/template stay
+    // empty and the theme generator omits the PHP widget class.
+    const cleanClone = el.cloneNode(true) as Element;
+    let nativeElementor: unknown | undefined;
+    try {
+      const decomposed = decomposeSectionToNative(cleanClone, projectSlug, idx, pageSlug);
+      if (decomposed) nativeElementor = decomposed;
+    } catch {
+      // Decomposition is best-effort — never block the import.
+      nativeElementor = undefined;
+    }
+
+    if (nativeElementor) {
+      sections.push({
+        id,
+        blockName,
+        label: `${label} (${category})`,
+        category,
+        template: "",
+        fields: [],
+        groups: [],
+        nativeElementor,
+      });
+    } else {
+      const { template, fields, groups } = buildSectionTemplate(el);
+      sections.push({ id, blockName, label: `${label} (${category})`, category, template, fields, groups });
+    }
   }
   return sections;
 }
