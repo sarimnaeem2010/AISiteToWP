@@ -76,15 +76,17 @@ const RendererSchema = z.object({ renderer: z.enum(["gutenberg", "elementor", "r
  * never collide on the same WP install.
  */
 function buildExtractedPages(project: {
+  id: number;
   name: string;
   sourcePagesHtml: unknown;
   sourceHtml: string | null;
 }): { pages: ExtractedPage[]; projectSlug: string } {
-  const projectSlug = project.name
+  const baseSlug = project.name
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 40) || "wpb-project";
+  const projectSlug = `${baseSlug}-${project.id}`;
   const sourcePagesHtml = (project.sourcePagesHtml ?? null) as Record<string, { path: string; content: string }> | null;
   const pages: ExtractedPage[] = [];
   if (sourcePagesHtml && Object.keys(sourcePagesHtml).length > 0) {
