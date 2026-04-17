@@ -1,8 +1,15 @@
-#!/usr/bin/env php
 <?php
 /**
  * php -S router for WordPress: serves static files directly, otherwise
  * routes everything through index.php so pretty permalinks resolve.
+ *
+ * Note: there is intentionally NO shebang line above the `<?php` tag.
+ * php -S treats any output emitted by the router script (including the
+ * shebang line, which lives outside <?php and is therefore raw output)
+ * as the response body, even when the script returns false to delegate
+ * to the static-file fallback. With a shebang in place, every static
+ * asset served via the fallback path is prefixed with the shebang
+ * bytes, which corrupts binary responses (font/image/etc).
  *
  * Note: php -S sets $_SERVER['DOCUMENT_ROOT'] to the -t target. Resolve
  * everything relative to that, NOT __DIR__ (which is wherever this

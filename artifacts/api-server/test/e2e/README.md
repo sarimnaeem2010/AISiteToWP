@@ -37,9 +37,10 @@ That sets `RUN_WP_E2E=1` and runs `test/e2e/themeRender.e2e.test.ts`.
    inactive — the Elementor test activates it on demand. Set
    `WPB_E2E_FRESH=1` to wipe and reinstall, or `WPB_E2E_ELEMENTOR_REF`
    to pin a specific Elementor release (e.g. `3.21.0`).
-2. **`themeRender.e2e.test.ts`** — two tests, both backed by the same
-   generated theme zip from `test/fixtures/simple-page.html` (extracted
-   into `wp-content/themes/<slug>/`):
+2. **`themeRender.e2e.test.ts`** — three tests, all backed by generated
+   theme zips extracted into `wp-content/themes/<slug>/`. The first two
+   loop over every fixture in `test/fixtures/`; the third is a focused
+   bundled-asset round-trip:
    - **Gutenberg path** invokes **`apply-theme.php`**, which bootstraps
      WP, calls `switch_theme()`, and inserts a page whose `post_content`
      is the composed Gutenberg block markup (read from stdin). Sets it
@@ -71,6 +72,16 @@ That sets `RUN_WP_E2E=1` and runs `test/e2e/themeRender.e2e.test.ts`.
      Anything else — reordered elements, lost attributes, missing
      text, extra wrapper divs from a misbehaving block or widget —
      fails the diff.
+   - **Bundled-asset round-trip** uses `test/fixtures/asset-page.html`
+     plus an in-memory source ZIP carrying a real 1×1 PNG and a font
+     placeholder. After applying the theme via `apply-theme.php`, the
+     test fetches the page, collects every `<img src>` and
+     `<link href>`, rewrites their host to the actual `php -S` server,
+     and `HEAD`-requests each one — every URL must return 200. It also
+     `HEAD`s the bundled font URL explicitly and `GET`s it to confirm
+     the bytes round-trip end-to-end. Catches regressions in the
+     `{{THEME_URI}}/assets/...` rewrite contract and in the
+     `ASSET_EXT` copy loop in `themeGenerator.ts`.
 
 The PHP server is killed via the test's `t.after()` hook even on failure.
 

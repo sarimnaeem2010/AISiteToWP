@@ -345,6 +345,179 @@ test("uploaded themes render end-to-end inside WordPress", { skip: !ENABLED }, a
   // get_settings_for_display, mis-wired register hooks, etc. We use a
   // distinct page slug per fixture so the Gutenberg page above stays
   // untouched (`apply-elementor.php` is otherwise identical in shape).
+  // Bundled-asset round-trip: confirms that real binary files placed in
+  // the user's source ZIP (image + font) actually end up at the URL the
+  // generated theme links to. Catches regressions in the
+  // `{{THEME_URI}}/assets/...` rewrite contract and in the ASSET_EXT
+  // copy loop in `themeGenerator.ts`. See task #11.
+  await t.test("bundled images and fonts load on the rendered page", async () => {
+    // 1x1 transparent PNG — small, real, byte-correct.
+    const PNG_1x1 = Buffer.from(
+      "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489" +
+        "0000000d49444154789c6300010000050001000a2db4e70000000049454e44ae426082",
+      "hex",
+    );
+    // The PHP server doesn't validate font bytes, so any non-empty buffer
+    // suffices to verify the file is actually present + served. The
+    // contents are signed so we can compare what comes back.
+    const FONT_BYTES = Buffer.from("WPB-E2E-FONT-PLACEHOLDER\n", "utf8");
+
+    const projectSlug = "asset-fixture-site";
+    const projectName = "Asset Fixture Site";
+    const pageSlug = "asset-home";
+    const fixturePath = path.join(FIXTURE_DIR, "asset-page.html");
+    const fixture = readFileSync(fixturePath, "utf8");
+    const sections = extractSectionsFromPage(fixture, pageSlug, projectSlug);
+    assert.ok(sections.length >= 2, "asset fixture should produce at least header + section");
+
+    // Build a synthetic source ZIP carrying a real PNG and a font file.
+    // themeGenerator copies anything matching ASSET_EXT into assets/
+    // verbatim, preserving the relative path inside the ZIP.
+    const srcZip = new AdmZip();
+    srcZip.addFile("img/logo.png", PNG_1x1);
+    srcZip.addFile("fonts/test.woff2", FONT_BYTES);
+    const sourceZipBuf = srcZip.toBuffer();
+
+    // Reference the bundled font from CSS so style.css/template.css ends
+    // up enqueueing it, and so the test exercises the bundled-font copy
+    // path even though no <link href> in the rendered HTML points at the
+    // font file directly.
+    const combinedCss =
+      "@font-face{font-family:'WpbTest';" +
+      "src:url('assets/fonts/test.woff2') format('woff2');}" +
+      "body{font-family:'WpbTest',sans-serif;margin:0}";
+
+    const themeZip = generateThemeZip({
+      projectName,
+      projectSlug,
+      combinedCss,
+      combinedJs: "",
+      pages: [{ slug: pageSlug, title: projectName, sections }],
+      sourceZip: sourceZipBuf,
+    });
+
+    // Sanity: the source PNG + font must have made it into the theme zip.
+    const themeRead = new AdmZip(themeZip);
+    const logoEntry = themeRead.getEntry(`${projectSlug}/assets/img/logo.png`);
+    const fontEntry = themeRead.getEntry(`${projectSlug}/assets/fonts/test.woff2`);
+    assert.ok(logoEntry, "themeGenerator must copy img/logo.png into assets/");
+    assert.ok(fontEntry, "themeGenerator must copy fonts/test.woff2 into assets/");
+    assert.deepEqual(logoEntry!.getData(), PNG_1x1, "PNG bytes must round-trip through the theme zip");
+    assert.deepEqual(fontEntry!.getData(), FONT_BYTES, "font bytes must round-trip through the theme zip");
+
+    // Extract into wp-content/themes/<slug>/.
+    const themesDir = path.join(WP_DIR, "wp-content/themes", projectSlug);
+    rmSync(themesDir, { recursive: true, force: true });
+    mkdirSync(themesDir, { recursive: true });
+    for (const e of themeRead.getEntries()) {
+      if (e.isDirectory) continue;
+      const rel = e.entryName.replace(/^[^/]+\//, "");
+      const dest = path.join(themesDir, rel);
+      mkdirSync(path.dirname(dest), { recursive: true });
+      writeFileSync(dest, e.getData());
+    }
+
+    // Apply theme + insert page.
+    const content = composeGutenbergContent({ slug: pageSlug, title: projectName, sections });
+    const apply = run(
+      "php",
+      [path.join(__dirname, "apply-theme.php"), WP_DIR, projectSlug, pageSlug, projectName],
+      { input: content },
+    );
+    assert.equal(apply.status, 0, `apply-theme.php failed:\n${apply.stderr}`);
+    const pageId = parseInt(apply.stdout.trim(), 10);
+    assert.ok(Number.isFinite(pageId) && pageId > 0, `unexpected page id: ${apply.stdout}`);
+
+    // Fetch and parse the rendered page.
+    const res = await fetch(`${base}/?page_id=${pageId}`);
+    assert.equal(res.status, 200, `WP responded ${res.status}\nserver stderr:\n${serverErr}`);
+    const html = await res.text();
+    const dom = new JSDOM(html);
+    const doc = dom.window.document;
+
+    // Collect every <img src> and <link href>, restrict to same-origin
+    // (skip e.g. fonts.googleapis.com which php -S can't serve).
+    const imgUrls = Array.from(doc.querySelectorAll("img[src]"))
+      .map((el) => el.getAttribute("src") ?? "")
+      .filter(Boolean);
+    const linkUrls = Array.from(doc.querySelectorAll("link[href]"))
+      .map((el) => el.getAttribute("href") ?? "")
+      .filter(Boolean);
+
+    assert.ok(imgUrls.length > 0, "rendered page must contain at least one <img src>");
+    assert.ok(linkUrls.length > 0, "rendered page must contain at least one <link href>");
+
+    // WordPress emits absolute URLs whose host is whatever HTTP_HOST was
+    // when the page was rendered (apply-theme.php sets it to "localhost",
+    // not "127.0.0.1:<port>"). Rewrite any same-host absolute URLs and
+    // any root-relative URLs so they point at our actual php -S server.
+    const rewriteToBase = (u: string): string | null => {
+      if (!u) return null;
+      if (u.startsWith("//")) u = "http:" + u;
+      if (u.startsWith("/")) return `${base}${u}`;
+      try {
+        const parsed = new URL(u);
+        if (parsed.host === `127.0.0.1:${port}`) return u;
+        if (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1") {
+          return `${base}${parsed.pathname}${parsed.search}${parsed.hash}`;
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    };
+
+    const targets = [...imgUrls, ...linkUrls]
+      .map(rewriteToBase)
+      .filter((u): u is string => u !== null);
+    assert.ok(
+      targets.length >= 2,
+      `expected at least one same-origin <img> and <link>, got ${targets.length}: ${[...imgUrls, ...linkUrls].join(", ")}`,
+    );
+
+    // HEAD every same-origin asset URL the rendered page references.
+    for (const url of targets) {
+      const headRes = await fetch(url, { method: "HEAD" });
+      assert.equal(
+        headRes.status,
+        200,
+        `bundled asset did not load: ${url} → HTTP ${headRes.status}\n` +
+          `server stderr:\n${serverErr}`,
+      );
+    }
+
+    // Explicit font check: nothing in the rendered <head> emits a <link>
+    // for the @font-face URL, so HEAD it directly to confirm the font
+    // bundle copy path is intact (task #11 acceptance: "ideally a font").
+    const fontUrl = `${base}/wp-content/themes/${projectSlug}/assets/fonts/test.woff2`;
+    const fontHead = await fetch(fontUrl, { method: "HEAD" });
+    assert.equal(
+      fontHead.status,
+      200,
+      `bundled font did not load: ${fontUrl} → HTTP ${fontHead.status}`,
+    );
+    // And confirm the bytes round-trip end-to-end (catches the case where
+    // a 200 is returned but with empty / garbled content because of a
+    // mis-set Content-Length or transfer encoding).
+    const fontGet = await fetch(fontUrl);
+    const fontBody = Buffer.from(await fontGet.arrayBuffer());
+    assert.deepEqual(
+      fontBody,
+      FONT_BYTES,
+      "bundled font bytes must match what was placed in the source zip",
+    );
+
+    // And confirm at least one of the same-origin <img src> URLs points
+    // at our bundled image (so the test fails loud if the rebase logic
+    // ever stops emitting the {{THEME_URI}}/assets/ prefix).
+    const themeImgPath = `/wp-content/themes/${projectSlug}/assets/img/logo.png`;
+    assert.ok(
+      targets.some((u) => u.endsWith(themeImgPath)),
+      `expected one of the rendered <img src> URLs to point at the bundled ` +
+        `image (${themeImgPath}); got: ${targets.join(", ")}`,
+    );
+  });
+
   for (const fx of FIXTURES) {
     await t.test(`${fx.file} (elementor)`, async () => {
       const fixturePath = path.join(FIXTURE_DIR, fx.file);
