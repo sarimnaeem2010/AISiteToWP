@@ -49,6 +49,10 @@ export default function ProjectWorkspace() {
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [pastedHtml, setPastedHtml] = useState("");
   const [reparsing, setReparsing] = useState(false);
+  const [scrapeUrlInput, setScrapeUrlInput] = useState("");
+  const [chatInput, setChatInput] = useState("");
+  const [chatBusy, setChatBusy] = useState(false);
+  const [chatLog, setChatLog] = useState<Array<{ role: "user" | "ai"; text: string }>>([]);
 
   const form = useForm<z.infer<typeof wpConfigSchema>>({
     resolver: zodResolver(wpConfigSchema),
@@ -199,6 +203,51 @@ export default function ProjectWorkspace() {
       toast({ title: "Re-parse failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
     } finally {
       setReparsing(false);
+    }
+  };
+
+  const scrapeFromUrl = async (url: string) => {
+    setReparsing(true);
+    try {
+      const res = await fetch(`${apiBase}api/projects/${id}/scrape-url`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      toast({ title: "URL scraped & parsed", description: "Site structure extracted from the live URL." });
+      setScrapeUrlInput("");
+      refetch();
+    } catch (err) {
+      toast({ title: "URL scrape failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    } finally {
+      setReparsing(false);
+    }
+  };
+
+  const sendChatMessage = async (text: string) => {
+    if (!text.trim() || chatBusy) return;
+    setChatBusy(true);
+    setChatLog((prev) => [...prev, { role: "user", text }]);
+    setChatInput("");
+    try {
+      const res = await fetch(`${apiBase}api/projects/${id}/chat-refine`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ instruction: text }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error((data as { error?: string }).error || `HTTP ${res.status}`);
+      }
+      const summary = (data as { summary?: string }).summary || "Layout updated.";
+      setChatLog((prev) => [...prev, { role: "ai", text: summary }]);
+      refetch();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setChatLog((prev) => [...prev, { role: "ai", text: `Error: ${msg}` }]);
+    } finally {
+      setChatBusy(false);
     }
   };
 
@@ -364,6 +413,66 @@ export default function ProjectWorkspace() {
             </Card>
           )}
 
+          {currentStep >= 2 && project.parsedSite && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="font-mono flex items-center gap-2">
+                  <Sparkles className="h-5 w-5" />
+                  Layout Assistant
+                </CardTitle>
+                <CardDescription>
+                  Refine your parsed structure in plain English. Try things like
+                  <span className="font-mono italic"> "make the header sticky"</span>,
+                  <span className="font-mono italic"> "add a 3-column features section about pricing"</span>, or
+                  <span className="font-mono italic"> "remove the testimonials"</span>.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {chatLog.length > 0 && (
+                  <ScrollArea className="h-48 rounded border bg-muted/20 p-3">
+                    <div className="space-y-2">
+                      {chatLog.map((m, i) => (
+                        <div
+                          key={i}
+                          className={`text-xs font-mono ${m.role === "user" ? "text-foreground" : "text-primary"}`}
+                          data-testid={`chat-message-${m.role}`}
+                        >
+                          <span className="opacity-60">{m.role === "user" ? "you ›" : "ai ›"}</span> {m.text}
+                        </div>
+                      ))}
+                    </div>
+                  </ScrollArea>
+                )}
+                <div className="flex gap-2">
+                  <Input
+                    type="text"
+                    placeholder='e.g. "Change background to dark"'
+                    className="font-mono text-xs"
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        sendChatMessage(chatInput);
+                      }
+                    }}
+                    disabled={chatBusy}
+                    data-testid="input-chat-instruction"
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => sendChatMessage(chatInput)}
+                    disabled={chatBusy || chatInput.trim().length === 0}
+                    data-testid="button-chat-send"
+                  >
+                    {chatBusy ? "Thinking..." : "Send"}
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           {currentStep >= 2 && (
             <Card>
               <CardHeader>
@@ -425,6 +534,34 @@ export default function ProjectWorkspace() {
                         {reparsing ? "Parsing..." : "Re-parse"}
                       </Button>
                     </div>
+                  </div>
+                  <div className="md:col-span-2">
+                    <Label className="font-mono text-xs">Or fetch from a live URL</Label>
+                    <div className="flex gap-2 mt-1">
+                      <Input
+                        type="url"
+                        placeholder="https://example.com"
+                        className="font-mono text-xs"
+                        value={scrapeUrlInput}
+                        onChange={(e) => setScrapeUrlInput(e.target.value)}
+                        disabled={reparsing}
+                        data-testid="input-scrape-url"
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => scrapeFromUrl(scrapeUrlInput)}
+                        disabled={reparsing || scrapeUrlInput.trim().length === 0}
+                        data-testid="button-scrape-url"
+                      >
+                        <Globe className="mr-1 h-3 w-3" />
+                        {reparsing ? "Fetching..." : "Scrape"}
+                      </Button>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground mt-1 font-mono">
+                      Public http(s) URLs only. Private/loopback addresses are blocked.
+                    </p>
                   </div>
                 </div>
               </CardContent>

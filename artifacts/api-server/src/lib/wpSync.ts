@@ -291,6 +291,41 @@ export async function testConnection(config: WpConfig): Promise<{ success: boole
   }
 }
 
+/**
+ * Set a page as the WordPress site's static homepage. Updates the
+ * `show_on_front` and `page_on_front` core settings via the REST API.
+ * Requires a user with `manage_options` (admin) capability when using
+ * basic auth, or the bridge plugin with the X-Api-Key header.
+ */
+export async function setAsHomepage(
+  config: WpConfig,
+  wpPageId: number,
+): Promise<{ success: boolean; message: string }> {
+  await assertSafeUrl(config.wpUrl);
+  const baseUrl = config.wpUrl.replace(/\/$/, "");
+  const headers = buildHeaders(config);
+  try {
+    const res = await fetch(`${baseUrl}/wp-json/wp/v2/settings`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        show_on_front: "page",
+        page_on_front: wpPageId,
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      return { success: false, message: `WordPress rejected the request: ${res.status} ${body.slice(0, 200)}` };
+    }
+    logger.info({ wpPageId }, "Set as homepage");
+    return { success: true, message: "Page set as homepage" };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { success: false, message: msg };
+  }
+}
+
 export async function pushToWordPress(
   config: WpConfig,
   wpStructure: WpStructure

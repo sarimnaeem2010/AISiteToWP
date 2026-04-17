@@ -16,7 +16,9 @@ import {
 } from "@workspace/api-zod";
 import { parseHtml, parseSingleHtmlPage, type ParsedPage, type ParsedSite, type DesignSystem } from "../lib/parser";
 import { mapToWordPress, type CustomPostTypeDef } from "../lib/wpMapper";
-import { testConnection, pushToWordPress } from "../lib/wpSync";
+import { testConnection, pushToWordPress, setAsHomepage } from "../lib/wpSync";
+import { scrapeUrl } from "../lib/urlScraper";
+import { applyChatRefinement } from "../lib/chatRefiner";
 import { generateApiKey, generateWordPressPlugin } from "../lib/pluginGenerator";
 import { extractZip } from "../lib/zipUpload";
 import { uploadZipAssets, rewriteAssetUrls } from "../lib/rawHtmlPush";
@@ -279,6 +281,202 @@ router.post("/projects/:id/parse", async (req, res): Promise<void> => {
     .where(eq(projectsTable.id, project.id));
 
   res.json({ parsedSite, designSystem, wpStructure, aiAnalysis, customPostTypes: mergedCpts });
+});
+
+// INPUT LAYER: scrape a public URL, parse it, store as the project source.
+const ScrapeUrlSchema = z.object({ url: z.string().url() });
+router.post("/projects/:id/scrape-url", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const params = GetProjectParams.safeParse({ id: raw });
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+  const body = ScrapeUrlSchema.safeParse(req.body);
+  if (!body.success) {
+    res.status(400).json({ error: body.error.message });
+    return;
+  }
+
+  const [project] = await db
+    .select()
+    .from(projectsTable)
+    .where(eq(projectsTable.id, Number(params.data.id)));
+  if (!project) {
+    res.status(404).json({ error: "Project not found" });
+    return;
+  }
+
+  let scraped;
+  try {
+    scraped = await scrapeUrl(body.data.url);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ error: msg });
+    return;
+  }
+
+  const { parsedSite, designSystem, aiAnalysis } = await parseHtml(scraped.html);
+  const existingCpts = (project.customPostTypes as CustomPostTypeDef[] | null) ?? [];
+  const suggested = suggestedToCpts(aiAnalysis?.suggestedCpts);
+  const mergedCpts: CustomPostTypeDef[] = [
+    ...existingCpts,
+    ...suggested.filter((s) => !existingCpts.some((e) => e.slug === s.slug)),
+  ];
+  const wpStructure = mapToWordPress(parsedSite, mergedCpts);
+
+  await db
+    .update(projectsTable)
+    .set({
+      status: "parsed",
+      parsedSite: parsedSite as never,
+      designSystem: designSystem as never,
+      wpStructure: wpStructure as never,
+      aiAnalysis: (aiAnalysis ?? null) as never,
+      customPostTypes: mergedCpts as never,
+      sourceHtml: scraped.html,
+      pageCount: parsedSite.pages.length,
+    })
+    .where(eq(projectsTable.id, project.id));
+
+  res.json({
+    parsedSite,
+    designSystem,
+    wpStructure,
+    aiAnalysis,
+    customPostTypes: mergedCpts,
+    sourceUrl: scraped.finalUrl,
+  });
+});
+
+// AI CHAT REFINEMENT: apply a natural-language layout change to the parsed site.
+const ChatRefineSchema = z.object({ instruction: z.string().min(1).max(1000) });
+router.post("/projects/:id/chat-refine", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const params = GetProjectParams.safeParse({ id: raw });
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+  const body = ChatRefineSchema.safeParse(req.body);
+  if (!body.success) {
+    res.status(400).json({ error: body.error.message });
+    return;
+  }
+
+  const [project] = await db
+    .select()
+    .from(projectsTable)
+    .where(eq(projectsTable.id, Number(params.data.id)));
+  if (!project) {
+    res.status(404).json({ error: "Project not found" });
+    return;
+  }
+  if (!project.parsedSite) {
+    res.status(400).json({ error: "Site not parsed yet — parse a source first." });
+    return;
+  }
+
+  const result = await applyChatRefinement(
+    project.parsedSite as ParsedSite,
+    body.data.instruction,
+  );
+  if (!result) {
+    res.status(503).json({
+      error: "Chat refinement is unavailable. Make sure the OpenAI integration is configured.",
+    });
+    return;
+  }
+
+  const refinedSite = result.site as Partial<ParsedSite> | null;
+  if (
+    !refinedSite ||
+    !Array.isArray(refinedSite.pages) ||
+    refinedSite.pages.length === 0 ||
+    !refinedSite.pages.every(
+      (p) =>
+        p &&
+        typeof p.name === "string" &&
+        typeof p.slug === "string" &&
+        Array.isArray(p.sections) &&
+        p.sections.every((s) => s && typeof s.type === "string" && typeof s.content === "object"),
+    )
+  ) {
+    res.status(422).json({
+      error: "AI returned an invalid site structure. Try rephrasing your instruction.",
+    });
+    return;
+  }
+  const validatedSite: ParsedSite = { pages: refinedSite.pages as ParsedSite["pages"] };
+
+  const cpts = (project.customPostTypes as CustomPostTypeDef[] | null) ?? [];
+  const updatedStructure = mapToWordPress(validatedSite, cpts);
+
+  await db
+    .update(projectsTable)
+    .set({
+      parsedSite: result.site as never,
+      wpStructure: updatedStructure as never,
+      pageCount: result.site.pages.length,
+    })
+    .where(eq(projectsTable.id, project.id));
+
+  res.json({
+    summary: result.summary,
+    parsedSite: result.site,
+    wpStructure: updatedStructure,
+  });
+});
+
+// SET AS HOMEPAGE: tell WordPress to use a pushed page as the static front page.
+const SetHomepageSchema = z.object({ wpPageId: z.number().int().positive() });
+router.post("/projects/:id/set-homepage", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const params = GetProjectParams.safeParse({ id: raw });
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+  const body = SetHomepageSchema.safeParse(req.body);
+  if (!body.success) {
+    res.status(400).json({ error: body.error.message });
+    return;
+  }
+
+  const [project] = await db
+    .select()
+    .from(projectsTable)
+    .where(eq(projectsTable.id, Number(params.data.id)));
+  if (!project) {
+    res.status(404).json({ error: "Project not found" });
+    return;
+  }
+  if (!project.wpUrl) {
+    res.status(400).json({ error: "WordPress URL not configured" });
+    return;
+  }
+  const authMode = (project.authMode === "api_key" ? "api_key" : "basic") as "basic" | "api_key";
+  if (authMode === "basic" && (!project.wpUsername || !project.wpAppPassword)) {
+    res.status(400).json({ error: "WordPress credentials not configured" });
+    return;
+  }
+  if (authMode === "api_key" && !project.wpApiKey) {
+    res.status(400).json({ error: "Plugin API key not configured" });
+    return;
+  }
+
+  const result = await setAsHomepage(
+    {
+      wpUrl: project.wpUrl,
+      wpUsername: project.wpUsername,
+      wpAppPassword: project.wpAppPassword,
+      wpApiKey: project.wpApiKey,
+      authMode,
+      useAcf: project.useAcf === "true",
+    },
+    body.data.wpPageId,
+  );
+  res.json(result);
 });
 
 router.put("/projects/:id/custom-post-types", async (req, res): Promise<void> => {
