@@ -249,6 +249,20 @@ export const TestWordPressConnectionResponse = zod.object({
   message: zod.string(),
   wpVersion: zod.string().nullish(),
   siteTitle: zod.string().nullish(),
+  pluginVersion: zod
+    .string()
+    .nullish()
+    .describe(
+      "Companion plugin version reported by the WordPress install (api_key mode only).",
+    ),
+  expectedPluginVersion: zod
+    .string()
+    .nullish()
+    .describe("Plugin version this server expects."),
+  pluginOutdated: zod
+    .boolean()
+    .nullish()
+    .describe("True when pluginVersion is older than expectedPluginVersion."),
 });
 
 /**

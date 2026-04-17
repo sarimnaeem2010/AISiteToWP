@@ -1,5 +1,12 @@
 import { randomBytes } from "crypto";
 
+/**
+ * The companion plugin version this server expects. Bump when the
+ * generated PHP gains a new endpoint/field that the server depends on,
+ * so the connection-test UI can warn users running an older install.
+ */
+export const EXPECTED_PLUGIN_VERSION = "1.5.0";
+
 interface CustomPostTypeDef {
   slug: string;
   label: string;
@@ -39,7 +46,7 @@ export function generateWordPressPlugin(
  * Plugin Name: WP Bridge AI Importer
  * Plugin URI: https://wpbridgeai.com
  * Description: Receives structured JSON from WP Bridge AI. Imports pages as Gutenberg blocks or Elementor data, registers Custom Post Types, and writes ACF fields.
- * Version: 1.5.0
+ * Version: ${EXPECTED_PLUGIN_VERSION}
  * Author: WP Bridge AI
  * License: MIT
  * Text Domain: wp-bridge-ai
@@ -294,7 +301,7 @@ function wp_bridge_auth_check( WP_REST_Request $request ) {
 function wp_bridge_status_handler( WP_REST_Request $request ) {
     return rest_ensure_response( array(
         'active'             => true,
-        'version'            => '1.5.0',
+        'version'            => '${EXPECTED_PLUGIN_VERSION}',
         'project'            => WP_BRIDGE_PROJECT_SLUG,
         'wp_version'         => get_bloginfo( 'version' ),
         'site_name'          => get_bloginfo( 'name' ),

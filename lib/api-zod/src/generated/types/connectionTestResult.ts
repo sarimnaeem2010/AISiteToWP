@@ -11,4 +11,10 @@ export interface ConnectionTestResult {
   message: string;
   wpVersion?: string | null;
   siteTitle?: string | null;
+  /** Companion plugin version reported by the WordPress install (api_key mode only). */
+  pluginVersion?: string | null;
+  /** Plugin version this server expects. */
+  expectedPluginVersion?: string | null;
+  /** True when pluginVersion is older than expectedPluginVersion. */
+  pluginOutdated?: boolean | null;
 }

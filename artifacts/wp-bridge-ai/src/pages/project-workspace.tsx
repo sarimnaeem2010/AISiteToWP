@@ -46,7 +46,13 @@ export default function ProjectWorkspace() {
   const testConnection = useTestWordPressConnection();
   const deleteProject = useDeleteProject();
 
-  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [testResult, setTestResult] = useState<{
+    success: boolean;
+    message: string;
+    pluginVersion?: string | null;
+    expectedPluginVersion?: string | null;
+    pluginOutdated?: boolean | null;
+  } | null>(null);
   const [pastedHtml, setPastedHtml] = useState("");
   const [reparsing, setReparsing] = useState(false);
   const [scrapeUrlInput, setScrapeUrlInput] = useState("");
@@ -907,12 +913,27 @@ export default function ProjectWorkspace() {
                     </div>
                     
                     {testResult && (
-                      <div className={`p-3 rounded-md text-sm font-mono mt-4 flex items-start gap-2 ${testResult.success ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : "bg-destructive/10 text-destructive"}`}>
-                        {testResult.success ? <Check className="h-4 w-4 mt-0.5 shrink-0" /> : <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />}
-                        <div>
-                          <div className="font-bold">{testResult.success ? "Connection Verified" : "Connection Failed"}</div>
-                          <div className="opacity-90">{testResult.message}</div>
+                      <div className="space-y-2 mt-4">
+                        <div className={`p-3 rounded-md text-sm font-mono flex items-start gap-2 ${testResult.success ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : "bg-destructive/10 text-destructive"}`}>
+                          {testResult.success ? <Check className="h-4 w-4 mt-0.5 shrink-0" /> : <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />}
+                          <div>
+                            <div className="font-bold">{testResult.success ? "Connection Verified" : "Connection Failed"}</div>
+                            <div className="opacity-90">{testResult.message}</div>
+                          </div>
                         </div>
+                        {testResult.pluginOutdated && testResult.pluginVersion && testResult.expectedPluginVersion && (
+                          <div className="p-3 rounded-md text-sm font-mono flex items-start gap-2 bg-amber-500/10 text-amber-700 dark:text-amber-400">
+                            <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+                            <div>
+                              <div className="font-bold">Companion Plugin Out Of Date</div>
+                              <div className="opacity-90">
+                                Installed plugin is v{testResult.pluginVersion}, but this server expects v{testResult.expectedPluginVersion}.
+                                Re-download from the <span className="font-bold">Get Plugin</span> page and re-upload to your site
+                                so the new pre-flight theme check is enabled.
+                              </div>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
                   </form>

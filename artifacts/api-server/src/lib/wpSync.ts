@@ -1,6 +1,25 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { logger } from "./logger";
+import { EXPECTED_PLUGIN_VERSION } from "./pluginGenerator";
+
+/**
+ * Compare two dotted version strings (e.g. "1.4.0" vs "1.5.0").
+ * Returns -1 if a<b, 0 if equal, 1 if a>b. Non-numeric or missing
+ * segments are treated as 0 so partial versions still compare safely.
+ */
+function compareVersions(a: string, b: string): number {
+  const pa = a.split(".").map((s) => Number.parseInt(s, 10) || 0);
+  const pb = b.split(".").map((s) => Number.parseInt(s, 10) || 0);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const av = pa[i] ?? 0;
+    const bv = pb[i] ?? 0;
+    if (av < bv) return -1;
+    if (av > bv) return 1;
+  }
+  return 0;
+}
 
 function isPrivateIPv4(ip: string): boolean {
   const parts = ip.split(".").map((n) => Number(n));
@@ -327,7 +346,15 @@ function blocksToGutenbergContent(blocks: WpBlock[], injectedCss?: string | null
   return lines.join("\n");
 }
 
-export async function testConnection(config: WpConfig): Promise<{ success: boolean; message: string; wpVersion?: string; siteTitle?: string }> {
+export async function testConnection(config: WpConfig): Promise<{
+  success: boolean;
+  message: string;
+  wpVersion?: string;
+  siteTitle?: string;
+  pluginVersion?: string | null;
+  expectedPluginVersion?: string;
+  pluginOutdated?: boolean;
+}> {
   try {
     await assertSafeUrl(config.wpUrl);
   } catch (err: unknown) {
@@ -365,11 +392,21 @@ export async function testConnection(config: WpConfig): Promise<{ success: boole
     }
     const data = (await response.json()) as Record<string, unknown>;
     if (config.authMode === "api_key") {
+      const pluginVersion = typeof data.version === "string" ? data.version : null;
+      const pluginOutdated =
+        pluginVersion !== null && compareVersions(pluginVersion, EXPECTED_PLUGIN_VERSION) < 0;
+      const baseMessage = data.active ? "Plugin active" : "Plugin inactive";
+      const message = pluginOutdated
+        ? `${baseMessage} — but plugin v${pluginVersion} is older than expected v${EXPECTED_PLUGIN_VERSION}. Re-download from the Get Plugin page to enable the latest pre-flight theme check.`
+        : baseMessage;
       return {
         success: Boolean(data.active),
-        message: data.active ? "Plugin active" : "Plugin inactive",
+        message,
         wpVersion: String(data.wp_version ?? "Connected"),
         siteTitle: String(data.site_name ?? "WordPress Site"),
+        pluginVersion,
+        expectedPluginVersion: EXPECTED_PLUGIN_VERSION,
+        pluginOutdated,
       };
     }
     // Verify the authenticated user can actually publish pages

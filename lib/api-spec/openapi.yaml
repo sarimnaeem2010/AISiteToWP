@@ -527,6 +527,18 @@ components:
         siteTitle:
           type: string
           nullable: true
+        pluginVersion:
+          type: string
+          nullable: true
+          description: Companion plugin version reported by the WordPress install (api_key mode only).
+        expectedPluginVersion:
+          type: string
+          nullable: true
+          description: Plugin version this server expects.
+        pluginOutdated:
+          type: boolean
+          nullable: true
+          description: True when pluginVersion is older than expectedPluginVersion.
       required:
         - success
         - message
