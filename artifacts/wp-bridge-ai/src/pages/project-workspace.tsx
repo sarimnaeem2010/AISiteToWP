@@ -136,10 +136,19 @@ export default function ProjectWorkspace() {
   const onPush = () => {
     pushToWp.mutate({ id }, {
       onSuccess: (res) => {
+        const r = res as any;
+        const created = r.pagesCreated ?? 0;
+        const updated = r.pagesUpdated ?? 0;
+        const cptCount = (r.cptItemsCreated ?? 0) + (r.cptItemsUpdated ?? 0);
+        const parts: string[] = [];
+        if (created > 0) parts.push(`${created} created`);
+        if (updated > 0) parts.push(`${updated} updated`);
+        if (cptCount > 0) parts.push(`${cptCount} CPT items`);
+        const desc = parts.length > 0 ? `Pages: ${parts.join(", ")}.` : "No changes were applied.";
         if (res.success) {
-          toast({ title: "Push Successful", description: `Created ${res.pagesCreated} pages.` });
+          toast({ title: "Push Successful", description: desc });
         } else {
-          toast({ title: "Push completed with errors", variant: "destructive" });
+          toast({ title: "Push completed with errors", description: desc, variant: "destructive" });
         }
         refetch();
       },

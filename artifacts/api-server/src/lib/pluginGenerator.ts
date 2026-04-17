@@ -39,7 +39,7 @@ export function generateWordPressPlugin(
  * Plugin Name: WP Bridge AI Importer
  * Plugin URI: https://wpbridgeai.com
  * Description: Receives structured JSON from WP Bridge AI. Imports pages as Gutenberg blocks or Elementor data, registers Custom Post Types, and writes ACF fields.
- * Version: 1.2.0
+ * Version: 1.3.0
  * Author: WP Bridge AI
  * License: MIT
  * Text Domain: wp-bridge-ai
@@ -109,7 +109,7 @@ function wp_bridge_auth_check( WP_REST_Request $request ) {
 function wp_bridge_status_handler( WP_REST_Request $request ) {
     return rest_ensure_response( array(
         'active'             => true,
-        'version'            => '1.2.0',
+        'version'            => '1.3.0',
         'project'            => WP_BRIDGE_PROJECT_SLUG,
         'wp_version'         => get_bloginfo( 'version' ),
         'site_name'          => get_bloginfo( 'name' ),
@@ -268,9 +268,10 @@ function wp_bridge_find_cpt_by_title( string $cpt, string $title ) {
 function wp_bridge_build_block_content( array $blocks ): string {
     $content = '';
     foreach ( $blocks as $block ) {
-        $type   = $block['blockType'] ?? 'core/html';
-        $fields = $block['fields'] ?? array();
-        $inner  = $block['innerBlocks'] ?? array();
+        $type      = $block['blockType'] ?? 'core/html';
+        $acf_group = $block['acfGroup'] ?? '';
+        $fields    = $block['fields'] ?? array();
+        $inner     = $block['innerBlocks'] ?? array();
 
         switch ( $type ) {
             case 'core/cover':
@@ -293,21 +294,94 @@ function wp_bridge_build_block_content( array $blocks ): string {
                 }
                 break;
 
+            case 'core/gallery':
+                $gallery_title = esc_html( $fields['section_title'] ?? '' );
+                $imgs = $fields['logos'] ?? $fields['images'] ?? $fields['items'] ?? array();
+                $content .= "<!-- wp:group {\\"layout\\":{\\"type\\":\\"constrained\\"}} -->\\n<div class=\\"wp-block-group\\">";
+                if ( $gallery_title ) $content .= "<!-- wp:heading --><h2 class=\\"wp-block-heading\\">{$gallery_title}</h2><!-- /wp:heading -->";
+                if ( is_array( $imgs ) && count( $imgs ) > 0 ) {
+                    $content .= "<!-- wp:gallery {\\"linkTo\\":\\"none\\"} --><figure class=\\"wp-block-gallery has-nested-images columns-default is-cropped\\">";
+                    foreach ( $imgs as $img ) {
+                        if ( is_string( $img ) ) {
+                            $src = esc_url( $img );
+                            $alt = '';
+                        } else {
+                            $src = esc_url( $img['src'] ?? $img['url'] ?? $img['image_url'] ?? $img['logo_url'] ?? '' );
+                            $alt = esc_attr( $img['alt'] ?? $img['name'] ?? $img['title'] ?? '' );
+                        }
+                        if ( $src ) $content .= "<!-- wp:image --><figure class=\\"wp-block-image\\"><img src=\\"{$src}\\" alt=\\"{$alt}\\"/></figure><!-- /wp:image -->";
+                    }
+                    $content .= "</figure><!-- /wp:gallery -->";
+                }
+                $content .= "</div><!-- /wp:group -->\\n";
+                break;
+
             default:
                 $title = esc_html( $fields['section_title'] ?? $fields['heading'] ?? '' );
-                $body  = esc_html( $fields['section_body'] ?? $fields['body'] ?? $fields['description'] ?? '' );
+                $body  = esc_html( $fields['section_body'] ?? $fields['body'] ?? $fields['description'] ?? $fields['subheading'] ?? '' );
                 $content .= "<!-- wp:group {\\"layout\\":{\\"type\\":\\"constrained\\"}} -->\\n<div class=\\"wp-block-group\\">";
                 if ( $title ) $content .= "<!-- wp:heading --><h2 class=\\"wp-block-heading\\">{$title}</h2><!-- /wp:heading -->";
                 if ( $body ) $content .= "<!-- wp:paragraph --><p>{$body}</p><!-- /wp:paragraph -->";
 
+                // Stats section: render value + label tiles
+                if ( $acf_group === 'stats_section' && is_array( $inner ) && count( $inner ) > 0 ) {
+                    $content .= "<!-- wp:columns --><div class=\\"wp-block-columns\\">";
+                    foreach ( $inner as $stat ) {
+                        $sf    = $stat['fields'] ?? array();
+                        $value = esc_html( $sf['value'] ?? '' );
+                        $label = esc_html( $sf['label'] ?? '' );
+                        if ( $value || $label ) {
+                            $content .= "<!-- wp:column --><div class=\\"wp-block-column\\">";
+                            if ( $value ) $content .= "<!-- wp:heading {\\"level\\":3} --><h3 class=\\"wp-block-heading\\">{$value}</h3><!-- /wp:heading -->";
+                            if ( $label ) $content .= "<!-- wp:paragraph --><p>{$label}</p><!-- /wp:paragraph -->";
+                            $content .= "</div><!-- /wp:column -->";
+                        }
+                    }
+                    $content .= "</div><!-- /wp:columns -->";
+                }
+
+                // Newsletter / CTA section: render subscribe button
+                if ( $acf_group === 'newsletter_section' || $acf_group === 'cta_section' ) {
+                    $btn_text = esc_html( $fields['button_text'] ?? $fields['cta_text'] ?? '' );
+                    $btn_url  = esc_url( $fields['button_url'] ?? $fields['cta_url'] ?? '#' );
+                    if ( $btn_text ) {
+                        $content .= "<!-- wp:buttons --><div class=\\"wp-block-buttons\\"><!-- wp:button --><div class=\\"wp-block-button\\"><a class=\\"wp-block-button__link\\" href=\\"{$btn_url}\\">{$btn_text}</a></div><!-- /wp:button --></div><!-- /wp:buttons -->";
+                    }
+                }
+
+                // Footer section: render copyright + links
+                if ( $acf_group === 'footer_section' ) {
+                    $copy = esc_html( $fields['copyright_text'] ?? '' );
+                    $links = $fields['links'] ?? array();
+                    if ( is_array( $links ) && count( $links ) > 0 ) {
+                        $content .= "<!-- wp:list --><ul class=\\"wp-block-list\\">";
+                        foreach ( $links as $link ) {
+                            if ( is_string( $link ) ) {
+                                $content .= "<!-- wp:list-item --><li>" . esc_html( $link ) . "</li><!-- /wp:list-item -->";
+                            } else {
+                                $href = esc_url( $link['url'] ?? $link['href'] ?? '#' );
+                                $lbl  = esc_html( $link['label'] ?? $link['text'] ?? $link['title'] ?? '' );
+                                if ( $lbl ) $content .= "<!-- wp:list-item --><li><a href=\\"{$href}\\">{$lbl}</a></li><!-- /wp:list-item -->";
+                            }
+                        }
+                        $content .= "</ul><!-- /wp:list -->";
+                    }
+                    if ( $copy ) $content .= "<!-- wp:paragraph {\\"align\\":\\"center\\"} --><p class=\\"has-text-align-center\\">{$copy}</p><!-- /wp:paragraph -->";
+                }
+
+                // Generic inner-block fallback (features, services, team, faq, testimonials, pricing)
                 foreach ( $inner as $inner_block ) {
                     $inner_fields = $inner_block['fields'] ?? array();
                     $inner_title  = esc_html( $inner_fields['title'] ?? $inner_fields['question'] ?? $inner_fields['name'] ?? $inner_fields['plan_name'] ?? '' );
                     $inner_body   = esc_html( $inner_fields['description'] ?? $inner_fields['answer'] ?? $inner_fields['quote'] ?? $inner_fields['bio'] ?? '' );
-                    if ( $inner_title || $inner_body ) {
+                    $inner_price  = esc_html( $inner_fields['plan_price'] ?? $inner_fields['price'] ?? '' );
+                    $inner_role   = esc_html( $inner_fields['role'] ?? $inner_fields['author_role'] ?? '' );
+                    if ( $inner_title || $inner_body || $inner_price ) {
                         $content .= "<!-- wp:group --><div class=\\"wp-block-group\\">";
                         if ( $inner_title ) $content .= "<!-- wp:heading {\\"level\\":3} --><h3>{$inner_title}</h3><!-- /wp:heading -->";
-                        if ( $inner_body ) $content .= "<!-- wp:paragraph --><p>{$inner_body}</p><!-- /wp:paragraph -->";
+                        if ( $inner_price ) $content .= "<!-- wp:paragraph --><p><strong>{$inner_price}</strong></p><!-- /wp:paragraph -->";
+                        if ( $inner_role )  $content .= "<!-- wp:paragraph --><p><em>{$inner_role}</em></p><!-- /wp:paragraph -->";
+                        if ( $inner_body )  $content .= "<!-- wp:paragraph --><p>{$inner_body}</p><!-- /wp:paragraph -->";
                         $content .= "</div><!-- /wp:group -->";
                     }
                 }
