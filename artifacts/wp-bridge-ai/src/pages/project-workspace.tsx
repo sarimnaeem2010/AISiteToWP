@@ -165,6 +165,44 @@ export default function ProjectWorkspace() {
   const cpts: Array<{ slug: string; label: string; pluralLabel: string; sourceSemanticType: string; fields: string[]; enabled: boolean }> =
     Array.isArray(proj.customPostTypes) ? proj.customPostTypes : [];
 
+  const [pastedHtml, setPastedHtml] = useState("");
+  const [reparsing, setReparsing] = useState(false);
+
+  const reuploadZip = async (file: File) => {
+    setReparsing(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch(`${apiBase}api/projects/${id}/upload-zip`, { method: "POST", body: fd });
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      toast({ title: "Source re-uploaded", description: "Project re-parsed from ZIP. Raw HTML mode is now available." });
+      refetch();
+    } catch (err) {
+      toast({ title: "Re-upload failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    } finally {
+      setReparsing(false);
+    }
+  };
+
+  const reparseHtml = async (html: string) => {
+    setReparsing(true);
+    try {
+      const res = await fetch(`${apiBase}api/projects/${id}/parse`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ htmlContent: html }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      toast({ title: "HTML re-parsed", description: "Raw HTML mode is now available." });
+      setPastedHtml("");
+      refetch();
+    } catch (err) {
+      toast({ title: "Re-parse failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    } finally {
+      setReparsing(false);
+    }
+  };
+
   const setRenderer = async (value: "gutenberg" | "elementor" | "raw_html") => {
     try {
       const res = await fetch(`${apiBase}api/projects/${id}/renderer`, {
@@ -324,6 +362,73 @@ export default function ProjectWorkspace() {
                   </Button>
                 </Link>
               </div>
+            </Card>
+          )}
+
+          {currentStep >= 2 && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="font-mono flex items-center gap-2">
+                  <FileCode2 className="h-5 w-5" />
+                  Source Files
+                </CardTitle>
+                <CardDescription>
+                  Re-upload a ZIP or paste raw HTML to refresh the parsed structure. Required for projects parsed before Raw HTML mode existed.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex items-center gap-3 text-xs font-mono">
+                  <Badge variant={proj.sourceHtml || proj.uploadedFiles ? "default" : "outline"}>
+                    {proj.sourceHtml ? "Raw HTML stored" : proj.uploadedFiles ? "ZIP files stored" : "No source on file"}
+                  </Badge>
+                  {!proj.sourceHtml && (
+                    <span className="text-amber-600 dark:text-amber-400">
+                      Re-upload required to use the Raw HTML renderer.
+                    </span>
+                  )}
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div>
+                    <Label className="font-mono text-xs">Re-upload ZIP</Label>
+                    <Input
+                      type="file"
+                      accept=".zip,application/zip"
+                      className="font-mono text-xs mt-1"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) reuploadZip(f);
+                        e.currentTarget.value = "";
+                      }}
+                      disabled={reparsing}
+                      data-testid="input-reupload-zip"
+                    />
+                  </div>
+                  <div>
+                    <Label className="font-mono text-xs">Or paste HTML</Label>
+                    <div className="flex gap-2 mt-1">
+                      <Input
+                        type="text"
+                        placeholder="<html>...</html>"
+                        className="font-mono text-xs"
+                        value={pastedHtml}
+                        onChange={(e) => setPastedHtml(e.target.value)}
+                        disabled={reparsing}
+                        data-testid="input-paste-html"
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => reparseHtml(pastedHtml)}
+                        disabled={reparsing || pastedHtml.trim().length === 0}
+                        data-testid="button-reparse-html"
+                      >
+                        {reparsing ? "Parsing..." : "Re-parse"}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
             </Card>
           )}
 
