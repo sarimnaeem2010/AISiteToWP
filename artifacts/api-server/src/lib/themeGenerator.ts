@@ -232,6 +232,9 @@ function blockJsonFor(slug: string, section: ExtractedSection): string {
       keywords: [slug, section.category],
       supports: { html: false, align: ["wide", "full"] },
       attributes,
+      // Server-rendered with a shared editor script that auto-generates
+      // an InspectorControls panel from the attribute schema.
+      editorScript: "file:../../assets/editor.js",
       render: "file:./render.php",
       textdomain: slug,
     },
@@ -239,6 +242,64 @@ function blockJsonFor(slug: string, section: ExtractedSection): string {
     2,
   );
 }
+
+/**
+ * Shared Gutenberg editor script: for every block whose name starts with
+ * `wpb-${projectSlug}/`, replace its edit() with a server-side preview
+ * component plus an InspectorControls panel that shows one TextControl /
+ * TextareaControl per attribute. Saves remain server-rendered (the
+ * register from PHP wins on save_post). This satisfies the requirement
+ * that all extracted text/url/attr fields are editable inside Gutenberg.
+ */
+const EDITOR_JS = (slug: string) => `(function(){
+    var prefix = 'wpb-${slug}/';
+    var el = wp.element.createElement;
+    var SSR = wp.serverSideRender;
+    var Fragment = wp.element.Fragment;
+    var InspectorControls = wp.blockEditor && wp.blockEditor.InspectorControls;
+    var PanelBody = wp.components.PanelBody;
+    var TextControl = wp.components.TextControl;
+    var TextareaControl = wp.components.TextareaControl;
+    var useBlockProps = wp.blockEditor.useBlockProps || function(){ return {}; };
+
+    function makeEdit(blockName, attrSchema){
+      return function Edit(props){
+        var atts = props.attributes || {};
+        var controls = Object.keys(attrSchema).map(function(key){
+          var val = atts[key] !== undefined ? atts[key] : (attrSchema[key].default || '');
+          var Comp = (typeof val === 'string' && val.length > 80) ? TextareaControl : TextControl;
+          return el(Comp, {
+            key: key,
+            label: key,
+            value: val,
+            onChange: function(next){
+              var u = {}; u[key] = next; props.setAttributes(u);
+            }
+          });
+        });
+        return el(Fragment, {},
+          InspectorControls && el(InspectorControls, {},
+            el(PanelBody, { title: 'Section content', initialOpen: true }, controls)
+          ),
+          el('div', useBlockProps(),
+            el(SSR, { block: blockName, attributes: atts })
+          )
+        );
+      };
+    }
+
+    wp.domReady(function(){
+      var types = wp.blocks.getBlockTypes().filter(function(t){ return t.name && t.name.indexOf(prefix) === 0; });
+      types.forEach(function(t){
+        wp.blocks.unregisterBlockType(t.name);
+        wp.blocks.registerBlockType(t.name, Object.assign({}, t, {
+          edit: makeEdit(t.name, t.attributes || {}),
+          save: function(){ return null; }
+        }));
+      });
+    });
+})();
+`;
 
 function blockRenderPhp(section: ExtractedSection, blockDirRel: string): string {
   return `<?php
@@ -288,6 +349,7 @@ export function generateThemeZip(input: ThemeInput): Buffer {
   zip.addFile(`${root}/header.php`, Buffer.from(HEADER_PHP, "utf8"));
   zip.addFile(`${root}/footer.php`, Buffer.from(FOOTER_PHP, "utf8"));
   zip.addFile(`${root}/inc/elementor-widgets.php`, Buffer.from(ELEMENTOR_WIDGETS_INC, "utf8"));
+  zip.addFile(`${root}/assets/editor.js`, Buffer.from(EDITOR_JS(projectSlug), "utf8"));
   zip.addFile(`${root}/assets/template.css`, Buffer.from(combinedCss, "utf8"));
   if (combinedJs.trim().length > 0) {
     zip.addFile(`${root}/assets/template.js`, Buffer.from(combinedJs, "utf8"));

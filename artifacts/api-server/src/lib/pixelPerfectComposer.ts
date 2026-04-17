@@ -1,4 +1,16 @@
+import crypto from "node:crypto";
 import type { ExtractedPage, ExtractedSection } from "./sectionFieldExtractor";
+
+/**
+ * Generate a stable Elementor-style 7-char hex id derived from a seed.
+ * Elementor expects every node (section/column/widget) to have a unique
+ * 7-character id. We hash the seed so different seeds within the same
+ * section never collide, and the same seed always produces the same id
+ * (idempotent re-imports).
+ */
+function elementorId(seed: string): string {
+  return crypto.createHash("sha1").update(seed).digest("hex").slice(0, 7);
+}
 
 /**
  * Build Gutenberg post_content for a page composed entirely of our custom
@@ -29,19 +41,19 @@ export function composeElementorData(page: ExtractedPage): unknown[] {
     const settings: Record<string, string> = {};
     for (const f of s.fields) settings[f.key] = f.default;
     return {
-      id: safeId.slice(0, 7).padEnd(7, "0"),
+      id: elementorId(`${safeId}:section`),
       elType: "section",
       settings: {},
       isInner: false,
       elements: [
         {
-          id: (safeId + "x").slice(0, 7).padEnd(7, "0"),
+          id: elementorId(`${safeId}:column`),
           elType: "column",
           settings: { _column_size: 100 },
           isInner: false,
           elements: [
             {
-              id: (safeId + "y").slice(0, 7).padEnd(7, "0"),
+              id: elementorId(`${safeId}:widget`),
               elType: "widget",
               widgetType,
               settings,
