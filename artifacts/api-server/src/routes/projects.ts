@@ -19,6 +19,7 @@ import { mapToWordPress, type CustomPostTypeDef } from "../lib/wpMapper";
 import { testConnection, pushToWordPress } from "../lib/wpSync";
 import { generateApiKey, generateWordPressPlugin } from "../lib/pluginGenerator";
 import { extractZip } from "../lib/zipUpload";
+import { uploadZipAssets, rewriteAssetUrls } from "../lib/rawHtmlPush";
 import { generateAstroProject } from "../lib/astroGenerator";
 import { pageToElementorData } from "../lib/elementorGenerator";
 import type { SuggestedCpt } from "../lib/aiAnalyzer";
@@ -503,22 +504,55 @@ router.post("/projects/:id/push", async (req, res): Promise<void> => {
       : undefined;
 
   // Raw HTML mode: replace each page's blocks with a single core/html block
-  // containing the original source HTML (styles inlined). This preserves
-  // the original design pixel-for-pixel.
+  // containing the ORIGINAL per-page source HTML (styles inlined). Image and
+  // font references in the HTML + CSS are rewritten to uploaded WP media URLs
+  // so the page renders identical to the original template.
   let pagesPayload = wpStructure.pages;
+  let mediaUploaded = 0;
   if (renderer === "raw_html") {
-    const sourceHtml = project.sourceHtml ?? "";
-    if (!sourceHtml) {
+    const sourcePagesHtml = (project.sourcePagesHtml ?? null) as
+      | Record<string, { path: string; content: string }>
+      | null;
+    const sourceZip = project.sourceZip as Buffer | null;
+    if (!sourcePagesHtml || !sourceZip) {
       res.status(400).json({
-        error: "No source HTML stored for this project. Re-upload and re-parse the site to use Raw HTML mode.",
+        error: "Pixel-perfect mode needs the original ZIP. Re-upload your ZIP from the Source Files card.",
       });
       return;
     }
-    const inlineHtml = extractRenderableHtml(sourceHtml);
-    pagesPayload = wpStructure.pages.map((p) => ({
-      ...p,
-      blocks: [{ blockType: "core/html", fields: { content: inlineHtml } }] as unknown[],
-    }));
+
+    // Upload every image/font from the ZIP to WP media library (once per push).
+    const baseUrl = (project.wpUrl ?? "").replace(/\/$/, "");
+    const headers: Record<string, string> = {};
+    if (authMode === "api_key") {
+      if (project.wpApiKey) headers["X-Api-Key"] = project.wpApiKey;
+    } else {
+      if (project.wpUsername && project.wpAppPassword) {
+        headers.Authorization = `Basic ${Buffer.from(
+          `${project.wpUsername}:${project.wpAppPassword}`,
+        ).toString("base64")}`;
+      }
+    }
+    const { urlMap, uploaded } = await uploadZipAssets(sourceZip, {
+      baseUrl,
+      headers,
+      authMode,
+    });
+    mediaUploaded = uploaded;
+
+    // Per-page: rewrite asset URLs in source HTML and inline its CSS, then
+    // wrap as a single core/html block.
+    pagesPayload = wpStructure.pages.map((p) => {
+      const src = sourcePagesHtml[p.slug];
+      const rawHtml = src?.content ?? project.sourceHtml ?? "";
+      const rewrittenHtml = rewriteAssetUrls(rawHtml, urlMap);
+      const renderable = extractRenderableHtml(rewrittenHtml);
+      const finalHtml = rewriteAssetUrls(renderable, urlMap); // also rewrite inside <style>
+      return {
+        ...p,
+        blocks: [{ blockType: "core/html", fields: { content: finalHtml } }] as unknown[],
+      };
+    });
   }
 
   const result = await pushToWordPress(
@@ -771,6 +805,15 @@ router.post("/projects/:id/upload-zip", upload.single("file"), async (req, res):
       uploadedFiles: { files: extracted.files, indexPath: extracted.indexPath } as never,
       sourceHtml: extracted.indexHtml,
       sourceCss: combinedCss,
+      sourceZip: req.file.buffer,
+      sourcePagesHtml: Object.fromEntries(
+        extracted.htmlPages.map((p) => {
+          const baseName = p.path.split("/").pop()?.replace(/\.html?$/i, "") || "page";
+          const isIndex = /^index$/i.test(baseName);
+          const slug = isIndex ? "home" : baseName.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
+          return [slug || "page", { path: p.path, content: p.content }];
+        }),
+      ) as never,
       pageCount: parsedSite.pages.length,
     })
     .where(eq(projectsTable.id, project.id));

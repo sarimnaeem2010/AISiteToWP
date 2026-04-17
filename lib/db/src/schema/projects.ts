@@ -1,4 +1,8 @@
-import { pgTable, text, serial, timestamp, integer, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, timestamp, integer, jsonb, customType } from "drizzle-orm/pg-core";
+
+const bytea = customType<{ data: Buffer; default: false }>({
+  dataType() { return "bytea"; },
+});
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -22,6 +26,8 @@ export const projectsTable = pgTable("projects", {
   aiAnalysis: jsonb("ai_analysis"),
   sourceHtml: text("source_html"),
   sourceCss: text("source_css"),
+  sourceZip: bytea("source_zip"),
+  sourcePagesHtml: jsonb("source_pages_html"),
   lastPushedAt: timestamp("last_pushed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),

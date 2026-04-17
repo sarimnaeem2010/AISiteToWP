@@ -533,7 +533,7 @@ export default function ProjectWorkspace() {
                     )}
                     <div className="space-y-2">
                       <Label className="font-mono">Page Renderer</Label>
-                      <div className="grid grid-cols-2 gap-2">
+                      <div className="grid grid-cols-3 gap-2">
                         <button
                           type="button"
                           onClick={() => setRenderer("gutenberg")}
@@ -543,7 +543,7 @@ export default function ProjectWorkspace() {
                           <div className="font-semibold uppercase tracking-wider flex items-center gap-1.5">
                             <Layers className="h-3.5 w-3.5" /> Gutenberg
                           </div>
-                          <div className="text-muted-foreground mt-1">Native WP block editor markup</div>
+                          <div className="text-muted-foreground mt-1">Editable native blocks</div>
                         </button>
                         <button
                           type="button"
@@ -554,13 +554,24 @@ export default function ProjectWorkspace() {
                           <div className="font-semibold uppercase tracking-wider flex items-center gap-1.5">
                             <Sparkles className="h-3.5 w-3.5" /> Elementor
                           </div>
-                          <div className="text-muted-foreground mt-1">Editable in Elementor builder</div>
+                          <div className="text-muted-foreground mt-1">Elementor builder</div>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setRenderer("raw_html")}
+                          className={`text-left rounded-md border p-3 text-xs font-mono ${renderer === "raw_html" ? "border-primary bg-primary/10" : "border-border bg-muted/20"}`}
+                          data-testid="renderer-raw_html"
+                        >
+                          <div className="font-semibold uppercase tracking-wider flex items-center gap-1.5">
+                            <Layers className="h-3.5 w-3.5" /> Pixel-Perfect
+                          </div>
+                          <div className="text-muted-foreground mt-1">100% original UI</div>
                         </button>
                       </div>
                       <p className="text-[10px] text-muted-foreground">
-                        {renderer === "elementor"
-                          ? "Requires Elementor plugin installed on target WordPress site."
-                          : "Default. Maps every page in your ZIP to native WordPress blocks."}
+                        {renderer === "elementor" && "Requires Elementor plugin installed on target WordPress site."}
+                        {renderer === "gutenberg" && "Default. Maps every page in your ZIP to native WordPress blocks."}
+                        {renderer === "raw_html" && "Pushes the original HTML + CSS verbatim and uploads all images. Page is identical to the source but no longer block-editable in Gutenberg."}
                       </p>
                     </div>
                     <FormField

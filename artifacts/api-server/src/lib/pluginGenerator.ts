@@ -39,7 +39,7 @@ export function generateWordPressPlugin(
  * Plugin Name: WP Bridge AI Importer
  * Plugin URI: https://wpbridgeai.com
  * Description: Receives structured JSON from WP Bridge AI. Imports pages as Gutenberg blocks or Elementor data, registers Custom Post Types, and writes ACF fields.
- * Version: 1.4.0
+ * Version: 1.5.0
  * Author: WP Bridge AI
  * License: MIT
  * Text Domain: wp-bridge-ai
@@ -139,7 +139,54 @@ add_action( 'rest_api_init', function () {
         'callback'            => 'wp_bridge_status_handler',
         'permission_callback' => 'wp_bridge_auth_check',
     ) );
+    register_rest_route( 'ai-cms/v1', '/media', array(
+        'methods'             => 'POST',
+        'callback'            => 'wp_bridge_media_handler',
+        'permission_callback' => 'wp_bridge_auth_check',
+    ) );
 } );
+
+/**
+ * Accept a raw binary upload from the agent and store it in the WordPress
+ * media library. Filename comes from the X-Filename header; mime from
+ * Content-Type. Returns the resulting attachment URL.
+ */
+function wp_bridge_media_handler( WP_REST_Request $request ) {
+    $body = $request->get_body();
+    if ( empty( $body ) ) {
+        return new WP_Error( 'no_body', 'Empty body', array( 'status' => 400 ) );
+    }
+    $filename = $request->get_header( 'X-Filename' );
+    if ( ! $filename ) $filename = 'upload-' . time();
+    $filename = sanitize_file_name( $filename );
+
+    require_once ABSPATH . 'wp-admin/includes/file.php';
+    require_once ABSPATH . 'wp-admin/includes/image.php';
+    require_once ABSPATH . 'wp-admin/includes/media.php';
+
+    $upload = wp_upload_bits( $filename, null, $body );
+    if ( ! empty( $upload['error'] ) ) {
+        return new WP_Error( 'upload_failed', $upload['error'], array( 'status' => 500 ) );
+    }
+    $filetype = wp_check_filetype( $upload['file'], null );
+    $attachment = array(
+        'post_mime_type' => $filetype['type'] ?? $request->get_content_type()['value'] ?? 'application/octet-stream',
+        'post_title'     => sanitize_text_field( pathinfo( $filename, PATHINFO_FILENAME ) ),
+        'post_content'   => '',
+        'post_status'    => 'inherit',
+    );
+    $attach_id = wp_insert_attachment( $attachment, $upload['file'] );
+    if ( is_wp_error( $attach_id ) ) {
+        return new WP_Error( 'attach_failed', $attach_id->get_error_message(), array( 'status' => 500 ) );
+    }
+    $attach_data = wp_generate_attachment_metadata( $attach_id, $upload['file'] );
+    wp_update_attachment_metadata( $attach_id, $attach_data );
+
+    return rest_ensure_response( array(
+        'id'  => $attach_id,
+        'url' => wp_get_attachment_url( $attach_id ),
+    ) );
+}
 
 function wp_bridge_auth_check( WP_REST_Request $request ) {
     $key = $request->get_header( 'X-Api-Key' );
