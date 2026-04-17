@@ -105,7 +105,7 @@ function wp_bridge_apply_custom_css( $css ) {
     // Strip any other raw HTML tags that have no business inside a stylesheet.
     $css = preg_replace( '/<\\s*[a-zA-Z!]/', '<-', $css );
     // Drop javascript: / vbscript: / data: text/html URI schemes from url(...).
-    $css = preg_replace( '/url\\(\\s*[\'"]?\\s*(javascript|vbscript|data:\\s*text\\/html)/i', 'url(about:blank', $css );
+    $css = preg_replace( '/url\\(\\s*[\\x22\\x27]?\\s*(javascript|vbscript|data:\\s*text\\/html)/i', 'url(about:blank', $css );
     // expression() in legacy IE CSS could execute JS.
     $css = preg_replace( '/expression\\s*\\(/i', '_expression_(', $css );
 
