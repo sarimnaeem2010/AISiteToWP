@@ -146,6 +146,58 @@ function wpb_render_section_template( string $template_path, array $attrs ): str
         },
         $tpl
     ) ?? '';
+    // Image srcset pass: <img data-wpb-media="key"> gets swapped out for
+    // wp_get_attachment_image() output (which carries proper srcset/sizes
+    // attributes) whenever the saved MEDIA control carries a non-zero
+    // attachment id. When no id is available we leave the <img> alone —
+    // its src has already been substituted by the URL pass — and just
+    // strip the marker.
+    $rendered = preg_replace_callback(
+        '/<img\\b([^>]*?)\\sdata-wpb-media="([A-Za-z0-9_]+)"([^>]*?)\\/?>(?!\\s*<\\/img>)/i',
+        function ( $m ) use ( $attrs ) {
+            $key = $m[2];
+            $id  = isset( $attrs[ '__media_id:' . $key ] ) ? (int) $attrs[ '__media_id:' . $key ] : 0;
+            $rest = $m[1] . $m[3];
+            $rest = trim( preg_replace( '/\\sdata-wpb-media="[^"]*"/', '', ' ' . $rest ) );
+            if ( $id > 0 && function_exists( 'wp_get_attachment_image' ) ) {
+                // Preserve any class / alt / id attributes the original
+                // template carried so the swapped image keeps its
+                // styling hooks. wp_get_attachment_image() will append
+                // its own srcset/sizes attributes on top.
+                $extra = array();
+                if ( preg_match( '/\\sclass="([^"]*)"/i', $rest, $cm ) ) $extra['class'] = $cm[1];
+                if ( preg_match( '/\\salt="([^"]*)"/i',   $rest, $am ) ) $extra['alt']   = $am[1];
+                if ( preg_match( '/\\sid="([^"]*)"/i',    $rest, $im ) ) $extra['id']    = $im[1];
+                $img_html = wp_get_attachment_image( $id, 'full', false, $extra );
+                if ( $img_html ) return $img_html;
+            }
+            $self_close = substr( $m[0], -2, 1 ) === '/' ? ' />' : '>';
+            return '<img ' . $rest . $self_close;
+        },
+        $rendered
+    ) ?? $rendered;
+    // Button-link wrap pass: every <button data-wpb-button-link="key">
+    // gets wrapped with an <a> when the saved URL control carries a
+    // non-empty value. The same rel/target metadata that powers the
+    // <a data-wpb-link> pass is reused. The marker is always stripped.
+    $rendered = preg_replace_callback(
+        '/<button\\b([^>]*?)\\sdata-wpb-button-link="([A-Za-z0-9_]+)"([^>]*)>(.*?)<\\/button>/is',
+        function ( $m ) use ( $attrs ) {
+            $key   = $m[2];
+            $href  = isset( $attrs[ $key ] )            ? (string) $attrs[ $key ]            : '';
+            $rel   = isset( $attrs[ '__rel:' . $key ] ) ? (string) $attrs[ '__rel:' . $key ] : '';
+            $target = isset( $attrs[ '__target:' . $key ] ) ? (string) $attrs[ '__target:' . $key ] : '';
+            $rest = $m[1] . $m[3];
+            $rest = trim( preg_replace( '/\\sdata-wpb-button-link="[^"]*"/', '', ' ' . $rest ) );
+            $btn = '<button ' . $rest . '>' . $m[4] . '</button>';
+            if ( $href === '' ) return $btn;
+            $extra = '';
+            if ( $rel !== '' )    $extra .= ' rel="'    . esc_attr( $rel )    . '"';
+            if ( $target !== '' ) $extra .= ' target="' . esc_attr( $target ) . '"';
+            return '<a href="' . esc_url( $href ) . '"' . $extra . '>' . $btn . '</a>';
+        },
+        $rendered
+    ) ?? $rendered;
     // Link rel/target pass: every <a data-wpb-link="key"> gets its rel
     // and target attributes rewritten from the URL control's metadata
     // (nofollow flag → rel="nofollow", is_external flag → target="_blank"
@@ -236,18 +288,38 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
 
     /**
      * Map our control type tag to Elementor's Controls_Manager constant.
-     * The CHOOSE control is rendered as a SELECT for compactness; for
-     * heading tag pickers we surface the h1-h6 options on the same row.
+     * Heading tag pickers use the native CHOOSE control (the same one
+     * Elementor's own Heading widget exposes), and lists use REPEATER
+     * so each item is editable as its own row.
      */
     private function wpb_control_type( $type ) {
         switch ( $type ) {
             case 'textarea': return \\Elementor\\Controls_Manager::TEXTAREA;
             case 'url':      return \\Elementor\\Controls_Manager::URL;
             case 'media':    return \\Elementor\\Controls_Manager::MEDIA;
-            case 'choose':   return \\Elementor\\Controls_Manager::SELECT;
+            case 'choose':   return \\Elementor\\Controls_Manager::CHOOSE;
+            case 'repeater': return \\Elementor\\Controls_Manager::REPEATER;
             case 'text':
             default:         return \\Elementor\\Controls_Manager::TEXT;
         }
+    }
+
+    /**
+     * Build the icon-toggle option set for a CHOOSE control. For heading
+     * tag pickers we surface every allowed value (h1..h6) with a short
+     * label; an eicon is used when one is available so the UI matches
+     * the native Elementor Heading widget.
+     */
+    private function wpb_choose_options( $opts ) {
+        $out = array();
+        foreach ( $opts as $opt ) {
+            $key = (string) $opt;
+            $out[ $key ] = array(
+                'title' => strtoupper( $key ),
+                'icon'  => 'eicon-editor-' . $key,
+            );
+        }
+        return $out;
     }
 
     protected function register_controls() {
@@ -279,10 +351,34 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
                         $args['default'] = array(
                             'url' => $c['default'] ?? '',
                         );
-                    } elseif ( $type === \\Elementor\\Controls_Manager::SELECT ) {
+                    } elseif ( $type === \\Elementor\\Controls_Manager::CHOOSE ) {
                         $opts = isset( $c['options'] ) && is_array( $c['options'] ) ? $c['options'] : array();
-                        $args['options'] = array_combine( $opts, $opts );
-                        $args['default'] = $c['default'] ?? ( $opts[0] ?? '' );
+                        $args['options']     = $this->wpb_choose_options( $opts );
+                        $args['default']     = $c['default'] ?? ( $opts[0] ?? '' );
+                        $args['toggle']      = false;
+                    } elseif ( $type === \\Elementor\\Controls_Manager::REPEATER ) {
+                        // Build a single-field repeater: each row carries an
+                        // "item" TEXT field that maps back to one <li>.
+                        // Defaults are seeded from the textarea-style
+                        // newline-joined string the extractor stored.
+                        $repeater = new \\Elementor\\Repeater();
+                        $repeater->add_control( 'item', array(
+                            'label'       => esc_html__( 'Item', 'wpb' ),
+                            'type'        => \\Elementor\\Controls_Manager::TEXT,
+                            'default'     => '',
+                            'label_block' => true,
+                        ) );
+                        $args['fields']  = $repeater->get_controls();
+                        $args['default'] = array();
+                        $seed = is_string( $c['default'] ?? '' ) ? (string) $c['default'] : '';
+                        if ( $seed !== '' ) {
+                            foreach ( preg_split( '/\\r?\\n/', $seed ) as $row ) {
+                                $row = trim( $row );
+                                if ( $row === '' ) continue;
+                                $args['default'][] = array( 'item' => $row );
+                            }
+                        }
+                        $args['title_field'] = '{{{ item }}}';
                     } else {
                         $args['default'] = $c['default'] ?? '';
                     }
@@ -342,7 +438,30 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
                     $attrs[ '__target:' . $ck ] = $is_external ? '_blank' : '';
                     $val = isset( $val['url'] ) ? (string) $val['url'] : '';
                 } elseif ( $type === 'media' && is_array( $val ) ) {
+                    // Capture the attachment id alongside the URL so the
+                    // post-render image pass can swap a plain <img> for
+                    // wp_get_attachment_image() (which emits proper
+                    // srcset/sizes) when the user picks an image from
+                    // the WordPress media library.
+                    $attrs[ '__media_id:' . $ck ] = isset( $val['id'] ) ? (int) $val['id'] : 0;
                     $val = isset( $val['url'] ) ? (string) $val['url'] : '';
+                } elseif ( $type === 'repeater' && is_array( $val ) ) {
+                    // Collapse the repeater rows back into the
+                    // newline-joined text the {{LIST:k}} renderer
+                    // expects. Each row is either an associative
+                    // array with an "item" field or, defensively, a
+                    // bare scalar.
+                    $rows = array();
+                    foreach ( $val as $row ) {
+                        if ( is_array( $row ) ) {
+                            $item = isset( $row['item'] ) ? (string) $row['item'] : '';
+                        } else {
+                            $item = (string) $row;
+                        }
+                        $item = trim( $item );
+                        if ( $item !== '' ) $rows[] = $item;
+                    }
+                    $val = implode( "\\n", $rows );
                 } else {
                     $val = is_string( $val ) ? $val : (string) $val;
                 }

@@ -49,13 +49,13 @@ test("extractSectionsFromPage finds the expected top-level sections", () => {
   assert.ok(types.has("attr"), "hero should expose attr fields (image alt)");
 
   // Features section's <ul><li>...</li></ul> must be picked up as a
-  // list group with one TEXTAREA control whose default value carries
-  // the items joined by newlines.
+  // list group with one REPEATER control whose default value seeds the
+  // repeater rows from the items joined by newlines.
   const features = sections.find((s) => s.category === "features")!;
   const listGroup = features.groups.find((g) => g.kind === "list");
   assert.ok(listGroup, "features section must expose a list group");
   assert.equal(listGroup!.controls.length, 1);
-  assert.equal(listGroup!.controls[0].type, "textarea");
+  assert.equal(listGroup!.controls[0].type, "repeater");
   assert.equal(listGroup!.controls[0].default, "Fast\nReliable\nAffordable");
 });
 

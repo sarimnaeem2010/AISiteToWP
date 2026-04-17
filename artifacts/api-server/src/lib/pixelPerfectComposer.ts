@@ -35,6 +35,17 @@ export function composeElementorData(page: ExtractedPage): unknown[] {
             settings[c.key] = { url: c.default, is_external: "", nofollow: "" };
           } else if (c.type === "media") {
             settings[c.key] = { url: c.default, id: 0 };
+          } else if (c.type === "repeater") {
+            // Seed REPEATER rows from the newline-joined default. Each
+            // row is a single { item: "..." } object — matches the
+            // shape Elementor's REPEATER control posts back from the
+            // sidebar.
+            const rows = (c.default ?? "")
+              .split(/\r?\n/)
+              .map((s) => s.trim())
+              .filter((s) => s.length > 0)
+              .map((item) => ({ item }));
+            settings[c.key] = rows;
           } else {
             settings[c.key] = c.default;
           }

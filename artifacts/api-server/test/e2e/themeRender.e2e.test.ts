@@ -810,8 +810,19 @@ test("uploaded themes render end-to-end inside WordPress", { skip: ENABLED ? fal
               assert.equal((v as { url?: string }).url, c.default, `${fx.file}: MEDIA control ${c.key} must carry .url`);
               assert.ok("id" in (v as object), `${fx.file}: MEDIA control ${c.key} missing id`);
             } else if (c.type === "choose") {
-              assert.equal(v, c.default, `${fx.file}: SELECT control ${c.key} must default to ${c.default}`);
-              assert.ok(Array.isArray(c.options) && c.options.length > 0, `${fx.file}: SELECT control ${c.key} must declare options`);
+              assert.equal(v, c.default, `${fx.file}: CHOOSE control ${c.key} must default to ${c.default}`);
+              assert.ok(Array.isArray(c.options) && c.options.length > 0, `${fx.file}: CHOOSE control ${c.key} must declare options`);
+            } else if (c.type === "repeater") {
+              assert.ok(Array.isArray(v), `${fx.file}: REPEATER control ${c.key} must seed an array of rows`);
+              const rows = v as Array<{ item?: string }>;
+              const expected = (c.default ?? "")
+                .split(/\r?\n/)
+                .map((s) => s.trim())
+                .filter((s) => s.length > 0);
+              assert.equal(rows.length, expected.length, `${fx.file}: REPEATER control ${c.key} row count mismatch`);
+              for (let i = 0; i < expected.length; i++) {
+                assert.equal(rows[i]?.item, expected[i], `${fx.file}: REPEATER row ${i} item mismatch`);
+              }
             } else {
               assert.equal(v, c.default, `${fx.file}: TEXT control ${c.key} must default to its scalar value`);
             }

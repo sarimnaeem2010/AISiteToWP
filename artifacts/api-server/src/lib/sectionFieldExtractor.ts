@@ -26,7 +26,7 @@ export interface ExtractedField {
  */
 export type GroupKind = "button" | "link" | "image" | "heading" | "text" | "list";
 
-export type ControlType = "text" | "textarea" | "url" | "media" | "choose";
+export type ControlType = "text" | "textarea" | "url" | "media" | "choose" | "repeater";
 
 export interface ExtractedControl {
   /** Unique key inside the widget. Used both as the Elementor control id and
@@ -340,6 +340,11 @@ function buildSectionTemplate(section: Element): BuildResult {
       const alt = el.getAttribute("alt") ?? "";
       addField(srcKey, "url", src, "image");
       el.setAttribute("src", `{{URL:${srcKey}}}`);
+      // Mark the image so the PHP renderer can swap it for
+      // wp_get_attachment_image() (which emits proper srcset/sizes)
+      // whenever the saved Elementor MEDIA control carries an
+      // attachment id. The marker is stripped by the same pass.
+      el.setAttribute("data-wpb-media", srcKey);
       const controls: ExtractedControl[] = [
         { key: srcKey, fieldKey: srcKey, type: "media", label: "Image", default: src },
       ];
@@ -402,7 +407,7 @@ function buildSectionTemplate(section: Element): BuildResult {
       const joined = items.join("\n");
       addField(itemsKey, "text", joined, "list items");
       // Replace the list's children with a single {{LIST:k}} placeholder
-      // that the PHP renderer expands back to one <li> per non-empty line.
+      // that the PHP renderer expands back to one <li> per repeater row.
       while (el.firstChild) el.removeChild(el.firstChild);
       el.textContent = `{{LIST:${itemsKey}}}`;
       groups.push({
@@ -413,8 +418,12 @@ function buildSectionTemplate(section: Element): BuildResult {
           {
             key: itemsKey,
             fieldKey: itemsKey,
-            type: "textarea",
-            label: "Items (one per line)",
+            // REPEATER control: each row is a single TEXT field named
+            // "item". The widget runtime collapses the repeater rows
+            // back into newline-joined text so the {{LIST:k}} renderer
+            // can keep its existing one-line-per-<li> contract.
+            type: "repeater",
+            label: "Items",
             default: joined,
           },
         ],
@@ -439,21 +448,38 @@ function buildSectionTemplate(section: Element): BuildResult {
           default: text,
         });
       }
-      const href = el.getAttribute("href");
-      if (href && !href.startsWith("#") && !href.startsWith("javascript:")) {
+      const rawHref = el.getAttribute("href");
+      const usableHref =
+        rawHref && !rawHref.startsWith("#") && !rawHref.startsWith("javascript:")
+          ? rawHref
+          : "";
+      const isButtonEl = tag === "BUTTON" || looksLikeButton(el);
+      // Buttons MUST always expose a Link control (Text + Link is the
+      // semantic contract for the "button" group), even when the source
+      // markup didn't carry an href. Anchors only get one when the URL
+      // is real. The PHP renderer wraps button output with an <a> tag
+      // when the user supplies a non-empty URL via the sidebar.
+      if (usableHref || isButtonEl) {
         const linkKey = `${gid}_link`;
-        addField(linkKey, "url", href, "link URL");
-        el.setAttribute("href", `{{URL:${linkKey}}}`);
-        // Mark the anchor so the PHP renderer can also inject the URL
-        // control's rel / target metadata (nofollow + open-in-new-tab)
-        // back onto the element when the user toggles those flags in
-        // the Elementor sidebar. The marker is stripped by the same
-        // pass that rewrites the attributes.
-        el.setAttribute("data-wpb-link", linkKey);
-        controls.push({ key: linkKey, fieldKey: linkKey, type: "url", label: "Link", default: href });
+        addField(linkKey, "url", usableHref, "link URL");
+        controls.push({ key: linkKey, fieldKey: linkKey, type: "url", label: "Link", default: usableHref });
+        if (tag === "A") {
+          el.setAttribute("href", `{{URL:${linkKey}}}`);
+          // Mark the anchor so the PHP renderer can also inject the URL
+          // control's rel / target metadata (nofollow + open-in-new-tab)
+          // back onto the element when the user toggles those flags in
+          // the Elementor sidebar. The marker is stripped by the same
+          // pass that rewrites the attributes.
+          el.setAttribute("data-wpb-link", linkKey);
+        } else {
+          // Native <button>: it can't carry an href itself, so mark it
+          // and let the PHP renderer wrap it in an <a> when the saved
+          // URL is non-empty.
+          el.setAttribute("data-wpb-button-link", linkKey);
+        }
       }
       if (controls.length === 0) continue;
-      const labelText = text || (href ?? "Link");
+      const labelText = text || usableHref || "Link";
       const kind: GroupKind = looksLikeButton(el) ? "button" : "link";
       const labelPrefix = kind === "button" ? "Button" : "Link";
       groups.push({
