@@ -67,6 +67,16 @@ function detectE2eEnabled(): { enabled: boolean; reason?: string } {
   }
   const probe = spawnSync("php", ["--version"], { stdio: "ignore" });
   if (probe.status !== 0) {
+    // In CI, refuse to silently skip the regression gate — a misconfigured
+    // runner without PHP would otherwise let breakage merge. We surface
+    // this by reporting enabled=true with no reason, so the test runs and
+    // fails loudly the first time it tries to spawn `bash setup-wp.sh`.
+    if (process.env.CI === "1" || process.env.CI === "true") {
+      throw new Error(
+        "WordPress render E2E requires PHP 8+ on PATH but `php` is unavailable. " +
+          "Install PHP on the CI runner or set SKIP_WP_E2E=1 explicitly to acknowledge skipping the regression gate.",
+      );
+    }
     return {
       enabled: false,
       reason: "php not available on PATH (install PHP 8+ to enable the WP render check)",
