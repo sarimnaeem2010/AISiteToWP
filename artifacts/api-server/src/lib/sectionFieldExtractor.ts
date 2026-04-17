@@ -615,6 +615,12 @@ export function extractSectionsFromPage(
   pageSlug: string,
   projectSlug: string,
   sourceCss?: string,
+  /**
+   * Override the decomposer mode for this call. When omitted, the
+   * `NATIVE_ELEMENTOR_MODE` env var is consulted (defaulting to
+   * `"shell"`). Tests use this to opt into per-widget translation.
+   */
+  decomposerModeOverride?: "shell" | "deep",
 ): ExtractedSection[] {
   const dom = new JSDOM(html);
   const body = dom.window.document.body;
@@ -655,19 +661,27 @@ export function extractSectionsFromPage(
     // When decomposition succeeds we ship the native Elementor tree and
     // skip the custom widget entirely — fields/groups/template stay
     // empty and the theme generator omits the PHP widget class.
-    // Native decomposition is opt-in via env flag. The legacy
-    // custom-widget pipeline preserves the original markup + CSS
-    // verbatim and is the safe default; the native path is still
-    // experimental — for sites with interactive components (canvas,
-    // SVG widgets, custom data-* hooks) it can break visual fidelity
-    // because Elementor's default widget styles override the site CSS.
-    // Set NATIVE_ELEMENTOR_DECOMPOSER=1 to enable it.
-    const nativeEnabled = process.env.NATIVE_ELEMENTOR_DECOMPOSER === "1";
+    // Native decomposition has two modes (see DecomposerMode in
+    // nativeElementorDecomposer.ts):
+    //   - "shell" (default): native Section + Column shells with the
+    //     original markup preserved verbatim inside one html widget per
+    //     column. 100% visual fidelity, sidebar-clickable structure.
+    //   - "deep" (opt-in): every leaf becomes a native widget; great
+    //     for clean modern pages, risky for sites with custom CSS and
+    //     interactive components (canvas, forms, SVG widgets).
+    // Either mode can be skipped entirely by setting
+    // NATIVE_ELEMENTOR_DECOMPOSER=0 (falls back to the legacy
+    // custom-widget PHP path).
+    const nativeFlag = process.env.NATIVE_ELEMENTOR_DECOMPOSER ?? "1";
+    const nativeEnabled = nativeFlag !== "0" && nativeFlag !== "false";
+    const mode: "shell" | "deep" =
+      decomposerModeOverride ??
+      (process.env.NATIVE_ELEMENTOR_MODE === "deep" ? "deep" : "shell");
     const cleanClone = el.cloneNode(true) as Element;
     let nativeElementor: unknown | undefined;
     if (nativeEnabled) {
       try {
-        const decomposed = decomposeSectionToNative(cleanClone, projectSlug, idx, pageSlug, sheet);
+        const decomposed = decomposeSectionToNative(cleanClone, projectSlug, idx, pageSlug, sheet, mode);
         if (decomposed) nativeElementor = decomposed;
       } catch {
         // Decomposition is best-effort — never block the import.

@@ -603,6 +603,58 @@ function planColumns(root: Element): ColumnPlanResult {
   };
 }
 
+/**
+ * "Shell" column builder — wraps the column's original innerHTML in a
+ * single Elementor `html` widget. Used by the default decomposer mode
+ * to guarantee 100% visual fidelity: nothing inside the column is
+ * re-emitted as a native widget, so the original CSS, scripts, and
+ * interactive components (canvas/SVG/forms) survive the import
+ * untouched. Sections and columns remain sidebar-clickable and can be
+ * dragged/duplicated; per-widget editing of the inner content is the
+ * trade-off you make for full fidelity.
+ *
+ * Ancestor wrapper classes that were dropped during column detection
+ * are propagated onto the html widget's `_css_classes` so that
+ * selectors like `.container .grid .hero-text` keep matching.
+ */
+function buildShellColumn(
+  plan: ColumnPlan,
+  ctx: WalkContext,
+  idx: number,
+  ancestorClasses: string[],
+): ElementorNode {
+  const colCtx: WalkContext = {
+    seedPrefix: `${ctx.seedPrefix}:col-${idx}`,
+    counter: { n: 0 },
+    sheet: ctx.sheet,
+  };
+  const ownCls = classOf(plan.el);
+  const ownId = idOf(plan.el);
+  const innerHtml = plan.el.innerHTML.trim();
+  const widgets: ElementorNode[] = [];
+  if (innerHtml.length > 0) {
+    widgets.push(
+      withAncestorClasses(
+        emitHtmlFallbackWidget(`${colCtx.seedPrefix}:html`, innerHtml),
+        ancestorClasses,
+      ),
+    );
+  }
+  const settings: Record<string, unknown> = {
+    _column_size: plan.size,
+    _inline_size: null,
+  };
+  if (ownCls) settings._css_classes = ownCls;
+  if (ownId) settings._element_id = ownId;
+  return {
+    id: elementorId(`${colCtx.seedPrefix}:wrap`),
+    elType: "column",
+    isInner: false,
+    settings,
+    elements: widgets,
+  };
+}
+
 function buildColumn(
   plan: ColumnPlan,
   ctx: WalkContext,
@@ -658,12 +710,26 @@ function buildColumn(
  * section is empty or all content was filtered out (caller should fall
  * back to the legacy custom-widget path).
  */
+/**
+ * "shell" — emit native Section + Column shells, but each column's
+ *           content stays as one html widget that holds the original
+ *           markup verbatim (100% visual fidelity, sections/columns
+ *           are sidebar-clickable, content blocks are not).
+ * "deep"  — every recognizable leaf becomes a true native widget
+ *           (heading/text-editor/button/image/icon-list). Sidebar is
+ *           fully clickable but Elementor's default widget styling
+ *           may override the original CSS for nav menus, full-width
+ *           buttons, custom typography, etc.
+ */
+export type DecomposerMode = "shell" | "deep";
+
 export function decomposeSectionToNative(
   rootEl: Element,
   projectSlug: string,
   sectionIndex: number,
   pageSlug = "",
   sheet?: ParsedSheet,
+  mode: DecomposerMode = "shell",
 ): ElementorNode | null {
   // Page slug enters the seed so two pages in the same project don't
   // collide on `${projectSlug}:sec-1:section` — Elementor requires
@@ -673,7 +739,11 @@ export function decomposeSectionToNative(
   const ctx: WalkContext = { seedPrefix, counter: { n: 0 }, sheet };
 
   const { plans, droppedAncestorClasses } = planColumns(rootEl);
-  const columns = plans.map((p, i) => buildColumn(p, ctx, i, droppedAncestorClasses));
+  const columns = plans.map((p, i) =>
+    mode === "shell"
+      ? buildShellColumn(p, ctx, i, droppedAncestorClasses)
+      : buildColumn(p, ctx, i, droppedAncestorClasses),
+  );
   // Filter columns whose only widget is an empty html fallback.
   const nonEmpty = columns.filter((c) => c.elements.length > 0);
   if (nonEmpty.length === 0) return null;

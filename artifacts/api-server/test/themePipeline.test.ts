@@ -29,7 +29,7 @@ const ALL_FIXTURES: Array<{ file: string; pageSlug: string; projectSlug: string;
 ];
 
 test("extractSectionsFromPage finds the expected top-level sections", () => {
-  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG);
+  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG, undefined, "deep");
   // header, hero section, features section, footer = 4 top-level semantic blocks
   assert.equal(sections.length, 4, "fixture should yield 4 top-level sections");
 
@@ -90,7 +90,7 @@ test("linked images yield BOTH a link/button group and an image group", () => {
       <img src="/img/logo.png" alt="Acme logo">
     </a>
   </section></body></html>`;
-  const sections = extractSectionsFromPage(html, "home", "fixture-link-img");
+  const sections = extractSectionsFromPage(html, "home", "fixture-link-img", undefined, "deep");
   assert.ok(sections.length > 0, "extractor must find the hero section");
   const native = sections.find((s) => s.nativeElementor);
   if (native) {
@@ -161,7 +161,7 @@ test("section block names and ids are stable across repeated extractions", () =>
 });
 
 test("generateThemeZip produces a valid Elementor-only child theme bundle", () => {
-  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG);
+  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG, undefined, "deep");
   const buf = generateThemeZip({
     projectName: "Fixture Site",
     projectSlug: PROJECT_SLUG,
@@ -226,7 +226,7 @@ test("generateThemeZip produces a valid Elementor-only child theme bundle", () =
 });
 
 test("every PHP file in the generated theme parses cleanly", () => {
-  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG);
+  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG, undefined, "deep");
   const buf = generateThemeZip({
     projectName: "Fixture Site",
     projectSlug: PROJECT_SLUG,
@@ -286,7 +286,7 @@ class Foo {
 });
 
 test("checkPhpSyntax catches a syntax error introduced into a generated template", () => {
-  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG);
+  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG, undefined, "deep");
   const buf = generateThemeZip({
     projectName: "Fixture Site",
     projectSlug: PROJECT_SLUG,
@@ -330,7 +330,7 @@ function checkJsSyntax(src: string, filename: string): { ok: boolean; error?: st
 }
 
 test("every JS file in the generated theme parses cleanly", () => {
-  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG);
+  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG, undefined, "deep");
   const buf = generateThemeZip({
     projectName: "Fixture Site",
     projectSlug: PROJECT_SLUG,
@@ -354,7 +354,7 @@ test("every JS file in the generated theme parses cleanly", () => {
 });
 
 test("template.js is omitted when combinedJs is empty", () => {
-  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG);
+  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG, undefined, "deep");
   const buf = generateThemeZip({
     projectName: "Fixture Site",
     projectSlug: PROJECT_SLUG,
@@ -401,7 +401,7 @@ function checkCssSyntax(src: string, filename: string): { ok: boolean; error?: s
 }
 
 test("every CSS file in the generated theme parses cleanly", () => {
-  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG);
+  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG, undefined, "deep");
   const buf = generateThemeZip({
     projectName: "Fixture Site",
     projectSlug: PROJECT_SLUG,
@@ -437,7 +437,7 @@ body { margin: 0; padding: 0; }
 });
 
 test("checkCssSyntax catches a syntax error introduced into a generated stylesheet", () => {
-  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG);
+  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG, undefined, "deep");
   const buf = generateThemeZip({
     projectName: "Fixture Site",
     projectSlug: PROJECT_SLUG,
@@ -560,7 +560,7 @@ for (const fx of ALL_FIXTURES) {
 
 test("[complex-page.html] image-heavy hero rebases inline background-image to {{THEME_URI}}", () => {
   const html = readFileSync(path.join(__dirname, "fixtures/complex-page.html"), "utf8");
-  const sections = extractSectionsFromPage(html, "complex-home", "complex-fixture-site");
+  const sections = extractSectionsFromPage(html, "complex-home", "complex-fixture-site", undefined, "deep");
   const hero = sections.find((s) => s.category === "hero");
   assert.ok(hero, "complex-page.html should produce a hero section");
   if (hero!.nativeElementor) {
@@ -606,7 +606,7 @@ test("native decomposer turns a hero into heading + text + button + image widget
       </div>
     </section>
   </body></html>`;
-  const sections = extractSectionsFromPage(html, "home", "hero-fixture");
+  const sections = extractSectionsFromPage(html, "home", "hero-fixture", undefined, "deep");
   const hero = sections.find((s) => s.category === "hero");
   assert.ok(hero, "hero section must be found");
   assert.ok(hero!.nativeElementor, "hero must be decomposed natively");
@@ -630,7 +630,7 @@ test("native decomposer plans 3 columns from a flex/grid 3-card row", () => {
       </div>
     </section>
   </body></html>`;
-  const sections = extractSectionsFromPage(html, "home", "features-fixture");
+  const sections = extractSectionsFromPage(html, "home", "features-fixture", undefined, "deep");
   const features = sections[0];
   assert.ok(features.nativeElementor, "features must be decomposed natively");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -656,7 +656,7 @@ test("native decomposer preserves a <form> as html fallback while keeping siblin
       </form>
     </section>
   </body></html>`;
-  const sections = extractSectionsFromPage(html, "home", "contact-fixture");
+  const sections = extractSectionsFromPage(html, "home", "contact-fixture", undefined, "deep");
   const contact = sections[0];
   assert.ok(contact.nativeElementor, "contact section must be decomposed natively");
   const json = JSON.stringify(contact.nativeElementor);
@@ -675,7 +675,7 @@ test("composer + theme generator: native page emits zero widget-*.php files", ()
       <div class="card"><h3>C</h3><p>3</p></div>
     </div></section>
   </body></html>`;
-  const sections = extractSectionsFromPage(html, "home", "native-only-fixture");
+  const sections = extractSectionsFromPage(html, "home", "native-only-fixture", undefined, "deep");
   assert.ok(sections.every((s) => s.nativeElementor), "every section must go native");
   const buf = generateThemeZip({
     projectName: "Native Only",
@@ -715,7 +715,7 @@ test("native decomposer propagates ancestor wrapper classes onto widget _css_cla
       </div>
     </section>
   </body></html>`;
-  const sections = extractSectionsFromPage(html, "home", "fidelity-fixture");
+  const sections = extractSectionsFromPage(html, "home", "fidelity-fixture", undefined, "deep");
   const hero = sections[0];
   assert.ok(hero.nativeElementor, "hero must be decomposed natively");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -763,7 +763,7 @@ test("css-to-Elementor controls translator: heading typography & color flow into
       <a href="/x" class="btn">Go</a>
     </section>
   </body></html>`;
-  const sections = extractSectionsFromPage(html, "home", "css-translator-fixture");
+  const sections = extractSectionsFromPage(html, "home", "css-translator-fixture", undefined, "deep");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const sec = sections[0].nativeElementor as any;
   assert.ok(sec, "section must be decomposed natively");
@@ -806,7 +806,7 @@ test("css translator: inline style overrides stylesheet for the same element", (
       <h1 style="color: #0000ff">Title</h1>
     </section>
   </body></html>`;
-  const sections = extractSectionsFromPage(html, "home", "css-inline-fixture");
+  const sections = extractSectionsFromPage(html, "home", "css-inline-fixture", undefined, "deep");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const sec = sections[0].nativeElementor as any;
   const heading = sec.elements[0].elements.find((w: { widgetType: string }) => w.widgetType === "heading");
@@ -821,7 +821,7 @@ test("css translator: malformed CSS does not crash the pipeline", () => {
     <section class="hero"><h1>OK</h1></section>
   </body></html>`;
   // Should not throw; partial parsing recovery is acceptable.
-  const sections = extractSectionsFromPage(html, "home", "css-broken-fixture");
+  const sections = extractSectionsFromPage(html, "home", "css-broken-fixture", undefined, "deep");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const sec = sections[0].nativeElementor as any;
   assert.ok(sec, "section must still decompose despite bad CSS");
@@ -838,7 +838,7 @@ test("css translator: tolerant parsing keeps valid rules around a broken one", (
   </style></head><body>
     <section class="hero"><h1>Title</h1><p>Body</p></section>
   </body></html>`;
-  const sections = extractSectionsFromPage(html, "home", "css-tolerant-fixture");
+  const sections = extractSectionsFromPage(html, "home", "css-tolerant-fixture", undefined, "deep");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const sec = sections[0].nativeElementor as any;
   const widgets = sec.elements[0].elements as Array<{ widgetType: string; settings: Record<string, unknown> }>;
@@ -856,7 +856,7 @@ test("css translator: stylesheet !important beats inline normal", () => {
   </style></head><body>
     <section class="hero"><h1 style="color: blue">Hi</h1></section>
   </body></html>`;
-  const sections = extractSectionsFromPage(html, "home", "important-fixture");
+  const sections = extractSectionsFromPage(html, "home", "important-fixture", undefined, "deep");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const sec = sections[0].nativeElementor as any;
   const heading = sec.elements[0].elements.find((w: { widgetType: string }) => w.widgetType === "heading");
@@ -869,11 +869,45 @@ test("css translator: inline !important beats stylesheet !important", () => {
   </style></head><body>
     <section class="hero"><h1 style="color: green !important">Hi</h1></section>
   </body></html>`;
-  const sections = extractSectionsFromPage(html, "home", "inline-imp-fixture");
+  const sections = extractSectionsFromPage(html, "home", "inline-imp-fixture", undefined, "deep");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const sec = sections[0].nativeElementor as any;
   const heading = sec.elements[0].elements.find((w: { widgetType: string }) => w.widgetType === "heading");
   assert.equal(heading.settings.title_color, "green", "inline !important wins overall");
+});
+
+test('shell mode (default): native section + column shell with the original markup preserved verbatim inside one html widget', () => {
+  // The hybrid default — sections/columns are sidebar-clickable but
+  // the inner content survives 100% intact (interactive components,
+  // custom CSS hooks, scripts). This is the regression gate against
+  // ever silently re-introducing per-widget translation as default.
+  const html = `<!doctype html><html><body>
+    <section class="hero" id="hero-1">
+      <div class="container">
+        <h1 class="hero-title">Master guitar with <span>interactive</span> lessons</h1>
+        <canvas id="fretboard" data-strings="6"></canvas>
+        <a class="btn btn-primary" href="/start">Start Learning</a>
+      </div>
+    </section>
+  </body></html>`;
+  const sections = extractSectionsFromPage(html, "home", "shell-fixture");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sec = sections[0].nativeElementor as any;
+  assert.equal(sec.elType, "section", "outer node must be a native Elementor section");
+  assert.equal(sec.elements.length, 1, "shell mode must produce exactly one column");
+  const col = sec.elements[0];
+  assert.equal(col.elType, "column", "child must be a native column shell");
+  assert.equal(col.elements.length, 1, "shell column must hold exactly one widget");
+  const w = col.elements[0];
+  assert.equal(w.widgetType, "html", "shell-mode column content must stay as a single html widget");
+  // The original markup — including the canvas widget and its
+  // data-strings hook — must survive verbatim inside the html widget.
+  assert.match(w.settings.html, /<canvas id="fretboard" data-strings="6">/);
+  // The pipeline rebases relative URLs to {{THEME_URI}}/assets/ so the
+  // theme ZIP can self-contain its referenced files. Verify the link
+  // text and the rebased href both survived.
+  assert.match(w.settings.html, /<a class="btn btn-primary" href="\{\{THEME_URI\}\}\/assets\/start">Start Learning<\/a>/);
+  assert.match(w.settings.html, /<h1 class="hero-title">Master guitar with <span>interactive<\/span> lessons<\/h1>/);
 });
 
 test("css translator: inheritable color/typography flow from ancestor to widget", () => {
@@ -883,7 +917,7 @@ test("css translator: inheritable color/typography flow from ancestor to widget"
   </style></head><body>
     <section class="hero"><h1>Inherits</h1></section>
   </body></html>`;
-  const sections = extractSectionsFromPage(html, "home", "inherit-fixture");
+  const sections = extractSectionsFromPage(html, "home", "inherit-fixture", undefined, "deep");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const sec = sections[0].nativeElementor as any;
   const heading = sec.elements[0].elements.find((w: { widgetType: string }) => w.widgetType === "heading");
