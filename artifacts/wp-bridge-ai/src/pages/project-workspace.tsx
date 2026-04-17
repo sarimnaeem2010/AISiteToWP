@@ -47,6 +47,8 @@ export default function ProjectWorkspace() {
   const deleteProject = useDeleteProject();
 
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [pastedHtml, setPastedHtml] = useState("");
+  const [reparsing, setReparsing] = useState(false);
 
   const form = useForm<z.infer<typeof wpConfigSchema>>({
     resolver: zodResolver(wpConfigSchema),
@@ -164,9 +166,6 @@ export default function ProjectWorkspace() {
     proj.renderer === "elementor" ? "elementor" : proj.renderer === "raw_html" ? "raw_html" : "gutenberg";
   const cpts: Array<{ slug: string; label: string; pluralLabel: string; sourceSemanticType: string; fields: string[]; enabled: boolean }> =
     Array.isArray(proj.customPostTypes) ? proj.customPostTypes : [];
-
-  const [pastedHtml, setPastedHtml] = useState("");
-  const [reparsing, setReparsing] = useState(false);
 
   const reuploadZip = async (file: File) => {
     setReparsing(true);
