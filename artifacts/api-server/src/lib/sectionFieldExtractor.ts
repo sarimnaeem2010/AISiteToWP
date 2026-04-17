@@ -121,13 +121,13 @@ function rebaseAssetUrls(root: Element): void {
           const rewritten = v.split(",").map((part) => {
             const segs = part.trim().split(/\s+/);
             if (segs[0] && isRelativeAssetUrl(segs[0])) {
-              segs[0] = `{{THEME_URI}}/${segs[0].replace(/^\.?\/+/, "")}`;
+              segs[0] = `{{THEME_URI}}/assets/${segs[0].replace(/^\.?\/+/, "")}`;
             }
             return segs.join(" ");
           }).join(", ");
           el.setAttribute(attr, rewritten);
         } else if (isRelativeAssetUrl(v)) {
-          el.setAttribute(attr, `{{THEME_URI}}/${v.replace(/^\.?\/+/, "")}`);
+          el.setAttribute(attr, `{{THEME_URI}}/assets/${v.replace(/^\.?\/+/, "")}`);
         }
       }
     }
@@ -138,7 +138,7 @@ function rebaseAssetUrls(root: Element): void {
     if (!style) continue;
     const rewritten = style.replace(/url\((['"]?)([^'")]+)\1\)/gi, (_m, q, url) => {
       if (!isRelativeAssetUrl(url)) return `url(${q}${url}${q})`;
-      return `url(${q}{{THEME_URI}}/${url.replace(/^\.?\/+/, "")}${q})`;
+      return `url(${q}{{THEME_URI}}/assets/${url.replace(/^\.?\/+/, "")}${q})`;
     });
     if (rewritten !== style) el.setAttribute("style", rewritten);
   }
