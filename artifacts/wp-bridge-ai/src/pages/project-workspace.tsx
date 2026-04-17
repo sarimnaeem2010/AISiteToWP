@@ -5,13 +5,14 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Check, ChevronRight, Download, FileCode2, Globe, LayoutTemplate, Settings2, Trash2, Shield, UploadCloud, Eye, AlertCircle, Database, Layers, Sparkles } from "lucide-react";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { useGetProject, useUpdateWordPressConfig, useTestWordPressConnection, usePushToWordPress, useDeleteProject } from "@workspace/api-client-react";
+import { useGetProject, useUpdateWordPressConfig, useTestWordPressConnection, useDeleteProject } from "@workspace/api-client-react";
 import { useToast } from "@/hooks/use-toast";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -43,7 +44,6 @@ export default function ProjectWorkspace() {
   
   const updateConfig = useUpdateWordPressConfig();
   const testConnection = useTestWordPressConnection();
-  const pushToWp = usePushToWordPress();
   const deleteProject = useDeleteProject();
 
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
@@ -53,6 +53,16 @@ export default function ProjectWorkspace() {
   const [chatInput, setChatInput] = useState("");
   const [chatBusy, setChatBusy] = useState(false);
   const [chatLog, setChatLog] = useState<Array<{ role: "user" | "ai"; text: string }>>([]);
+  const [themeStatus, setThemeStatus] = useState<{
+    reachable: boolean;
+    matches: boolean;
+    activeThemeSlug: string | null;
+    activeThemeName: string | null;
+    expectedThemeSlug: string;
+    requiresCustomTheme: boolean;
+    reason: string | null;
+  } | null>(null);
+  const [pushing, setPushing] = useState(false);
 
   const form = useForm<z.infer<typeof wpConfigSchema>>({
     resolver: zodResolver(wpConfigSchema),
@@ -81,6 +91,32 @@ export default function ProjectWorkspace() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project?.wpConfig?.wpUrl, project?.wpConfig?.wpUsername, project?.wpConfig?.authMode, project?.wpConfig?.useAcf]);
+
+  // Probe the target site for the active theme when this project is in
+  // pixel-perfect mode. The push button uses this to warn the user before
+  // they push pages that depend on a custom theme that's not yet active.
+  const apiBaseEarly = import.meta.env.BASE_URL;
+  const projAny = project as { renderer?: string; wpConfig?: { wpUrl?: string; authMode?: string } } | undefined;
+  const isPixelPerfect = projAny?.renderer === "pixel_perfect";
+  const isApiKeyMode = projAny?.wpConfig?.authMode === "api_key";
+  useEffect(() => {
+    if (!id || !isPixelPerfect || !projAny?.wpConfig?.wpUrl || !isApiKeyMode) {
+      setThemeStatus(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${apiBaseEarly}api/projects/${id}/active-theme`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setThemeStatus(data);
+      } catch {
+        /* fail-soft: no warning shown if probe fails */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [id, isPixelPerfect, projAny?.wpConfig?.wpUrl, isApiKeyMode, apiBaseEarly, project?.lastPushedAt]);
 
   if (isLoading || !project) {
     return <div className="p-8 text-center font-mono text-muted-foreground">Loading project workspace...</div>;
@@ -139,30 +175,60 @@ export default function ProjectWorkspace() {
     });
   };
 
-  const onPush = () => {
-    pushToWp.mutate({ id }, {
-      onSuccess: (res) => {
-        const r = res as any;
-        const created = r.pagesCreated ?? 0;
-        const updated = r.pagesUpdated ?? 0;
-        const cptCount = (r.cptItemsCreated ?? 0) + (r.cptItemsUpdated ?? 0);
-        const parts: string[] = [];
-        if (created > 0) parts.push(`${created} created`);
-        if (updated > 0) parts.push(`${updated} updated`);
-        if (cptCount > 0) parts.push(`${cptCount} CPT items`);
-        const desc = parts.length > 0 ? `Pages: ${parts.join(", ")}.` : "No changes were applied.";
-        if (res.success) {
-          toast({ title: "Push Successful", description: desc });
-        } else {
-          toast({ title: "Push completed with errors", description: desc, variant: "destructive" });
+  const doPush = async (force: boolean): Promise<void> => {
+    setPushing(true);
+    try {
+      const res = await fetch(`${import.meta.env.BASE_URL}api/projects/${id}/push`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force }),
+      });
+      const data = await res.json().catch(() => ({}));
+      // Theme-not-active warning: prompt to override or cancel.
+      const warning = (data as { warning?: string }).warning;
+      if (res.status === 409 && (warning === "theme_not_active" || warning === "plugin_outdated")) {
+        const d = data as { message?: string; expectedThemeSlug?: string; activeThemeSlug?: string };
+        const proceed = window.confirm(
+          `${d.message ?? "Custom theme not active on target site."}\n\n` +
+            `Expected theme: ${d.expectedThemeSlug}\nActive theme:   ${d.activeThemeSlug ?? "unknown"}\n\n` +
+            `Click OK to push anyway, or Cancel to install/activate the theme first.`,
+        );
+        if (proceed) {
+          await doPush(true);
         }
-        refetch();
-      },
-      onError: (err) => {
-        toast({ title: "Push Failed", description: err.message, variant: "destructive" });
+        return;
       }
-    });
+      if (!res.ok) {
+        throw new Error((data as { error?: string }).error || `HTTP ${res.status}`);
+      }
+      const r = data as {
+        success?: boolean;
+        pagesCreated?: number;
+        pagesUpdated?: number;
+        cptItemsCreated?: number;
+        cptItemsUpdated?: number;
+      };
+      const created = r.pagesCreated ?? 0;
+      const updated = r.pagesUpdated ?? 0;
+      const cptCount = (r.cptItemsCreated ?? 0) + (r.cptItemsUpdated ?? 0);
+      const parts: string[] = [];
+      if (created > 0) parts.push(`${created} created`);
+      if (updated > 0) parts.push(`${updated} updated`);
+      if (cptCount > 0) parts.push(`${cptCount} CPT items`);
+      const desc = parts.length > 0 ? `Pages: ${parts.join(", ")}.` : "No changes were applied.";
+      if (r.success) {
+        toast({ title: "Push Successful", description: desc });
+      } else {
+        toast({ title: "Push completed with errors", description: desc, variant: "destructive" });
+      }
+      refetch();
+    } catch (err) {
+      toast({ title: "Push Failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    } finally {
+      setPushing(false);
+    }
   };
+  const onPush = () => { void doPush(false); };
 
   const apiBase = import.meta.env.BASE_URL;
   const proj = project as any;
@@ -918,21 +984,79 @@ export default function ProjectWorkspace() {
                     <li className="flex items-center gap-2"><Check className="h-3 w-3 text-emerald-500" /> Plugin companion ready</li>
                   </ul>
                 </div>
-                <Button 
-                  size="lg" 
-                  className="w-full font-mono text-base h-14" 
-                  onClick={onPush}
-                  disabled={pushToWp.isPending}
-                >
-                  {pushToWp.isPending ? (
-                    "Deploying..."
+                {(() => {
+                  const themeMissing =
+                    renderer === "pixel_perfect" &&
+                    themeStatus !== null &&
+                    themeStatus.requiresCustomTheme &&
+                    themeStatus.reachable &&
+                    !themeStatus.matches;
+                  const themeUnknown =
+                    renderer === "pixel_perfect" &&
+                    (themeStatus === null || !themeStatus.reachable);
+                  const tooltip = themeMissing
+                    ? `The pixel-perfect theme "${themeStatus?.expectedThemeSlug}" is not active on the target site (active: "${themeStatus?.activeThemeSlug ?? "unknown"}"). Pages will render as "unknown block" placeholders. Install and activate the theme above first, or push anyway to override.`
+                    : themeUnknown && renderer === "pixel_perfect"
+                      ? "Could not verify the active theme on the target site (api-key auth required). Pixel-perfect mode needs the generated theme installed and active before pushing — install/activate it above first."
+                      : "";
+                  const button = (
+                    <Button
+                      size="lg"
+                      className={`w-full font-mono text-base h-14 ${themeMissing ? "border-amber-500 bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-400" : ""}`}
+                      variant={themeMissing ? "outline" : "default"}
+                      onClick={onPush}
+                      disabled={pushing}
+                      data-testid="button-push-to-wordpress"
+                    >
+                      {pushing ? (
+                        "Deploying..."
+                      ) : themeMissing ? (
+                        <>
+                          <AlertCircle className="mr-2 h-5 w-5" />
+                          Push Anyway — Theme Not Active
+                        </>
+                      ) : (
+                        <>
+                          <UploadCloud className="mr-2 h-5 w-5" />
+                          Convert & Push to WordPress
+                        </>
+                      )}
+                    </Button>
+                  );
+                  return tooltip ? (
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>{button}</TooltipTrigger>
+                        <TooltipContent className="max-w-sm font-mono text-xs">{tooltip}</TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
                   ) : (
-                    <>
-                      <UploadCloud className="mr-2 h-5 w-5" />
-                      Convert & Push to WordPress
-                    </>
-                  )}
-                </Button>
+                    button
+                  );
+                })()}
+                {renderer === "pixel_perfect" && themeStatus && themeStatus.reachable && !themeStatus.matches && (
+                  <p
+                    className="text-xs text-amber-600 dark:text-amber-400 font-mono mt-2 flex items-start gap-2"
+                    data-testid="theme-warning"
+                  >
+                    <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                    <span>
+                      The custom theme <span className="font-semibold">{themeStatus.expectedThemeSlug}</span> isn't
+                      active on this site (active: <span className="font-semibold">{themeStatus.activeThemeSlug ?? "unknown"}</span>).
+                      Install and activate it from the WordPress Target card above before pushing — otherwise
+                      every section will render as an "unknown block" placeholder.
+                    </span>
+                  </p>
+                )}
+                {renderer === "pixel_perfect" && (themeStatus === null || !themeStatus.reachable) && (
+                  <p
+                    className="text-xs text-muted-foreground font-mono mt-2"
+                    data-testid="theme-warning-unknown"
+                  >
+                    Pixel-perfect mode requires the generated theme to be installed and active on the target site.
+                    Use the Install/Activate Theme buttons above before pushing.
+                  </p>
+                )}
               </CardContent>
             </Card>
           )}

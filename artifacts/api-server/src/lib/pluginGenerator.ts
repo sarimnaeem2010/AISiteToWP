@@ -294,12 +294,14 @@ function wp_bridge_auth_check( WP_REST_Request $request ) {
 function wp_bridge_status_handler( WP_REST_Request $request ) {
     return rest_ensure_response( array(
         'active'             => true,
-        'version'            => '1.4.0',
+        'version'            => '1.5.0',
         'project'            => WP_BRIDGE_PROJECT_SLUG,
         'wp_version'         => get_bloginfo( 'version' ),
         'site_name'          => get_bloginfo( 'name' ),
         'acf_active'         => function_exists( 'get_field' ),
         'elementor_active'   => did_action( 'elementor/loaded' ) > 0 || class_exists( '\\\\Elementor\\\\Plugin' ),
+        'active_theme'       => get_stylesheet(),
+        'active_theme_name'  => wp_get_theme()->get( 'Name' ),
         'registered_cpts'    => json_decode( WP_BRIDGE_CPTS_JSON, true ),
     ) );
 }

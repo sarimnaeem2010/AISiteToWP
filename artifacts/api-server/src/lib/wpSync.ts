@@ -109,6 +109,44 @@ export async function installTheme(
   }
 }
 
+/**
+ * Probe the WordPress site (via the companion plugin's status endpoint)
+ * for the currently active theme stylesheet slug. Requires api_key auth.
+ * Returns null on any failure so callers can fail-soft (skip the warning
+ * rather than blocking the push).
+ */
+export async function getActiveTheme(
+  config: WpConfig,
+): Promise<{ slug: string | null; name: string | null; reachable: boolean; error?: string }> {
+  if (!config.wpUrl) return { slug: null, name: null, reachable: false, error: "WP URL not set" };
+  if (config.authMode !== "api_key" || !config.wpApiKey) {
+    return { slug: null, name: null, reachable: false, error: "Active-theme probe requires api_key auth" };
+  }
+  try {
+    await assertSafeUrl(config.wpUrl);
+  } catch (err) {
+    return { slug: null, name: null, reachable: false, error: err instanceof Error ? err.message : String(err) };
+  }
+  const url = `${config.wpUrl.replace(/\/$/, "")}/wp-json/ai-cms/v1/status`;
+  try {
+    const res = await fetch(url, {
+      headers: { "X-Api-Key": config.wpApiKey },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) {
+      return { slug: null, name: null, reachable: false, error: `Status HTTP ${res.status}` };
+    }
+    const data = (await res.json()) as { active_theme?: string; active_theme_name?: string };
+    return {
+      slug: typeof data.active_theme === "string" ? data.active_theme : null,
+      name: typeof data.active_theme_name === "string" ? data.active_theme_name : null,
+      reachable: true,
+    };
+  } catch (err) {
+    return { slug: null, name: null, reachable: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 export async function activateTheme(
   config: WpConfig,
   themeSlug: string,

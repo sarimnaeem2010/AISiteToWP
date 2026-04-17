@@ -16,7 +16,7 @@ import {
 } from "@workspace/api-zod";
 import { parseHtml, parseSingleHtmlPage, type ParsedPage, type ParsedSite, type DesignSystem } from "../lib/parser";
 import { mapToWordPress, type CustomPostTypeDef } from "../lib/wpMapper";
-import { testConnection, pushToWordPress, setAsHomepage, installTheme, activateTheme } from "../lib/wpSync";
+import { testConnection, pushToWordPress, setAsHomepage, installTheme, activateTheme, getActiveTheme } from "../lib/wpSync";
 import { extractSectionsFromPage, type ExtractedPage } from "../lib/sectionFieldExtractor";
 import { generateThemeZip } from "../lib/themeGenerator";
 import { composeGutenbergContent, composeElementorData } from "../lib/pixelPerfectComposer";
@@ -678,6 +678,61 @@ router.post("/projects/:id/test-connection", async (req, res): Promise<void> => 
   res.json(result);
 });
 
+/**
+ * Probe the configured WordPress instance for the currently active theme
+ * and compare it to the expected per-project pixel-perfect theme slug.
+ * Used by the Push button to surface a warning before the user pushes
+ * pages that depend on a custom theme that hasn't been installed yet.
+ * Requires api_key auth (basic auth can't reach the plugin status route).
+ */
+router.get("/projects/:id/active-theme", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const params = GetProjectParams.safeParse({ id: raw });
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+  const [project] = await db
+    .select()
+    .from(projectsTable)
+    .where(eq(projectsTable.id, Number(params.data.id)));
+  if (!project) {
+    res.status(404).json({ error: "Project not found" });
+    return;
+  }
+  const { projectSlug } = buildExtractedPages(project);
+  const requiresCustomTheme = (project.renderer ?? "gutenberg") === "pixel_perfect";
+  if (!project.wpUrl || project.authMode !== "api_key" || !project.wpApiKey) {
+    res.json({
+      reachable: false,
+      activeThemeSlug: null,
+      activeThemeName: null,
+      expectedThemeSlug: projectSlug,
+      requiresCustomTheme,
+      matches: false,
+      reason: "Active-theme probe requires api_key auth via the companion plugin.",
+    });
+    return;
+  }
+  const probe = await getActiveTheme({
+    wpUrl: project.wpUrl,
+    wpUsername: project.wpUsername,
+    wpAppPassword: project.wpAppPassword,
+    wpApiKey: project.wpApiKey,
+    authMode: "api_key",
+    useAcf: project.useAcf === "true",
+  });
+  res.json({
+    reachable: probe.reachable,
+    activeThemeSlug: probe.slug,
+    activeThemeName: probe.name,
+    expectedThemeSlug: projectSlug,
+    requiresCustomTheme,
+    matches: probe.reachable && probe.slug === projectSlug,
+    reason: probe.error ?? null,
+  });
+});
+
 router.post("/projects/:id/push", async (req, res): Promise<void> => {
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = PushToWordPressParams.safeParse({ id: raw });
@@ -747,7 +802,43 @@ router.post("/projects/:id/push", async (req, res): Promise<void> => {
       });
       return;
     }
-    const { pages: extPages } = buildExtractedPages(project);
+    const { pages: extPages, projectSlug: expectedThemeSlug } = buildExtractedPages(project);
+    // Probe active theme on target site. If it isn't the expected
+    // pixel-perfect theme, every section will render as an "unknown block"
+    // placeholder — so block the push and surface a structured warning the
+    // UI can act on. The user can re-submit with `force: true` to override
+    // (e.g. they intentionally want to push pages before installing).
+    const force = Boolean((req.body as { force?: unknown } | undefined)?.force);
+    if (!force && authMode === "api_key" && project.wpApiKey) {
+      const probe = await getActiveTheme({
+        wpUrl: project.wpUrl,
+        wpUsername: project.wpUsername,
+        wpAppPassword: project.wpAppPassword,
+        wpApiKey: project.wpApiKey,
+        authMode: "api_key",
+        useAcf: project.useAcf === "true",
+      });
+      if (probe.reachable && probe.slug !== expectedThemeSlug) {
+        // Distinguish "old plugin doesn't report active_theme" from a real
+        // mismatch. Older companion plugins (<1.5.0) returned 200 from
+        // /status without the active_theme field — so we can't actually
+        // tell what's installed. Send a different message in that case so
+        // users know to re-download the plugin instead of chasing a theme
+        // mismatch that may not exist.
+        const oldPlugin = probe.slug === null;
+        const message = oldPlugin
+          ? `Could not verify the active WordPress theme — the installed companion plugin is older than 1.5.0 and doesn't expose this info. Re-download the plugin from the Get Plugin page (or pass force=true to push anyway).`
+          : `The pixel-perfect theme "${expectedThemeSlug}" is not active on this site (active: "${probe.slug}"). Pages will render as "unknown block" placeholders. Install and activate the theme before pushing, or pass force=true to push anyway.`;
+        res.status(409).json({
+          warning: oldPlugin ? "plugin_outdated" : "theme_not_active",
+          message,
+          expectedThemeSlug,
+          activeThemeSlug: probe.slug,
+          activeThemeName: probe.name,
+        });
+        return;
+      }
+    }
     prebuiltBySlug = {};
     elementorPages = [];
     for (const ep of extPages) {
