@@ -272,8 +272,31 @@ function wpb_render_section_template( string $template_path, array $attrs ): str
                 }
                 return $img;
             }
-            $open_attrs = $rest === '' ? '' : ' ' . $rest;
-            return '<' . $tagn . $open_attrs . '>' . $m[5] . '</' . $tagn . '>';
+            // Font-icon branch: the element stays an <i> / <span> but we
+            // still honour the sibling Alt Text + Icon Link controls so
+            // editors get the same accessibility / link affordances they
+            // would have after swapping in an SVG. Alt Text becomes an
+            // aria-label (with role="img" so AT actually announces it on
+            // a presentational glyph). Icon Link wraps the whole element
+            // in an <a>, mirroring the SVG branch's rel/target plumbing.
+            $extra_attrs = '';
+            if ( $alt_text !== '' ) {
+                // Drop any pre-existing aria-label / role so we always
+                // reflect the saved control values rather than whatever
+                // the original markup carried.
+                $rest = preg_replace( '/\\s(?:aria-label|role)="[^"]*"/i', '', ' ' . $rest );
+                $rest = trim( $rest );
+                $extra_attrs = ' role="img" aria-label="' . esc_attr( $alt_text ) . '"';
+            }
+            $open_attrs = ( $rest === '' ? '' : ' ' . $rest ) . $extra_attrs;
+            $element = '<' . $tagn . $open_attrs . '>' . $m[5] . '</' . $tagn . '>';
+            if ( $link_url !== '' ) {
+                $extra = '';
+                if ( $link_rel    !== '' ) $extra .= ' rel="'    . esc_attr( $link_rel )    . '"';
+                if ( $link_target !== '' ) $extra .= ' target="' . esc_attr( $link_target ) . '"';
+                return '<a href="' . esc_url( $link_url ) . '"' . $extra . '>' . $element . '</a>';
+            }
+            return $element;
         },
         $rendered
     ) ?? $rendered;

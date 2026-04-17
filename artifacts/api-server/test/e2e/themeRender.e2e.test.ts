@@ -682,6 +682,22 @@ test("uploaded themes render end-to-end inside WordPress", { skip: ENABLED ? fal
     // ICONS reducer in wpb_settings_to_attrs surfaces this through the
     // {{ATTR:k}} substitution that rewrites the <i>'s class attribute.
     iconGroup!.settings[iconCtl!.key] = { value: iconMutatedClass, library: "fa-solid" };
+    // Sibling Alt Text + Icon Link controls must apply in the font-icon
+    // branch too, not just after an SVG swap. Pre-populate them now so
+    // the Phase A render asserts that the rendered <i> picks up an
+    // aria-label and is wrapped in an <a href rel target>.
+    const iconAltCtlA  = iconGroup!.controls.find((c) => c.key.endsWith("_icon_alt"));
+    const iconLinkCtlA = iconGroup!.controls.find((c) => c.key.endsWith("_icon_link"));
+    assert.ok(iconAltCtlA,  "icon group must expose an Alt Text control alongside the ICONS control");
+    assert.ok(iconLinkCtlA, "icon group must expose an Icon Link URL control alongside the ICONS control");
+    const iconFontAlt  = "MUTATED font-icon alt " + Math.random().toString(36).slice(2, 8);
+    const iconFontLink = "https://example.com/mutated-font-icon-target";
+    iconGroup!.settings[iconAltCtlA!.key]  = iconFontAlt;
+    iconGroup!.settings[iconLinkCtlA!.key] = {
+      url: iconFontLink,
+      is_external: true,
+      nofollow: true,
+    };
 
     const applyIconClass = run(
       "php",
@@ -725,6 +741,42 @@ test("uploaded themes render end-to-end inside WordPress", { skip: ENABLED ? fal
     assert.ok(
       !iconClassHtml.includes(originalUniqueToken),
       `original icon class token "${originalUniqueToken}" should not survive mutation`,
+    );
+    // Alt Text on a font icon must surface as aria-label (with role="img"
+    // so screen readers actually announce a presentational glyph).
+    assert.equal(
+      mutatedIconEl!.getAttribute("aria-label"),
+      iconFontAlt,
+      `font-icon <i> must carry the editor-supplied Alt Text as aria-label`,
+    );
+    assert.equal(
+      mutatedIconEl!.getAttribute("role"),
+      "img",
+      `font-icon <i> must carry role="img" so AT announces it as an image`,
+    );
+    // Icon Link on a font icon must wrap the <i> in an <a> with the
+    // saved href, plus the rel/target plumbing the URL control encodes.
+    const fontIconParent = mutatedIconEl!.parentElement;
+    assert.ok(fontIconParent, "font-icon <i> must have a parent element");
+    assert.equal(
+      fontIconParent!.tagName,
+      "A",
+      `font-icon <i> must be wrapped by an <a>, got <${fontIconParent!.tagName.toLowerCase()}>`,
+    );
+    assert.equal(
+      fontIconParent!.getAttribute("href"),
+      iconFontLink,
+      `wrapping <a> must carry the editor-supplied href, got "${fontIconParent!.getAttribute("href")}"`,
+    );
+    assert.match(
+      fontIconParent!.getAttribute("rel") ?? "",
+      /nofollow/,
+      `wrapping <a> must carry rel="nofollow" when the URL control's nofollow flag is set`,
+    );
+    assert.equal(
+      fontIconParent!.getAttribute("target"),
+      "_blank",
+      `wrapping <a> must carry target="_blank" when the URL control's is_external flag is set`,
     );
 
     // Phase B: pick an SVG from the media library. The ICONS control
