@@ -525,6 +525,34 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
         ) );
 
         if ( in_array( $native, array( 'heading', 'text-editor', 'button', 'icon-list' ), true ) ) {
+            // Heading-only Size preset: mirrors the native Heading
+            // widget's Size control (Default/Small/Medium/Large/XL/XXL)
+            // by mapping the chosen preset to a font-size declaration
+            // on the leaf. Skipped for text-editor/button/icon-list
+            // which don't surface this control natively.
+            if ( $native === 'heading' ) {
+                $this->add_control( $g['id'] . '_native_size', array(
+                    'label'     => esc_html__( 'Size', 'wpb' ),
+                    'type'      => \\Elementor\\Controls_Manager::SELECT,
+                    'default'   => 'default',
+                    'options'   => array(
+                        'default' => esc_html__( 'Default', 'wpb' ),
+                        'small'   => esc_html__( 'Small', 'wpb' ),
+                        'medium'  => esc_html__( 'Medium', 'wpb' ),
+                        'large'   => esc_html__( 'Large', 'wpb' ),
+                        'xl'      => esc_html__( 'XL', 'wpb' ),
+                        'xxl'     => esc_html__( 'XXL', 'wpb' ),
+                    ),
+                    'selectors_dictionary' => array(
+                        'small'  => 'font-size: 15px;',
+                        'medium' => 'font-size: 19px;',
+                        'large'  => 'font-size: 29px;',
+                        'xl'     => 'font-size: 39px;',
+                        'xxl'    => 'font-size: 59px;',
+                    ),
+                    'selectors' => array( $sel => '{{VALUE}};' ),
+                ) );
+            }
             $this->add_control( $g['id'] . '_native_color', array(
                 'label'     => esc_html__( 'Text Color', 'wpb' ),
                 'type'      => \\Elementor\\Controls_Manager::COLOR,
@@ -551,6 +579,42 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
                         'selector' => $sel,
                     )
                 );
+            }
+            // Heading-only Text Stroke + Blend Mode round out the native
+            // Heading widget's Style tab. Group_Control_Text_Stroke is
+            // only present in Elementor Pro, so we class_exists-guard
+            // it. Blend Mode ships in core Elementor.
+            if ( $native === 'heading' ) {
+                if ( class_exists( '\\Elementor\\Group_Control_Text_Stroke' ) ) {
+                    $this->add_group_control(
+                        \\Elementor\\Group_Control_Text_Stroke::get_type(),
+                        array(
+                            'name'     => $g['id'] . '_native_text_stroke',
+                            'selector' => $sel,
+                        )
+                    );
+                }
+                $this->add_control( $g['id'] . '_native_blend_mode', array(
+                    'label'     => esc_html__( 'Blend Mode', 'wpb' ),
+                    'type'      => \\Elementor\\Controls_Manager::SELECT,
+                    'options'   => array(
+                        ''            => esc_html__( 'Normal', 'wpb' ),
+                        'multiply'    => 'Multiply',
+                        'screen'      => 'Screen',
+                        'overlay'     => 'Overlay',
+                        'darken'      => 'Darken',
+                        'lighten'     => 'Lighten',
+                        'color-dodge' => 'Color Dodge',
+                        'saturation'  => 'Saturation',
+                        'color'       => 'Color',
+                        'difference'  => 'Difference',
+                        'exclusion'   => 'Exclusion',
+                        'hue'         => 'Hue',
+                        'luminosity'  => 'Luminosity',
+                    ),
+                    'selectors' => array( $sel => 'mix-blend-mode: {{VALUE}};' ),
+                    'separator' => 'none',
+                ) );
             }
         }
 
