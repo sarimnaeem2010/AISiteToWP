@@ -24,7 +24,7 @@ export interface ExtractedField {
  * placeholder substitution pipeline keeps working unchanged — groups are an
  * organizational layer on top of the flat field model, not a replacement.
  */
-export type GroupKind = "button" | "link" | "image" | "heading" | "text" | "list";
+export type GroupKind = "button" | "link" | "image" | "heading" | "text" | "list" | "icon";
 
 export type ControlType = "text" | "textarea" | "url" | "media" | "choose" | "repeater";
 
@@ -233,6 +233,19 @@ function collectGroupTargets(section: Element): Element[] {
       out.push(el);
       return;
     }
+    // Icon group: a leaf <i class="fa-..."> or <span class="icon-..."> that
+    // carries no text. Edited as a single TEXT control whose value is
+    // the icon class string — enough to swap one Font Awesome / icon
+    // font glyph for another from the Elementor sidebar.
+    if (
+      (tag === "I" || tag === "SPAN") &&
+      el.children.length === 0 &&
+      !isMeaningfulText(el.textContent ?? "") &&
+      /\b(fa|fas|far|fab|fal|icon|bi|material-icons|ti|dashicons)[-\s]/i.test(el.className?.toString() ?? "")
+    ) {
+      out.push(el);
+      return;
+    }
     if (tag === "UL" || tag === "OL") {
       // List groups expose the items as a single TEXTAREA control with one
       // line per <li>. We only treat the list as a group when its children
@@ -435,6 +448,30 @@ function buildSectionTemplate(section: Element): BuildResult {
             label: "Items",
             default: joined,
           },
+        ],
+      });
+      continue;
+    }
+
+    // ---- ICON ----
+    if (
+      (tag === "I" || tag === "SPAN") &&
+      el.children.length === 0 &&
+      !isMeaningfulText(el.textContent ?? "") &&
+      /\b(fa|fas|far|fab|fal|icon|bi|material-icons|ti|dashicons)[-\s]/i.test(el.className?.toString() ?? "")
+    ) {
+      const gid = nextGroupId();
+      const classKey = `${gid}_icon_class`;
+      const cls = el.className?.toString() ?? "";
+      addField(classKey, "attr", cls, "icon class");
+      el.setAttribute("class", `{{ATTR:${classKey}}}`);
+      const labelText = cls.length > 32 ? cls.slice(0, 32) + "…" : cls;
+      groups.push({
+        id: gid,
+        kind: "icon",
+        label: `Icon — ${labelText || "icon"}`,
+        controls: [
+          { key: classKey, fieldKey: classKey, type: "text", label: "Icon Class", default: cls },
         ],
       });
       continue;

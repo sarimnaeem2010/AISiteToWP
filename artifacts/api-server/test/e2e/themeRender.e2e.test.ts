@@ -762,15 +762,23 @@ test("uploaded themes render end-to-end inside WordPress", { skip: ENABLED ? fal
       for (const section of sections) {
         for (const field of section.fields) {
           if (field.type === "tag") continue; // tag-swap field, value is just "h1".."h6"
-          const expected = field.default.includes("{{THEME_URI}}/assets/")
+          const rebased = field.default.includes("{{THEME_URI}}/assets/")
             ? field.default.replace("{{THEME_URI}}/assets/", themeUri)
             : field.default;
-          assert.ok(
-            renderedBody.includes(expected),
-            `${fx.file}: field "${field.key}" (${field.type}) from block ` +
-              `${section.blockName} did not appear in the elementor-rendered page.\n` +
-              `expected to find: ${expected}`,
-          );
+          // List/repeater fields are stored as a newline-joined scalar
+          // but rendered as one <li> per row, so the joined string
+          // never appears verbatim. Check each row instead.
+          const expectedFragments = rebased.includes("\n")
+            ? rebased.split(/\r?\n/).map((s) => s.trim()).filter((s) => s.length > 0)
+            : [rebased];
+          for (const expected of expectedFragments) {
+            assert.ok(
+              renderedBody.includes(expected),
+              `${fx.file}: field "${field.key}" (${field.type}) from block ` +
+                `${section.blockName} did not appear in the elementor-rendered page.\n` +
+                `expected to find: ${expected}`,
+            );
+          }
         }
       }
 
