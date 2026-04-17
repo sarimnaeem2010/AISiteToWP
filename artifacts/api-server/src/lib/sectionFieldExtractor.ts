@@ -26,7 +26,7 @@ export interface ExtractedField {
  */
 export type GroupKind = "button" | "link" | "image" | "heading" | "text" | "list" | "icon";
 
-export type ControlType = "text" | "textarea" | "url" | "media" | "choose" | "repeater";
+export type ControlType = "text" | "textarea" | "url" | "media" | "choose" | "repeater" | "icons";
 
 export interface ExtractedControl {
   /** Unique key inside the widget. Used both as the Elementor control id and
@@ -194,6 +194,22 @@ function firstText(el: Element): string {
   return "";
 }
 
+/**
+ * True when `el` is a leaf icon-font element — `<i class="fa fa-x">` or
+ * `<span class="icon-...">` with no children and no meaningful text. These
+ * become the standalone `icon` group kind, edited from Elementor with the
+ * native ICONS control. Detection is shared between the walker (so icons
+ * inside <a>/<button> are also collected) and the per-target builder.
+ */
+function isIconLeaf(el: Element): boolean {
+  const tag = el.tagName;
+  if (tag !== "I" && tag !== "SPAN") return false;
+  if (el.children.length !== 0) return false;
+  if (isMeaningfulText(el.textContent ?? "")) return false;
+  const cls = el.className?.toString() ?? "";
+  return /\b(fa|fas|far|fab|fal|icon|bi|material-icons|ti|dashicons)[-\s]/i.test(cls);
+}
+
 function looksLikeButton(el: Element): boolean {
   const tag = el.tagName;
   if (tag === "BUTTON") return true;
@@ -222,10 +238,13 @@ function collectGroupTargets(section: Element): Element[] {
       // above (its href becomes the URL control), but the inner <img>
       // also deserves its own MEDIA + Alt Text controls — otherwise a
       // common pattern (logo / hero image wrapped in a link) would lose
-      // image editing entirely. Descend only into IMG descendants so we
-      // still don't double-emit text controls for nested <span>s.
+      // image editing entirely. Same idea for icon-only buttons / social
+      // links (`<a><i class="fab fa-twitter"></i></a>`): descend just
+      // enough to surface the inner icon as its own ICONS control so
+      // customers can swap glyphs on icon CTAs. We still don't descend
+      // further so nested <span>s don't get double-emitted as text.
       for (const child of Array.from(el.children)) {
-        if (child.tagName === "IMG") out.push(child);
+        if (child.tagName === "IMG" || isIconLeaf(child)) out.push(child);
       }
       return;
     }
@@ -233,16 +252,11 @@ function collectGroupTargets(section: Element): Element[] {
       out.push(el);
       return;
     }
-    // Icon group: a leaf <i class="fa-..."> or <span class="icon-..."> that
-    // carries no text. Edited as a single TEXT control whose value is
-    // the icon class string — enough to swap one Font Awesome / icon
-    // font glyph for another from the Elementor sidebar.
-    if (
-      (tag === "I" || tag === "SPAN") &&
-      el.children.length === 0 &&
-      !isMeaningfulText(el.textContent ?? "") &&
-      /\b(fa|fas|far|fab|fal|icon|bi|material-icons|ti|dashicons)[-\s]/i.test(el.className?.toString() ?? "")
-    ) {
+    // Standalone icon group: a leaf <i class="fa-..."> or
+    // <span class="icon-..."> that carries no text. Edited from
+    // Elementor with the native ICONS control so customers can pick a
+    // new glyph (or upload an SVG) from the sidebar.
+    if (isIconLeaf(el)) {
       out.push(el);
       return;
     }
@@ -454,24 +468,27 @@ function buildSectionTemplate(section: Element): BuildResult {
     }
 
     // ---- ICON ----
-    if (
-      (tag === "I" || tag === "SPAN") &&
-      el.children.length === 0 &&
-      !isMeaningfulText(el.textContent ?? "") &&
-      /\b(fa|fas|far|fab|fal|icon|bi|material-icons|ti|dashicons)[-\s]/i.test(el.className?.toString() ?? "")
-    ) {
+    if (isIconLeaf(el)) {
       const gid = nextGroupId();
       const classKey = `${gid}_icon_class`;
       const cls = el.className?.toString() ?? "";
       addField(classKey, "attr", cls, "icon class");
       el.setAttribute("class", `{{ATTR:${classKey}}}`);
+      // Marker so the PHP renderer can swap the element for an <img>
+      // when the user picks an SVG via the ICONS / MEDIA control. The
+      // marker is always stripped on its way out.
+      el.setAttribute("data-wpb-icon", classKey);
       const labelText = cls.length > 32 ? cls.slice(0, 32) + "…" : cls;
       groups.push({
         id: gid,
         kind: "icon",
         label: `Icon — ${labelText || "icon"}`,
         controls: [
-          { key: classKey, fieldKey: classKey, type: "text", label: "Icon Class", default: cls },
+          // Native Elementor ICONS control — supports both font-icon
+          // libraries (Font Awesome, etc.) and SVG uploads via the
+          // attached MEDIA library. The default is the original class
+          // so an unmodified import round-trips byte-identically.
+          { key: classKey, fieldKey: classKey, type: "icons", label: "Icon", default: cls },
         ],
       });
       continue;

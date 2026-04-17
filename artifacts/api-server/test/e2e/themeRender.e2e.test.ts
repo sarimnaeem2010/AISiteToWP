@@ -820,6 +820,10 @@ test("uploaded themes render end-to-end inside WordPress", { skip: ENABLED ? fal
             } else if (c.type === "choose") {
               assert.equal(v, c.default, `${fx.file}: CHOOSE control ${c.key} must default to ${c.default}`);
               assert.ok(Array.isArray(c.options) && c.options.length > 0, `${fx.file}: CHOOSE control ${c.key} must declare options`);
+            } else if (c.type === "icons") {
+              assert.equal(typeof v, "object", `${fx.file}: ICONS control ${c.key} must be an object`);
+              assert.equal((v as { value?: string }).value, c.default, `${fx.file}: ICONS control ${c.key} must carry .value = default`);
+              assert.ok("library" in (v as object), `${fx.file}: ICONS control ${c.key} missing library`);
             } else if (c.type === "repeater") {
               assert.ok(Array.isArray(v), `${fx.file}: REPEATER control ${c.key} must seed an array of rows`);
               const rows = v as Array<{ item?: string }>;
@@ -841,7 +845,7 @@ test("uploaded themes render end-to-end inside WordPress", { skip: ENABLED ? fal
       // group kinds end-to-end. The other fixtures are noisier so we
       // only require their group settings round-trip correctly above.
       if (fx.file === "widget-page.html") {
-        for (const required of ["button", "link", "image", "heading", "text"] as const) {
+        for (const required of ["button", "link", "image", "heading", "text", "icon"] as const) {
           assert.ok(
             seenKinds.has(required),
             `${fx.file}: expected at least one "${required}" group across all sections, ` +

@@ -35,6 +35,13 @@ export function composeElementorData(page: ExtractedPage): unknown[] {
             settings[c.key] = { url: c.default, is_external: "", nofollow: "" };
           } else if (c.type === "media") {
             settings[c.key] = { url: c.default, id: 0 };
+          } else if (c.type === "icons") {
+            // ICONS control: shape mirrors what the Elementor sidebar
+            // posts back. Default seeds the original icon-font class
+            // tagged as a Font Awesome library entry, so an unmodified
+            // import re-renders byte-identically. SVG uploads only show
+            // up after the user picks one from the Elementor sidebar.
+            settings[c.key] = { value: c.default, library: "fa-solid" };
           } else if (c.type === "repeater") {
             // Seed REPEATER rows from the newline-joined default. Each
             // row is a single { item: "..." } object — matches the

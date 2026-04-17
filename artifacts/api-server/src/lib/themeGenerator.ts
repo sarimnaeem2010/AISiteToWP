@@ -221,6 +221,38 @@ function wpb_render_section_template( string $template_path, array $attrs ): str
         },
         $rendered
     ) ?? $rendered;
+    // Icon swap pass: any <i data-wpb-icon="key"> or <span data-wpb-icon="key">
+    // gets the marker stripped on its way out. When the saved ICONS
+    // control points at an SVG upload (library === 'svg'), the element
+    // is replaced wholesale with an <img src="..."> so the uploaded
+    // glyph actually renders in the browser. Font-icon edits are
+    // already taken care of by the {{ATTR:k}} substitution that
+    // rewrites the element's class attribute.
+    $rendered = preg_replace_callback(
+        '/<(i|span)\\b([^>]*?)\\sdata-wpb-icon="([A-Za-z0-9_]+)"([^>]*?)>(.*?)<\\/\\1>/is',
+        function ( $m ) use ( $attrs ) {
+            $tagn = strtolower( $m[1] );
+            $key  = $m[3];
+            $svg  = isset( $attrs[ '__icon_svg:' . $key ] ) ? (string) $attrs[ '__icon_svg:' . $key ] : '';
+            $rest = $m[2] . $m[4];
+            $rest = preg_replace( '/\\sdata-wpb-icon="[^"]*"/', '', ' ' . $rest );
+            $rest = trim( $rest );
+            if ( $svg !== '' ) {
+                // Preserve the original class hook so any sibling CSS
+                // (sizing, color, alignment) keeps applying to the swapped
+                // SVG. Drop the (now-empty) class="" emitted by the
+                // {{ATTR:k}} pass — a stray empty class attribute looks
+                // sloppy in the rendered HTML.
+                $cls = '';
+                if ( preg_match( '/\\sclass="([^"]*)"/i', ' ' . $rest, $cm ) ) $cls = trim( $cm[1] );
+                $cls_attr = $cls === '' ? '' : ' class="' . esc_attr( $cls ) . '"';
+                return '<img src="' . esc_url( $svg ) . '" alt=""' . $cls_attr . ' />';
+            }
+            $open_attrs = $rest === '' ? '' : ' ' . $rest;
+            return '<' . $tagn . $open_attrs . '>' . $m[5] . '</' . $tagn . '>';
+        },
+        $rendered
+    ) ?? $rendered;
     // Heading tag-swap pass: any element marked with data-wpb-tag="key"
     // gets its open/close tag rewritten to whichever h1-h6 the saved field
     // value asks for. We only touch h1-h6 elements so other markup stays
@@ -299,6 +331,7 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
             case 'media':    return \\Elementor\\Controls_Manager::MEDIA;
             case 'choose':   return \\Elementor\\Controls_Manager::CHOOSE;
             case 'repeater': return \\Elementor\\Controls_Manager::REPEATER;
+            case 'icons':    return \\Elementor\\Controls_Manager::ICONS;
             case 'text':
             default:         return \\Elementor\\Controls_Manager::TEXT;
         }
@@ -350,6 +383,17 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
                     } elseif ( $type === \\Elementor\\Controls_Manager::MEDIA ) {
                         $args['default'] = array(
                             'url' => $c['default'] ?? '',
+                        );
+                    } elseif ( $type === \\Elementor\\Controls_Manager::ICONS ) {
+                        // ICONS control: default value carries the
+                        // original icon-font class string and we tag it
+                        // as a Font Awesome library entry. Customers can
+                        // also swap to an SVG upload via the attached
+                        // MEDIA picker — that case is handled by the
+                        // wpb_settings_to_attrs reduction at render time.
+                        $args['default'] = array(
+                            'value'   => $c['default'] ?? '',
+                            'library' => 'fa-solid',
                         );
                     } elseif ( $type === \\Elementor\\Controls_Manager::CHOOSE ) {
                         $opts = isset( $c['options'] ) && is_array( $c['options'] ) ? $c['options'] : array();
@@ -437,6 +481,24 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
                     $attrs[ '__rel:'    . $ck ] = implode( ' ', array_unique( $rel_parts ) );
                     $attrs[ '__target:' . $ck ] = $is_external ? '_blank' : '';
                     $val = isset( $val['url'] ) ? (string) $val['url'] : '';
+                } elseif ( $type === 'icons' && is_array( $val ) ) {
+                    // ICONS control: shape is { value, library }. For
+                    // font icons (library != 'svg'), value is the class
+                    // string and we surface it as the icon's class via
+                    // the {{ATTR:k}} substitution. For SVG uploads, the
+                    // value is itself { id, url } — we stash the URL on
+                    // a synthetic attrs key (__icon_svg:<key>) so the
+                    // post-render pass can swap the <i>/<span> for an
+                    // <img src="..."> with the uploaded SVG.
+                    $library = isset( $val['library'] ) ? (string) $val['library'] : '';
+                    $iv      = $val['value'] ?? '';
+                    if ( $library === 'svg' && is_array( $iv ) ) {
+                        $svg_url = isset( $iv['url'] ) ? (string) $iv['url'] : '';
+                        $attrs[ '__icon_svg:' . $ck ] = $svg_url;
+                        $val = '';
+                    } else {
+                        $val = is_string( $iv ) ? $iv : (string) $iv;
+                    }
                 } elseif ( $type === 'media' && is_array( $val ) ) {
                     // Capture the attachment id alongside the URL so the
                     // post-render image pass can swap a plain <img> for
