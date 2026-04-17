@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import type { ExtractedPage, ExtractedSection } from "./sectionFieldExtractor";
+import type { ExtractedPage } from "./sectionFieldExtractor";
 
 /**
  * Generate a stable Elementor-style 7-char hex id derived from a seed.
@@ -10,23 +10,6 @@ import type { ExtractedPage, ExtractedSection } from "./sectionFieldExtractor";
  */
 function elementorId(seed: string): string {
   return crypto.createHash("sha1").update(seed).digest("hex").slice(0, 7);
-}
-
-/**
- * Build Gutenberg post_content for a page composed entirely of our custom
- * per-section blocks. Each block is self-closing and carries its attribute
- * values (the original text/links/images) in the comment delimiter so the
- * render.php substitutes them back into the saved template.
- */
-export function composeGutenbergContent(page: ExtractedPage): string {
-  const parts: string[] = [];
-  for (const s of page.sections) {
-    const attrs: Record<string, string> = {};
-    for (const f of s.fields) attrs[f.key] = f.default;
-    const json = JSON.stringify(attrs).replace(/--/g, "\\u002d\\u002d");
-    parts.push(`<!-- wp:${s.blockName} ${json} /-->`);
-  }
-  return parts.join("\n\n");
 }
 
 /**

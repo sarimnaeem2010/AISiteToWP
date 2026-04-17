@@ -8,7 +8,6 @@ import AdmZip from "adm-zip";
 import * as csstree from "css-tree";
 
 import { extractSectionsFromPage } from "../src/lib/sectionFieldExtractor";
-import { composeGutenbergContent } from "../src/lib/pixelPerfectComposer";
 import { generateThemeZip } from "../src/lib/themeGenerator";
 import { checkPhpSyntax } from "../src/lib/phpSyntaxCheck";
 
@@ -26,6 +25,7 @@ const PROJECT_SLUG = "fixture-site";
 const ALL_FIXTURES: Array<{ file: string; pageSlug: string; projectSlug: string; minSections: number }> = [
   { file: "simple-page.html", pageSlug: "home", projectSlug: "fixture-site", minSections: 4 },
   { file: "complex-page.html", pageSlug: "complex-home", projectSlug: "complex-fixture-site", minSections: 4 },
+  { file: "widget-page.html", pageSlug: "widget-home", projectSlug: "widget-fixture-site", minSections: 3 },
 ];
 
 test("extractSectionsFromPage finds the expected top-level sections", () => {
@@ -47,6 +47,16 @@ test("extractSectionsFromPage finds the expected top-level sections", () => {
   assert.ok(types.has("text"), "hero should expose text fields");
   assert.ok(types.has("url"), "hero should expose url fields");
   assert.ok(types.has("attr"), "hero should expose attr fields (image alt)");
+
+  // Features section's <ul><li>...</li></ul> must be picked up as a
+  // list group with one TEXTAREA control whose default value carries
+  // the items joined by newlines.
+  const features = sections.find((s) => s.category === "features")!;
+  const listGroup = features.groups.find((g) => g.kind === "list");
+  assert.ok(listGroup, "features section must expose a list group");
+  assert.equal(listGroup!.controls.length, 1);
+  assert.equal(listGroup!.controls[0].type, "textarea");
+  assert.equal(listGroup!.controls[0].default, "Fast\nReliable\nAffordable");
 });
 
 test("section block names and ids are stable across repeated extractions", () => {
@@ -64,14 +74,7 @@ test("section block names and ids are stable across repeated extractions", () =>
   );
 });
 
-test("composeGutenbergContent emits one block comment per section with attrs", () => {
-  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG);
-  const content = composeGutenbergContent({ slug: PAGE_SLUG, title: "Home", sections });
-  const matches = content.match(/<!-- wp:wpb-fixture-site\/[^ ]+ \{[\s\S]*?\} \/-->/g) ?? [];
-  assert.equal(matches.length, sections.length, "one block comment per section");
-});
-
-test("generateThemeZip produces a valid child theme bundle", () => {
+test("generateThemeZip produces a valid Elementor-only child theme bundle", () => {
   const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG);
   const buf = generateThemeZip({
     projectName: "Fixture Site",
@@ -95,31 +98,30 @@ test("generateThemeZip produces a valid child theme bundle", () => {
     `${root}/page.php`,
     `${root}/header.php`,
     `${root}/footer.php`,
+    `${root}/widgets/_base-widget.php`,
   ]) {
     assert.ok(entries.includes(required), `theme zip must contain ${required}`);
+  }
+
+  // The Elementor-only pivot means the generated theme MUST NOT ship
+  // any Gutenberg block infrastructure: no blocks/ directory, no
+  // block.json, no editor.js. Every editable surface lives inside an
+  // Elementor widget loaded from widgets/.
+  for (const entry of entries) {
+    assert.ok(!entry.startsWith(`${root}/blocks/`), `Gutenberg block directory leaked into theme zip: ${entry}`);
+    assert.ok(!entry.endsWith("/block.json"), `Gutenberg block.json leaked into theme zip: ${entry}`);
+    assert.ok(!entry.endsWith("/editor.js"), `Gutenberg editor.js leaked into theme zip: ${entry}`);
   }
 
   // style.css carries the WP theme header
   const styleCss = zip.getEntry(`${root}/style.css`)!.getData().toString("utf8");
   assert.match(styleCss, /Theme Name:\s*Fixture Site/);
 
-  // One block.json + render.php + template.html per extracted section
-  const blockJsons = entries.filter((n) => n.startsWith(`${root}/blocks/`) && n.endsWith("/block.json"));
-  assert.equal(blockJsons.length, sections.length, "one block.json per section");
-
+  // One widget PHP file + one template.html per extracted section
   for (const section of sections) {
     const dir = section.blockName.split("/")[1];
-    assert.ok(entries.includes(`${root}/blocks/${dir}/block.json`));
-    assert.ok(entries.includes(`${root}/blocks/${dir}/render.php`));
-    assert.ok(entries.includes(`${root}/blocks/${dir}/template.html`));
-    assert.ok(entries.includes(`${root}/widgets/widget-${dir}.php`));
-
-    const json = JSON.parse(zip.getEntry(`${root}/blocks/${dir}/block.json`)!.getData().toString("utf8"));
-    assert.equal(json.name, section.blockName);
-    assert.equal(typeof json.attributes, "object");
-    for (const f of section.fields) {
-      assert.ok(json.attributes[f.key], `block.json for ${section.blockName} must declare attribute ${f.key}`);
-    }
+    assert.ok(entries.includes(`${root}/widgets/widget-${dir}.php`), `missing widget for ${section.blockName}`);
+    assert.ok(entries.includes(`${root}/widgets/templates/${dir}/template.html`), `missing template for ${section.blockName}`);
   }
 });
 
@@ -137,7 +139,6 @@ test("every PHP file in the generated theme parses cleanly", () => {
   const phpEntries = zip.getEntries().filter((e) => !e.isDirectory && e.entryName.endsWith(".php"));
   assert.ok(phpEntries.length > 0, "theme must contain PHP files");
 
-  // Sanity: we expect at least the canonical templates the generator emits.
   const names = phpEntries.map((e) => e.entryName.replace(/\\/g, "/"));
   for (const required of ["functions.php", "index.php", "page.php", "header.php", "footer.php", "widgets/_base-widget.php"]) {
     assert.ok(
@@ -145,7 +146,6 @@ test("every PHP file in the generated theme parses cleanly", () => {
       `expected generated theme to include ${required}`,
     );
   }
-  assert.ok(names.some((n) => /\/blocks\/[^/]+\/render\.php$/.test(n)), "expected at least one block render.php");
   assert.ok(names.some((n) => /\/widgets\/widget-[^/]+\.php$/.test(n)), "expected at least one widget-*.php");
 
   for (const entry of phpEntries) {
@@ -159,9 +159,6 @@ test("every PHP file in the generated theme parses cleanly", () => {
 });
 
 test("checkPhpSyntax accepts the well-formed templates the generator emits", () => {
-  // A minimal but representative PHP snippet covering features used by
-  // the generator: comments, single + double-quoted strings with escapes,
-  // nested arrays/closures, and a conditional class definition.
   const sample = `<?php
 // line comment
 # hash comment
@@ -194,8 +191,6 @@ test("checkPhpSyntax catches a syntax error introduced into a generated template
   const fnEntry = zip.getEntries().find((e) => e.entryName.endsWith("/functions.php"))!;
   const original = fnEntry.getData().toString("utf8");
 
-  // Drop the final closing brace — the kind of regression the previous
-  // structure-only test would have happily shipped.
   const broken = original.replace(/\}\s*\)\s*;\s*$/m, ");");
   assert.notEqual(broken, original, "test scaffolding failed to mutate functions.php");
 
@@ -238,12 +233,11 @@ test("every JS file in the generated theme parses cleanly", () => {
   });
   const zip = new AdmZip(buf);
   const jsEntries = zip.getEntries().filter((e) => !e.isDirectory && e.entryName.endsWith(".js"));
-  assert.ok(jsEntries.length > 0, "theme must contain JS files");
-
+  // The Elementor-only pivot ships no editor.js and no other generated
+  // JS — the only possible .js file is the optional template.js that
+  // bundles the source site's JS.
   const names = jsEntries.map((e) => e.entryName.replace(/\\/g, "/"));
-  assert.ok(names.some((n) => n.endsWith("/assets/editor.js")), "expected editor.js in the theme");
   assert.ok(names.some((n) => n.endsWith("/assets/template.js")), "expected template.js when combinedJs provided");
-
   for (const entry of jsEntries) {
     const src = entry.getData().toString("utf8");
     const result = checkJsSyntax(src, entry.entryName);
@@ -251,17 +245,7 @@ test("every JS file in the generated theme parses cleanly", () => {
   }
 });
 
-test("checkJsSyntax accepts the editor.js shape the generator emits", () => {
-  const sample = `(function(){
-    var x = { a: 1, b: [1,2,3] };
-    function f(n){ return "v:" + n; }
-    return f(x.a);
-  })();`;
-  const result = checkJsSyntax(sample, "sample.js");
-  assert.ok(result.ok, `expected sample to pass: ${result.error}`);
-});
-
-test("checkJsSyntax catches a syntax error introduced into a generated JS template", () => {
+test("template.js is omitted when combinedJs is empty", () => {
   const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG);
   const buf = generateThemeZip({
     projectName: "Fixture Site",
@@ -272,15 +256,14 @@ test("checkJsSyntax catches a syntax error introduced into a generated JS templa
     sourceZip: null,
   });
   const zip = new AdmZip(buf);
-  const editor = zip.getEntries().find((e) => e.entryName.endsWith("/assets/editor.js"))!;
-  const original = editor.getData().toString("utf8");
+  const names = zip.getEntries().map((e) => e.entryName.replace(/\\/g, "/"));
+  assert.ok(!names.some((n) => n.endsWith(".js")), "no JS files should ship when combinedJs is empty");
+});
 
-  // Drop the trailing `})();` — the kind of typo a future edit to EDITOR_JS could ship.
-  const broken = original.replace(/\}\)\(\)\s*;\s*$/m, "");
-  assert.notEqual(broken, original, "test scaffolding failed to mutate editor.js");
-
-  const result = checkJsSyntax(broken, "assets/editor.js");
-  assert.equal(result.ok, false, "validator must flag the unbalanced IIFE");
+test("checkJsSyntax catches a syntax error in the bundled template.js", () => {
+  const broken = `(function(){ var x = ; })();`;
+  const result = checkJsSyntax(broken, "broken.js");
+  assert.equal(result.ok, false);
 });
 
 test("checkJsSyntax flags an unterminated string", () => {
@@ -359,9 +342,6 @@ test("checkCssSyntax catches a syntax error introduced into a generated styleshe
   const tplCss = zip.getEntries().find((e) => e.entryName.endsWith("/assets/template.css"))!;
   const original = tplCss.getData().toString("utf8");
 
-  // Inject a stray closing brace before the first rule — the kind of typo
-  // a future edit to the CSS pipeline could ship and that silently turns
-  // the rendered site into an unstyled wall of text.
   const broken = "}\n" + original;
   assert.notEqual(broken, original, "test scaffolding failed to mutate template.css");
 
@@ -378,17 +358,10 @@ test("checkCssSyntax flags a stray closing brace", () => {
 
 // ----------------------------------------------------------------------
 // Parameterized fixture coverage
-//
-// The simple-page.html-only assertions above lock down the happy path.
-// The tests below run the full extract → compose → generate pipeline
-// against every fixture in ALL_FIXTURES so richer real-world layouts
-// (nested grids, image-heavy heroes with inline background-image
-// styles, inline SVGs, multi-column footers) are exercised without
-// having to spin up WordPress.
 // ----------------------------------------------------------------------
 
 for (const fx of ALL_FIXTURES) {
-  test(`[${fx.file}] extract → compose → generate produces a valid theme bundle`, () => {
+  test(`[${fx.file}] extract → generate produces a valid Elementor-only theme bundle`, () => {
     const html = readFileSync(path.join(__dirname, "fixtures", fx.file), "utf8");
     const sections = extractSectionsFromPage(html, fx.pageSlug, fx.projectSlug);
     assert.ok(
@@ -396,26 +369,15 @@ for (const fx of ALL_FIXTURES) {
       `${fx.file}: expected at least ${fx.minSections} sections, got ${sections.length}`,
     );
 
-    // Every section must declare at least one editable field — otherwise
-    // the upstream "no missing field values" guarantee is meaningless.
     for (const s of sections) {
       assert.ok(s.fields.length > 0, `${fx.file}: ${s.blockName} produced zero fields`);
-      // Field keys must be unique within a section so block.json
-      // attributes don't clobber each other.
       const keys = s.fields.map((f) => f.key);
       assert.equal(new Set(keys).size, keys.length, `${fx.file}: duplicate field keys in ${s.blockName}: ${keys.join(",")}`);
+      // Every section must also expose at least one semantic group so
+      // the Elementor sidebar has something to render.
+      assert.ok(s.groups.length > 0, `${fx.file}: ${s.blockName} produced zero groups`);
     }
 
-    // Composition must emit one self-closing block comment per section
-    // and carry every field's default in the JSON attribute payload.
-    const content = composeGutenbergContent({ slug: fx.pageSlug, title: fx.pageSlug, sections });
-    const matches = content.match(new RegExp(`<!-- wp:wpb-${fx.projectSlug}/[^ ]+ \\{[\\s\\S]*?\\} /-->`, "g")) ?? [];
-    assert.equal(matches.length, sections.length, `${fx.file}: one block comment per section`);
-
-    // Theme zip must contain the canonical files plus per-section
-    // assets, and every block.json must declare every field as an
-    // attribute — this is the "no missing field values" invariant the
-    // e2e check relies on.
     const buf = generateThemeZip({
       projectName: fx.projectSlug,
       projectSlug: fx.projectSlug,
@@ -430,29 +392,31 @@ for (const fx of ALL_FIXTURES) {
       `${fx.projectSlug}/style.css`,
       `${fx.projectSlug}/functions.php`,
       `${fx.projectSlug}/page.php`,
+      `${fx.projectSlug}/widgets/_base-widget.php`,
     ]) {
       assert.ok(entries.includes(required), `${fx.file}: theme zip must contain ${required}`);
     }
     for (const section of sections) {
       const dir = section.blockName.split("/")[1];
-      const blockJsonEntry = zip.getEntry(`${fx.projectSlug}/blocks/${dir}/block.json`);
-      assert.ok(blockJsonEntry, `${fx.file}: missing block.json for ${section.blockName}`);
-      const json = JSON.parse(blockJsonEntry!.getData().toString("utf8"));
-      for (const f of section.fields) {
-        assert.ok(
-          json.attributes[f.key],
-          `${fx.file}: block.json for ${section.blockName} must declare attribute ${f.key}`,
-        );
-        assert.equal(
-          json.attributes[f.key].default,
-          f.default,
-          `${fx.file}: ${section.blockName} attribute ${f.key} default mismatch`,
-        );
-      }
+      assert.ok(
+        entries.includes(`${fx.projectSlug}/widgets/widget-${dir}.php`),
+        `${fx.file}: missing widget for ${section.blockName}`,
+      );
+      assert.ok(
+        entries.includes(`${fx.projectSlug}/widgets/templates/${dir}/template.html`),
+        `${fx.file}: missing template for ${section.blockName}`,
+      );
+      // Widget PHP must embed both wpb_groups (semantic UI) and wpb_fields
+      // (legacy flat lookup) JSON payloads — these are the contract the
+      // Elementor base widget reads from at registration time.
+      const widgetPhp = zip
+        .getEntry(`${fx.projectSlug}/widgets/widget-${dir}.php`)!
+        .getData()
+        .toString("utf8");
+      assert.match(widgetPhp, /wpb_groups\s*=\s*json_decode/, `${fx.file}: widget for ${section.blockName} missing wpb_groups`);
+      assert.match(widgetPhp, /wpb_fields\s*=\s*json_decode/, `${fx.file}: widget for ${section.blockName} missing wpb_fields`);
     }
 
-    // Every PHP file must parse cleanly — richer fixtures could expose
-    // escaping bugs in our PHP code generator that simple-page misses.
     const phpEntries = zip.getEntries().filter((e) => !e.isDirectory && e.entryName.endsWith(".php"));
     for (const entry of phpEntries) {
       const result = checkPhpSyntax(entry.getData().toString("utf8"), entry.entryName);
@@ -461,225 +425,16 @@ for (const fx of ALL_FIXTURES) {
   });
 }
 
-/**
- * Run the generated `assets/editor.js` against a strict `wp` global stub
- * and return the result. Each `wp.<namespace>` is a Proxy that throws on
- * any property access that isn't in the per-namespace allow-list, so a
- * typo in a Gutenberg API name (e.g. `useBlockProsp` instead of
- * `useBlockProps`, or `wp.blokcs` instead of `wp.blocks`) — which would
- * be valid JavaScript and pass syntax checks but blow up inside the WP
- * editor at runtime — fails fast here instead of in production. Returns
- * `{ ok: true }` if the script and the captured `wp.domReady(callback)`
- * both run without throwing, or `{ ok: false, error }` otherwise.
- */
-function runEditorJsAgainstWpStub(
-  src: string,
-  projectSlug: string,
-): { ok: boolean; error?: string } {
-  // Allowed members per Gutenberg namespace, derived from the wp.* APIs
-  // that EDITOR_JS in themeGenerator.ts actually touches. Keep this list
-  // tight: the whole point is that adding a new wp.* reference to
-  // EDITOR_JS without updating this allow-list fails the test, forcing
-  // the author to verify the real Gutenberg API spelling exists.
-  const stubFn = (...args: unknown[]) => ({ __stubCallArgs: args });
-  const sentinel = (label: string) => ({ __stubSentinel: label });
-
-  const namespace = (label: string, allowed: Record<string, unknown>): unknown =>
-    new Proxy(allowed, {
-      get(target, key) {
-        // Symbol-keyed lookups (Symbol.toPrimitive, Symbol.iterator, …)
-        // can be triggered by `||`, template literals, etc. — return
-        // undefined rather than throwing so falsy fallbacks still work.
-        if (typeof key === "symbol") return undefined;
-        // Same for engine-internal accessors that vm/Node may probe.
-        if (key === "then" || key === "constructor" || key === "toJSON") return undefined;
-        if (!(key in target)) {
-          throw new Error(
-            `wp.${label}.${String(key)} is not in the stub allow-list — ` +
-              `if Gutenberg actually exposes this API, add it to the test stub; ` +
-              `if it doesn't, you have a typo in EDITOR_JS.`,
-          );
-        }
-        return (target as Record<string, unknown>)[key as string];
-      },
-    });
-
-  // The Edit factory inside EDITOR_JS calls `wp.blocks.registerBlockType`
-  // for every block returned by `getBlockTypes()` whose name starts with
-  // `wpb-${slug}/`. Pre-register one matching block so the inner loop
-  // actually runs and we exercise makeEdit() + the Edit() function it
-  // produces.
-  const fakeBlock = {
-    name: `wpb-${projectSlug}/sec-1`,
-    attributes: {
-      txt_0: { type: "string", default: "Short headline" },
-      // Long string -> exercises the TextareaControl branch.
-      txt_1: { type: "string", default: "x".repeat(120) },
-      url_0: { type: "string", default: "{{THEME_URI}}/assets/img/logo.png" },
-    },
-  };
-  const editsExercised: number[] = [];
-  let domReadyCb: (() => void) | null = null;
-
-  const wp = {
-    element: namespace("element", {
-      createElement: stubFn,
-      Fragment: sentinel("Fragment"),
-    }),
-    serverSideRender: sentinel("ServerSideRender"),
-    blockEditor: namespace("blockEditor", {
-      InspectorControls: sentinel("InspectorControls"),
-      useBlockProps: () => ({ className: "stub-block-props" }),
-    }),
-    components: namespace("components", {
-      PanelBody: sentinel("PanelBody"),
-      TextControl: sentinel("TextControl"),
-      TextareaControl: sentinel("TextareaControl"),
-    }),
-    domReady: (fn: () => void) => {
-      if (typeof fn !== "function") {
-        throw new Error("wp.domReady was called with a non-function");
-      }
-      domReadyCb = fn;
-    },
-    blocks: namespace("blocks", {
-      getBlockTypes: () => [fakeBlock],
-      unregisterBlockType: (_n: string) => {
-        /* noop — registry is fake */
-      },
-      registerBlockType: (_n: string, def: { edit?: (props: unknown) => unknown; save?: () => unknown }) => {
-        // Actually invoke the Edit() function so any wp.* typo inside
-        // makeEdit (TextControl, TextareaControl, InspectorControls,
-        // PanelBody, useBlockProps, createElement, Fragment) surfaces
-        // here, not just at the top of the IIFE.
-        if (typeof def.edit !== "function") {
-          throw new Error("registerBlockType received a non-function edit");
-        }
-        const setAttributes = (_u: Record<string, unknown>) => {
-          /* noop */
-        };
-        def.edit({ attributes: { ...fakeBlock.attributes }, setAttributes });
-        if (typeof def.save === "function") def.save();
-        editsExercised.push(1);
-      },
-    }),
-  } as Record<string, unknown>;
-
-  const wpProxy = new Proxy(wp, {
-    get(target, key) {
-      if (typeof key === "symbol") return undefined;
-      if (key === "then" || key === "constructor") return undefined;
-      if (!(key in target)) {
-        throw new Error(
-          `wp.${String(key)} is not in the stub allow-list — typo or missing namespace.`,
-        );
-      }
-      return target[key as string];
-    },
-  });
-
-  try {
-    const ctx = vm.createContext({ wp: wpProxy, console });
-    vm.runInContext(src, ctx, { filename: "assets/editor.js" });
-    if (!domReadyCb) {
-      return { ok: false, error: "editor.js never registered a wp.domReady callback" };
-    }
-    (domReadyCb as () => void)();
-    if (editsExercised.length === 0) {
-      return { ok: false, error: "editor.js did not call wp.blocks.registerBlockType for any matching block" };
-    }
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
-  }
-}
-
-test("editor.js runs cleanly against a strict wp.* stub", () => {
-  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG);
-  const zipBuf = generateThemeZip({
-    projectName: "Fixture Site",
-    projectSlug: PROJECT_SLUG,
-    combinedCss: "",
-    combinedJs: "",
-    pages: [{ slug: PAGE_SLUG, title: "Home", sections }],
-    sourceZip: null,
-  });
-  const zip = new AdmZip(zipBuf);
-  const entry = zip.getEntries().find((e) => e.entryName.endsWith("/assets/editor.js"));
-  assert.ok(entry, "editor.js missing from generated theme");
-  const src = entry!.getData().toString("utf8");
-
-  const result = runEditorJsAgainstWpStub(src, PROJECT_SLUG);
-  assert.ok(
-    result.ok,
-    `editor.js threw against the wp.* stub — every reference must use a real Gutenberg API.\n` +
-      `Error: ${result.error}`,
-  );
-});
-
-test("editor.js stub catches a typo in a wp.blockEditor.* API name", () => {
-  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG);
-  const zipBuf = generateThemeZip({
-    projectName: "Fixture Site",
-    projectSlug: PROJECT_SLUG,
-    combinedCss: "",
-    combinedJs: "",
-    pages: [{ slug: PAGE_SLUG, title: "Home", sections }],
-    sourceZip: null,
-  });
-  const zip = new AdmZip(zipBuf);
-  const original = zip.getEntries().find((e) => e.entryName.endsWith("/assets/editor.js"))!.getData().toString("utf8");
-  // Swap useBlockProps -> useBlockProsp everywhere — the kind of typo
-  // that's still valid JS and would only blow up inside Gutenberg.
-  const broken = original.replace(/useBlockProps/g, "useBlockProsp");
-  assert.notEqual(broken, original, "test scaffolding failed to introduce typo");
-  const result = runEditorJsAgainstWpStub(broken, PROJECT_SLUG);
-  assert.equal(result.ok, false, "stub must reject a typo'd wp.blockEditor.* reference");
-  assert.match(
-    result.error ?? "",
-    /useBlockProsp/,
-    `expected error to mention the typo'd identifier, got: ${result.error}`,
-  );
-});
-
-test("editor.js stub catches a typo in a wp.* namespace name", () => {
-  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG);
-  const zipBuf = generateThemeZip({
-    projectName: "Fixture Site",
-    projectSlug: PROJECT_SLUG,
-    combinedCss: "",
-    combinedJs: "",
-    pages: [{ slug: PAGE_SLUG, title: "Home", sections }],
-    sourceZip: null,
-  });
-  const zip = new AdmZip(zipBuf);
-  const original = zip.getEntries().find((e) => e.entryName.endsWith("/assets/editor.js"))!.getData().toString("utf8");
-  // Mistype the top-level `wp.blocks` namespace -> `wp.blokcs`.
-  const broken = original.replace(/wp\.blocks\b/g, "wp.blokcs");
-  assert.notEqual(broken, original, "test scaffolding failed to introduce typo");
-  const result = runEditorJsAgainstWpStub(broken, PROJECT_SLUG);
-  assert.equal(result.ok, false, "stub must reject a typo'd top-level wp.* namespace");
-  assert.match(
-    result.error ?? "",
-    /blokcs/,
-    `expected error to mention the typo'd namespace, got: ${result.error}`,
-  );
-});
-
 test("[complex-page.html] image-heavy hero rebases inline background-image to {{THEME_URI}}", () => {
   const html = readFileSync(path.join(__dirname, "fixtures/complex-page.html"), "utf8");
   const sections = extractSectionsFromPage(html, "complex-home", "complex-fixture-site");
   const hero = sections.find((s) => s.category === "hero");
   assert.ok(hero, "complex-page.html should produce a hero section");
-  // Inline background-image url() in the hero <section> must be rebased
-  // so the rendered theme can resolve it against the bundled assets/.
   assert.match(
     hero!.template,
     /background-image:url\(\{\{THEME_URI\}\}\/assets\/images\/hero-bg\.jpg\)/,
     "hero inline background-image url() must be rewritten to a {{THEME_URI}}/assets/ placeholder",
   );
-  // And the hero should expose multiple image url fields (logo isn't
-  // here — that's in the header — but the screenshot is).
   const urlFields = hero!.fields.filter((f) => f.type === "url");
   assert.ok(urlFields.length >= 2, `hero should expose multiple url fields, got ${urlFields.length}`);
 });

@@ -14,21 +14,21 @@
  * message if `php` isn't on PATH so contributors without PHP installed
  * still get green unit tests; CI is expected to have PHP.
  *
- * Flow (per fixture, per editor mode):
- *   1. setup-wp.sh   — ensures WP + SQLite drop-in + Elementor + installer have run
+ * Flow (per fixture):
+ *   1. setup-wp.sh        — ensures WP + SQLite drop-in + Elementor + installer have run
  *   2. generate the theme zip from the fixture HTML
  *   3. extract the theme into wp-content/themes/<slug>/
- *   4. apply-theme.php (Gutenberg) or apply-elementor.php (Elementor) —
- *      activates theme, creates a page from composed block / Elementor data
+ *   4. apply-elementor.php — activates theme, creates a page driven by
+ *      Elementor with the composed _elementor_data
  *   5. boot `php -S` against the WP dir (once, reused across fixtures)
  *   6. fetch the page HTML and assert that every section's text/url/alt
  *      field round-trips back into the rendered output
  *
- * Each fixture in FIXTURES gets its own theme + page, so the loops also
- * verify that the generator can install multiple themes side-by-side
- * without colliding. The Elementor pass reuses the same generated themes
- * but exercises the Elementor widget render path instead of Gutenberg
- * blocks, catching regressions specific to the Elementor editor.
+ * Each fixture in FIXTURES gets its own theme + page, so the loop also
+ * verifies that the generator can install multiple themes side-by-side
+ * without colliding. After the renderer pivot the only render path is
+ * Elementor — the legacy Gutenberg pass has been deleted along with
+ * composeGutenbergContent.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -44,10 +44,7 @@ import {
   extractSectionsFromPage,
   type ExtractedSection,
 } from "../../src/lib/sectionFieldExtractor";
-import {
-  composeGutenbergContent,
-  composeElementorData,
-} from "../../src/lib/pixelPerfectComposer";
+import { composeElementorData } from "../../src/lib/pixelPerfectComposer";
 import { generateThemeZip } from "../../src/lib/themeGenerator";
 
 /**
@@ -253,9 +250,7 @@ async function waitForServer(url: string, timeoutMs = 15000): Promise<void> {
 /**
  * Build the theme zip for a fixture and extract it into
  * wp-content/themes/<slug>/. Wipes any prior copy first so re-runs are
- * deterministic. Shared by both the Gutenberg and Elementor passes
- * because they exercise the same generated theme — only the editor that
- * drives the page differs.
+ * deterministic.
  */
 function buildAndExtractTheme(fx: FixtureCase, sections: ExtractedSection[]): void {
   const themeZip = generateThemeZip({
@@ -298,110 +293,7 @@ test("uploaded themes render end-to-end inside WordPress", { skip: ENABLED ? fal
   const base = `http://127.0.0.1:${port}`;
   await waitForServer(base + "/");
 
-  for (const fx of FIXTURES) {
-    await t.test(`${fx.file} (gutenberg)`, async () => {
-      // 2. Generate theme zip from fixture.
-      const fixturePath = path.join(FIXTURE_DIR, fx.file);
-      const fixture = readFileSync(fixturePath, "utf8");
-      const sections = extractSectionsFromPage(fixture, fx.pageSlug, fx.projectSlug);
-      assert.equal(
-        sections.length,
-        fx.expectedSectionCount,
-        `${fx.file}: expected ${fx.expectedSectionCount} extracted sections, got ${sections.length}`,
-      );
 
-      // 3. Wipe + extract into wp-content/themes/<slug>.
-      buildAndExtractTheme(fx, sections);
-
-      // 4. Compose page content + activate theme + insert page.
-      const content = composeGutenbergContent({ slug: fx.pageSlug, title: fx.projectName, sections });
-      const apply = run(
-        "php",
-        [path.join(__dirname, "apply-theme.php"), WP_DIR, fx.projectSlug, fx.pageSlug, fx.projectName],
-        { input: content },
-      );
-      assert.equal(apply.status, 0, `${fx.file}: apply-theme.php failed:\n${apply.stderr}`);
-      const pageId = parseInt(apply.stdout.trim(), 10);
-      assert.ok(Number.isFinite(pageId) && pageId > 0, `${fx.file}: unexpected page id: ${apply.stdout}`);
-
-      // 5. Fetch the rendered page and diff fields against the response.
-      const res = await fetch(`${base}/?page_id=${pageId}`);
-      assert.equal(res.status, 200, `${fx.file}: WP responded ${res.status}\nserver stderr:\n${serverErr}`);
-      const html = await res.text();
-
-      // Sanity: if functions.php errored, the block comment falls through
-      // to the raw `<!-- wp:wpb-... -->` text. Catch that early with a
-      // clearer message than the structural diff would give.
-      assert.ok(
-        !html.includes(`<!-- wp:wpb-${fx.projectSlug}/`),
-        `${fx.file}: block comments were not replaced by rendered HTML — ` +
-          `register_block_type likely failed.\nserver stderr:\n${serverErr}\n` +
-          `First 800 chars:\n${html.slice(0, 800)}`,
-      );
-
-      // Real diff: every top-level <header>/<section>/<footer> from the
-      // fixture must appear, in order, in the rendered body, and each
-      // pair's normalized markup must match exactly (after stripping the
-      // well-known WP mutations: injected attrs + absolute theme-URI
-      // rewrites).
-      const fixtureSections = topLevelSections(fixture);
-      const renderedSections = topLevelSections(html);
-      assert.equal(
-        renderedSections.length,
-        fixtureSections.length,
-        `${fx.file}: rendered page should contain ${fixtureSections.length} ` +
-          `top-level sections, got ${renderedSections.length}.\n` +
-          `rendered body sample:\n${html.slice(html.indexOf("<body"), html.indexOf("<body") + 2000)}`,
-      );
-
-      for (let i = 0; i < fixtureSections.length; i++) {
-        const expected = normalize(fixtureSections[i], fx.projectSlug);
-        const actual = normalize(renderedSections[i], fx.projectSlug);
-        assert.equal(
-          actual,
-          expected,
-          `${fx.file}: section #${i + 1} (${fixtureSections[i].tagName.toLowerCase()}) ` +
-            `does not match the fixture.\n` +
-            `expected: ${expected}\n` +
-            `actual:   ${actual}`,
-        );
-      }
-
-      // Field round-trip check: every extracted field's default value
-      // must appear somewhere in the rendered page body. The structural
-      // diff above already implies this, but checking each field by name
-      // gives a far clearer failure if a single attribute went missing
-      // (e.g. block.json forgot to declare it, or render.php dropped the
-      // placeholder).
-      const bodyStart = html.indexOf("<body");
-      const renderedBody = bodyStart >= 0 ? html.slice(bodyStart) : html;
-      const themeUri = `/wp-content/themes/${fx.projectSlug}/assets/`;
-      for (const section of sections) {
-        for (const field of section.fields) {
-          // For URL fields whose default is a {{THEME_URI}} placeholder
-          // (relative asset paths get rebased during extraction), check
-          // for the rebased asset URL the renderer actually emits.
-          const expected = field.default.includes("{{THEME_URI}}/assets/")
-            ? field.default.replace("{{THEME_URI}}/assets/", themeUri)
-            : field.default;
-          assert.ok(
-            renderedBody.includes(expected),
-            `${fx.file}: field "${field.key}" (${field.type}) from block ` +
-              `${section.blockName} did not appear in the rendered page.\n` +
-              `expected to find: ${expected}`,
-          );
-        }
-      }
-    });
-  }
-
-  // Elementor pass: same fixtures, same generated themes, but the page
-  // is driven by Elementor's frontend instead of Gutenberg blocks. This
-  // catches regressions in the Elementor editor path that the Gutenberg
-  // pass would silently miss — typos in widget class names, broken
-  // get_settings_for_display, mis-wired register hooks, etc. We use a
-  // distinct page slug per fixture so the Gutenberg page above stays
-  // untouched (`apply-elementor.php` is otherwise identical in shape).
   // Bundled-asset round-trip: confirms that real binary files placed in
   // the user's source ZIP (image + font) actually end up at the URL the
   // generated theme links to. Catches regressions in the
@@ -474,14 +366,15 @@ test("uploaded themes render end-to-end inside WordPress", { skip: ENABLED ? fal
       writeFileSync(dest, e.getData());
     }
 
-    // Apply theme + insert page.
-    const content = composeGutenbergContent({ slug: pageSlug, title: projectName, sections });
+    // Apply theme + insert page (driven by Elementor — the only render
+    // path now that the Gutenberg pass has been removed).
+    const elementorData = composeElementorData({ slug: pageSlug, title: projectName, sections });
     const apply = run(
       "php",
-      [path.join(__dirname, "apply-theme.php"), WP_DIR, projectSlug, pageSlug, projectName],
-      { input: content },
+      [path.join(__dirname, "apply-elementor.php"), WP_DIR, projectSlug, pageSlug, projectName],
+      { input: JSON.stringify(elementorData) },
     );
-    assert.equal(apply.status, 0, `apply-theme.php failed:\n${apply.stderr}`);
+    assert.equal(apply.status, 0, `apply-elementor.php failed:\n${apply.stderr}`);
     const pageId = parseInt(apply.stdout.trim(), 10);
     assert.ok(Number.isFinite(pageId) && pageId > 0, `unexpected page id: ${apply.stdout}`);
 
@@ -575,8 +468,198 @@ test("uploaded themes render end-to-end inside WordPress", { skip: ENABLED ? fal
     );
   });
 
+  // Mutation round-trip: prove that editing a widget's settings in
+  // Elementor really does propagate to the rendered HTML. Without this
+  // check the page could be hard-coded to its defaults and every other
+  // assertion above would still pass. We mutate at least one control
+  // per supported group kind (heading text + tag, link URL + nofollow,
+  // image src + alt, list items) and verify the mutated values appear
+  // in the rendered body and the original defaults do not.
+  await t.test("mutated widget settings round-trip into the rendered page", async () => {
+    const projectSlug = "mutation-fixture-site";
+    const projectName = "Mutation Fixture Site";
+    const pageSlug = "mutation-home";
+    const fixturePath = path.join(FIXTURE_DIR, "simple-page.html");
+    const fixture = readFileSync(fixturePath, "utf8");
+    const sections = extractSectionsFromPage(fixture, pageSlug, projectSlug);
+    assert.ok(sections.length >= 4, "simple-page should produce 4 sections");
+
+    buildAndExtractTheme(
+      { file: "simple-page.html", projectSlug, projectName, pageSlug, expectedSectionCount: 4 },
+      sections,
+    );
+
+    interface WidgetNode {
+      widgetType: string;
+      settings: Record<string, unknown>;
+    }
+    interface ColumnNode { elements: WidgetNode[] }
+    interface SectionNode { elements: ColumnNode[] }
+    const elementorData = composeElementorData({ slug: pageSlug, title: projectName, sections }) as SectionNode[];
+
+    // Build a flat map of every group across every section so we can
+    // pick the first instance of each kind to mutate. We also remember
+    // the corresponding widget settings object so we can mutate in place.
+    interface GroupRef {
+      kind: string;
+      sectionIndex: number;
+      controls: { key: string; type: string; default: string }[];
+      settings: Record<string, unknown>;
+    }
+    const allGroups: GroupRef[] = [];
+    for (let si = 0; si < sections.length; si++) {
+      const widget = elementorData[si].elements[0].elements[0];
+      for (const g of sections[si].groups) {
+        allGroups.push({ kind: g.kind, sectionIndex: si, controls: g.controls, settings: widget.settings });
+      }
+    }
+
+    const headingGroup = allGroups.find((g) => g.kind === "heading");
+    const linkGroup = allGroups.find((g) => g.kind === "link" || g.kind === "button");
+    const imageGroup = allGroups.find((g) => g.kind === "image");
+    const listGroup = allGroups.find((g) => g.kind === "list");
+    assert.ok(headingGroup, "expected at least one heading group");
+    assert.ok(linkGroup, "expected at least one link/button group");
+    assert.ok(imageGroup, "expected at least one image group");
+    assert.ok(listGroup, "expected at least one list group");
+
+    // Mutate heading: change BOTH text and tag (h1 → h3).
+    const headingTextCtl = headingGroup!.controls.find((c) => c.key.endsWith("_text"))!;
+    const headingTagCtl = headingGroup!.controls.find((c) => c.key.endsWith("_tag"))!;
+    const headingOriginalText = headingTextCtl.default;
+    const headingOriginalTag = headingTagCtl.default;
+    const headingMutatedText = "MUTATED Heading XYZ";
+    const headingMutatedTag = headingOriginalTag === "h3" ? "h4" : "h3";
+    headingGroup!.settings[headingTextCtl.key] = headingMutatedText;
+    headingGroup!.settings[headingTagCtl.key] = headingMutatedTag;
+
+    // Mutate link/button: change URL + nofollow flag.
+    const linkUrlCtl = linkGroup!.controls.find((c) => c.type === "url")!;
+    const linkOriginalUrl = linkUrlCtl.default;
+    const linkMutatedUrl = "https://example.com/mutated-target";
+    linkGroup!.settings[linkUrlCtl.key] = {
+      url: linkMutatedUrl,
+      is_external: true,
+      nofollow: true,
+    };
+
+    // Mutate image: change src to an external URL + alt text.
+    const imageMediaCtl = imageGroup!.controls.find((c) => c.type === "media")!;
+    const imageAltCtl = imageGroup!.controls.find((c) => c.key.endsWith("_alt"));
+    const imageOriginalUrl = imageMediaCtl.default;
+    const imageMutatedUrl = "https://example.com/mutated-image.png";
+    imageGroup!.settings[imageMediaCtl.key] = { url: imageMutatedUrl, id: 0 };
+    let imageMutatedAlt: string | null = null;
+    if (imageAltCtl) {
+      imageMutatedAlt = "MUTATED alt text " + Math.random().toString(36).slice(2, 8);
+      imageGroup!.settings[imageAltCtl.key] = imageMutatedAlt;
+    }
+
+    // Mutate list items: replace defaults with new lines.
+    const listItemsCtl = listGroup!.controls[0];
+    const listOriginalItems = listItemsCtl.default;
+    const listMutatedItems = "Mutated-Alpha\nMutated-Beta\nMutated-Gamma";
+    listGroup!.settings[listItemsCtl.key] = listMutatedItems;
+
+    const apply = run(
+      "php",
+      [path.join(__dirname, "apply-elementor.php"), WP_DIR, projectSlug, pageSlug, projectName],
+      { input: JSON.stringify(elementorData) },
+    );
+    assert.equal(apply.status, 0, `apply-elementor.php failed:\n${apply.stderr}`);
+    const pageId = parseInt(apply.stdout.trim(), 10);
+    assert.ok(Number.isFinite(pageId) && pageId > 0, `unexpected page id: ${apply.stdout}`);
+
+    const res = await fetch(`${base}/?page_id=${pageId}`);
+    assert.equal(res.status, 200, `WP responded ${res.status}\nserver stderr:\n${serverErr}`);
+    const html = await res.text();
+    const bodyStart = html.indexOf("<body");
+    const renderedBody = bodyStart >= 0 ? html.slice(bodyStart) : html;
+
+    // 1. Heading text + tag swap.
+    assert.ok(
+      renderedBody.includes(headingMutatedText),
+      `mutated heading text "${headingMutatedText}" missing from rendered body`,
+    );
+    assert.ok(
+      !renderedBody.includes(headingOriginalText),
+      `original heading text "${headingOriginalText}" should be replaced after mutation`,
+    );
+    const tagPattern = new RegExp(`<${headingMutatedTag}[^>]*>[^<]*${headingMutatedText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i");
+    assert.match(
+      renderedBody,
+      tagPattern,
+      `mutated heading should render inside <${headingMutatedTag}> after tag swap`,
+    );
+
+    // 2. Link URL + nofollow.
+    assert.ok(
+      renderedBody.includes(linkMutatedUrl),
+      `mutated link URL "${linkMutatedUrl}" missing from rendered body`,
+    );
+    assert.ok(
+      !renderedBody.includes(`href="${linkOriginalUrl}"`),
+      `original link href "${linkOriginalUrl}" should not survive mutation`,
+    );
+    // The nofollow / target=_blank metadata must end up on the SAME
+    // anchor element whose href we mutated — not on some other random
+    // <a> in the page that incidentally carries rel="nofollow".
+    const mutatedDom = new JSDOM(html);
+    const mutatedAnchor = Array.from(mutatedDom.window.document.querySelectorAll("a"))
+      .find((a) => a.getAttribute("href") === linkMutatedUrl);
+    assert.ok(
+      mutatedAnchor,
+      `mutated <a href="${linkMutatedUrl}"> not found in rendered DOM`,
+    );
+    const mutatedRel = mutatedAnchor!.getAttribute("rel") ?? "";
+    assert.match(
+      mutatedRel,
+      /\bnofollow\b/,
+      `mutated anchor rel must include "nofollow", got: rel="${mutatedRel}"`,
+    );
+    assert.equal(
+      mutatedAnchor!.getAttribute("target"),
+      "_blank",
+      `mutated anchor with is_external=true must render target="_blank"`,
+    );
+    assert.ok(
+      !mutatedAnchor!.hasAttribute("data-wpb-link"),
+      "data-wpb-link marker must be stripped from rendered output",
+    );
+
+    // 3. Image src + alt.
+    assert.ok(
+      renderedBody.includes(imageMutatedUrl),
+      `mutated image src "${imageMutatedUrl}" missing from rendered body`,
+    );
+    assert.ok(
+      !renderedBody.includes(imageOriginalUrl),
+      `original image src "${imageOriginalUrl}" should not survive mutation`,
+    );
+    if (imageMutatedAlt) {
+      assert.ok(
+        renderedBody.includes(imageMutatedAlt),
+        `mutated alt text "${imageMutatedAlt}" missing from rendered body`,
+      );
+    }
+
+    // 4. List items.
+    for (const item of ["Mutated-Alpha", "Mutated-Beta", "Mutated-Gamma"]) {
+      assert.ok(
+        renderedBody.includes(item),
+        `mutated list item "${item}" missing from rendered body`,
+      );
+    }
+    for (const original of listOriginalItems.split("\n")) {
+      assert.ok(
+        !renderedBody.includes(`<li>${original}</li>`),
+        `original list item "${original}" should not survive mutation`,
+      );
+    }
+  });
+
   for (const fx of FIXTURES) {
-    await t.test(`${fx.file} (elementor)`, async () => {
+    await t.test(`${fx.file}`, async () => {
       const fixturePath = path.join(FIXTURE_DIR, fx.file);
       const fixture = readFileSync(fixturePath, "utf8");
       const sections = extractSectionsFromPage(fixture, fx.pageSlug, fx.projectSlug);
@@ -602,15 +685,14 @@ test("uploaded themes render end-to-end inside WordPress", { skip: ENABLED ? fal
         `${fx.file}: composeElementorData should emit one top-level section per extracted section`,
       );
 
-      const elementorPageSlug = `${fx.pageSlug}-elementor`;
       const apply = run(
         "php",
         [
           path.join(__dirname, "apply-elementor.php"),
           WP_DIR,
           fx.projectSlug,
-          elementorPageSlug,
-          `${fx.projectName} (Elementor)`,
+          fx.pageSlug,
+          fx.projectName,
         ],
         { input: JSON.stringify(elementorData) },
       );

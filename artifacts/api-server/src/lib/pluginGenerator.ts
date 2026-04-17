@@ -316,7 +316,7 @@ function wp_bridge_status_handler( WP_REST_Request $request ) {
 /**
  * Main import handler.
  * Body: {
- *   renderer?: "gutenberg" | "elementor",
+ *   renderer?: "pixel_perfect",
  *   pages: [{ title, slug, blocks: [...], elementorData?: [...] }],
  *   cptItems?: [{ cptSlug, title, fields }]
  * }
@@ -328,10 +328,18 @@ function wp_bridge_import_handler( WP_REST_Request $request ) {
         return new WP_Error( 'invalid_data', 'Missing pages array', array( 'status' => 400 ) );
     }
 
-    $allowed_renderers = array( 'elementor', 'gutenberg', 'raw_html', 'pixel_perfect' );
-    $renderer = isset( $body['renderer'] ) && in_array( $body['renderer'], $allowed_renderers, true )
-        ? $body['renderer']
-        : 'gutenberg';
+    // Renderer pivot is irreversible: every push runs through the
+    // generated child theme + Elementor widget pipeline. Older clients
+    // that still send renderer: "gutenberg" / "elementor" / "raw_html"
+    // are rejected explicitly so we don't silently fall back.
+    $renderer = isset( $body['renderer'] ) ? $body['renderer'] : 'pixel_perfect';
+    if ( $renderer !== 'pixel_perfect' ) {
+        return new WP_Error(
+            'unsupported_renderer',
+            sprintf( 'Renderer "%s" is no longer supported. Re-push with the latest WP Bridge AI client (pixel-perfect Elementor only).', sanitize_text_field( $renderer ) ),
+            array( 'status' => 400 )
+        );
+    }
     $results = array();
     $cpt_results = array();
 
@@ -348,15 +356,9 @@ function wp_bridge_import_handler( WP_REST_Request $request ) {
         $blocks = $page_data['blocks'] ?? array();
         $elementor_data = $page_data['elementorData'] ?? null;
 
-        if ( $renderer === 'elementor' && is_array( $elementor_data ) ) {
-            $content = '';
-        } elseif ( ! empty( $page_data['prebuiltContent'] ) && is_string( $page_data['prebuiltContent'] ) ) {
-            // Pixel-perfect mode: composer already built the block markup
-            // referencing our theme's custom blocks.
-            $content = $page_data['prebuiltContent'];
-        } else {
-            $content = wp_bridge_build_block_content( $blocks );
-        }
+        // Pixel-perfect Elementor pipeline: the page body is intentionally
+        // empty — Elementor renders the saved widgets from _elementor_data.
+        $content = '';
 
         $existing = get_page_by_path( $slug, OBJECT, 'page' );
 
@@ -389,10 +391,7 @@ function wp_bridge_import_handler( WP_REST_Request $request ) {
             continue;
         }
 
-        // Write Elementor metadata for either pure Elementor mode OR pixel-perfect
-        // mode (which sends both prebuiltContent for Gutenberg AND elementorData,
-        // so the same generated sections can be edited in either editor).
-        if ( is_array( $elementor_data ) && ( $renderer === 'elementor' || $renderer === 'pixel_perfect' ) ) {
+        if ( is_array( $elementor_data ) ) {
             update_post_meta( $page_id, '_elementor_edit_mode', 'builder' );
             update_post_meta( $page_id, '_elementor_template_type', 'wp-page' );
             update_post_meta( $page_id, '_elementor_version', '3.18.0' );

@@ -19,7 +19,7 @@ import { mapToWordPress, type CustomPostTypeDef } from "../lib/wpMapper";
 import { testConnection, pushToWordPress, setAsHomepage, installTheme, activateTheme, getActiveTheme } from "../lib/wpSync";
 import { extractSectionsFromPage, type ExtractedPage } from "../lib/sectionFieldExtractor";
 import { generateThemeZip } from "../lib/themeGenerator";
-import { composeGutenbergContent, composeElementorData } from "../lib/pixelPerfectComposer";
+import { composeElementorData } from "../lib/pixelPerfectComposer";
 import { scrapeUrl } from "../lib/urlScraper";
 import { applyChatRefinement } from "../lib/chatRefiner";
 import { generateApiKey, generateWordPressPlugin } from "../lib/pluginGenerator";
@@ -43,16 +43,19 @@ function suggestedToCpts(suggested: SuggestedCpt[] | undefined): CustomPostTypeD
   }));
 }
 
-// Legacy enum values are accepted for backwards compatibility (older clients
-// still send "gutenberg" / "elementor" / "raw_html") but every value is
-// normalized to "pixel_perfect" server-side. The pivot is irreversible:
-// users no longer have a renderer choice — every push goes through the
-// generated child theme + Elementor widget pipeline.
+// The renderer pivot is irreversible: every push goes through the generated
+// child theme + Elementor widget pipeline. The endpoint stays for backwards
+// compatibility with older clients that still POST a renderer value, but the
+// only accepted value (and the only stored value) is "pixel_perfect".
 const RendererSchema = z.object({
-  renderer: z.enum(["gutenberg", "elementor", "raw_html", "pixel_perfect"]),
+  renderer: z.literal("pixel_perfect"),
 });
 
 function normalizeRenderer(_v: unknown): "pixel_perfect" {
+  return "pixel_perfect";
+}
+
+function projectRenderer(_stored: string | null): "pixel_perfect" {
   return "pixel_perfect";
 }
 
@@ -210,7 +213,7 @@ router.get("/projects/:id", async (req, res): Promise<void> => {
     designSystem: project.designSystem ?? null,
     aiAnalysis: project.aiAnalysis ?? null,
     customPostTypes: project.customPostTypes ?? [],
-    renderer: project.renderer ?? "pixel_perfect",
+    renderer: projectRenderer(project.renderer ?? null),
     wpConfig: project.wpUrl
       ? {
           wpUrl: project.wpUrl,
@@ -818,10 +821,16 @@ router.post("/projects/:id/push", async (req, res): Promise<void> => {
         return;
       }
     }
+    // The Elementor-only pivot drops Gutenberg block markup entirely:
+    // the post body is intentionally empty (the WP plugin sets
+    // post_content = '' for every imported page) and Elementor renders
+    // the saved widgets from _elementor_data. prebuiltBySlug is kept on
+    // the WpStructure for backward compatibility with the schema, but
+    // is empty for every page.
     prebuiltBySlug = {};
     elementorPages = [];
     for (const ep of extPages) {
-      prebuiltBySlug[ep.slug] = composeGutenbergContent(ep);
+      prebuiltBySlug[ep.slug] = "";
       elementorPages.push({ slug: ep.slug, data: composeElementorData(ep) });
     }
   }

@@ -213,7 +213,7 @@ interface CptItem {
 interface WpStructure {
   pages: WpPage[];
   cptItems?: CptItem[];
-  renderer?: "gutenberg" | "elementor" | "raw_html" | "pixel_perfect";
+  renderer?: "pixel_perfect";
   elementorPages?: Array<{ slug: string; data: unknown[] }>;
   injectedCss?: string | null;
   // Pixel-perfect: per-page pre-built block markup that references custom
@@ -495,7 +495,7 @@ export async function pushToWordPress(
         method: "POST",
         headers,
         body: JSON.stringify({
-          renderer: wpStructure.renderer ?? "gutenberg",
+          renderer: "pixel_perfect",
           pages: pagesPayload,
           cptItems: wpStructure.cptItems ?? [],
           injectedCss: wpStructure.injectedCss ?? null,

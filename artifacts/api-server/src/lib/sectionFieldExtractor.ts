@@ -24,7 +24,7 @@ export interface ExtractedField {
  * placeholder substitution pipeline keeps working unchanged — groups are an
  * organizational layer on top of the flat field model, not a replacement.
  */
-export type GroupKind = "button" | "link" | "image" | "heading" | "text";
+export type GroupKind = "button" | "link" | "image" | "heading" | "text" | "list";
 
 export type ControlType = "text" | "textarea" | "url" | "media" | "choose";
 
@@ -224,6 +224,21 @@ function collectGroupTargets(section: Element): Element[] {
       out.push(el);
       return;
     }
+    if (tag === "UL" || tag === "OL") {
+      // List groups expose the items as a single TEXTAREA control with one
+      // line per <li>. We only treat the list as a group when its children
+      // are exclusively plain-text <li>s — nested links/headings inside the
+      // list still get their own widget controls via the normal walk.
+      const lis = Array.from(el.children).filter((c) => c.tagName === "LI");
+      const allPlain =
+        lis.length > 0 &&
+        lis.length === el.children.length &&
+        lis.every((li) => Array.from(li.children).length === 0);
+      if (allPlain) {
+        out.push(el);
+        return;
+      }
+    }
     if (HEADING_TAGS.has(tag)) {
       out.push(el);
       return;
@@ -375,6 +390,38 @@ function buildSectionTemplate(section: Element): BuildResult {
       continue;
     }
 
+    // ---- LIST ----
+    if (tag === "UL" || tag === "OL") {
+      const gid = nextGroupId();
+      const itemsKey = `${gid}_items`;
+      const items = Array.from(el.children)
+        .filter((c) => c.tagName === "LI")
+        .map((li) => (li.textContent ?? "").trim())
+        .filter((t) => t.length > 0);
+      if (items.length === 0) continue;
+      const joined = items.join("\n");
+      addField(itemsKey, "text", joined, "list items");
+      // Replace the list's children with a single {{LIST:k}} placeholder
+      // that the PHP renderer expands back to one <li> per non-empty line.
+      while (el.firstChild) el.removeChild(el.firstChild);
+      el.textContent = `{{LIST:${itemsKey}}}`;
+      groups.push({
+        id: gid,
+        kind: "list",
+        label: `List — ${items.length} item${items.length === 1 ? "" : "s"}`,
+        controls: [
+          {
+            key: itemsKey,
+            fieldKey: itemsKey,
+            type: "textarea",
+            label: "Items (one per line)",
+            default: joined,
+          },
+        ],
+      });
+      continue;
+    }
+
     // ---- BUTTON / LINK ----
     if (tag === "BUTTON" || tag === "A") {
       const gid = nextGroupId();
@@ -397,6 +444,12 @@ function buildSectionTemplate(section: Element): BuildResult {
         const linkKey = `${gid}_link`;
         addField(linkKey, "url", href, "link URL");
         el.setAttribute("href", `{{URL:${linkKey}}}`);
+        // Mark the anchor so the PHP renderer can also inject the URL
+        // control's rel / target metadata (nofollow + open-in-new-tab)
+        // back onto the element when the user toggles those flags in
+        // the Elementor sidebar. The marker is stripped by the same
+        // pass that rewrites the attributes.
+        el.setAttribute("data-wpb-link", linkKey);
         controls.push({ key: linkKey, fieldKey: linkKey, type: "url", label: "Link", default: href });
       }
       if (controls.length === 0) continue;
