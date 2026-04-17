@@ -731,8 +731,26 @@ test("uploaded themes render end-to-end inside WordPress", { skip: ENABLED ? fal
     // posts back { library: 'svg', value: { id, url } } in this case;
     // the renderer's __icon_svg synthetic attr triggers the swap pass
     // that replaces the entire <i> with an <img src="..."> upload.
+    //
+    // Also exercise the editor-supplied Alt Text + Icon Link controls
+    // that ship alongside the ICONS control: alt text should land on the
+    // swapped <img> (taking precedence over the icon-class fallback),
+    // and a non-empty link should wrap the <img> in an <a> tag carrying
+    // the same rel / target metadata as the button/link group.
     const iconSvgUrl = "https://example.com/mutated-icon.svg";
     iconGroup!.settings[iconCtl!.key] = { library: "svg", value: { id: 0, url: iconSvgUrl } };
+    const iconAltCtl  = iconGroup!.controls.find((c) => c.key.endsWith("_icon_alt"));
+    const iconLinkCtl = iconGroup!.controls.find((c) => c.key.endsWith("_icon_link"));
+    assert.ok(iconAltCtl,  "icon group must expose an Alt Text control alongside the ICONS control");
+    assert.ok(iconLinkCtl, "icon group must expose an Icon Link URL control alongside the ICONS control");
+    const iconMutatedAlt  = "MUTATED icon alt " + Math.random().toString(36).slice(2, 8);
+    const iconMutatedLink = "https://example.com/mutated-icon-target";
+    iconGroup!.settings[iconAltCtl!.key]  = iconMutatedAlt;
+    iconGroup!.settings[iconLinkCtl!.key] = {
+      url: iconMutatedLink,
+      is_external: true,
+      nofollow: true,
+    };
 
     const applyIconSvg = run(
       "php",
@@ -772,6 +790,84 @@ test("uploaded themes render end-to-end inside WordPress", { skip: ENABLED ? fal
     assert.ok(
       !iconSvgHtml.includes("data-wpb-icon"),
       "data-wpb-icon marker must be stripped from rendered output after SVG swap",
+    );
+    // Editor-supplied alt text must land on the swapped <img> (and the
+    // class-string fallback must not leak through when the editor has
+    // explicitly set alt text).
+    assert.equal(
+      swappedImg!.getAttribute("alt"),
+      iconMutatedAlt,
+      `swapped <img> must carry the editor-supplied alt text, got "${swappedImg!.getAttribute("alt")}"`,
+    );
+    // The Icon Link control wraps the swapped <img> in an <a> with the
+    // same rel / target metadata the button/link group emits. The <a>
+    // must directly wrap the swapped <img> (not some sibling element).
+    const iconParent = swappedImg!.parentElement;
+    assert.ok(iconParent, "swapped <img> must have a parent element");
+    assert.equal(
+      iconParent!.tagName,
+      "A",
+      `swapped <img> must be wrapped by an <a>, got <${iconParent!.tagName.toLowerCase()}>`,
+    );
+    assert.equal(
+      iconParent!.getAttribute("href"),
+      iconMutatedLink,
+      `wrapping <a> must carry the editor-supplied href, got "${iconParent!.getAttribute("href")}"`,
+    );
+    assert.match(
+      iconParent!.getAttribute("rel") ?? "",
+      /\bnofollow\b/,
+      `wrapping <a> rel must include "nofollow" when the URL control sets nofollow`,
+    );
+    assert.equal(
+      iconParent!.getAttribute("target"),
+      "_blank",
+      `wrapping <a> must render target="_blank" when is_external is set`,
+    );
+
+    // Phase B-fallback: clear the editor's Alt Text and Icon Link and
+    // re-render with the SVG still selected. The swap pass should fall
+    // back to the icon class string for alt, and emit a bare <img> with
+    // no surrounding <a>. Locks in the no-wrap / class-fallback branches
+    // of the swap logic so future refactors can't silently regress them.
+    iconGroup!.settings[iconAltCtl!.key]  = "";
+    iconGroup!.settings[iconLinkCtl!.key] = { url: "", is_external: false, nofollow: false };
+
+    const applyIconFallback = run(
+      "php",
+      [path.join(__dirname, "apply-elementor.php"), WP_DIR, projectSlug, pageSlug, projectName],
+      { input: JSON.stringify(elementorData) },
+    );
+    assert.equal(
+      applyIconFallback.status,
+      0,
+      `apply-elementor.php (icon svg fallback phase) failed:\n${applyIconFallback.stderr}`,
+    );
+    const iconFallbackPageId = parseInt(applyIconFallback.stdout.trim(), 10);
+    assert.ok(Number.isFinite(iconFallbackPageId) && iconFallbackPageId > 0);
+
+    const iconFallbackRes = await fetch(`${base}/?page_id=${iconFallbackPageId}`);
+    assert.equal(iconFallbackRes.status, 200);
+    const iconFallbackHtml = await iconFallbackRes.text();
+    const iconFallbackDom = new JSDOM(iconFallbackHtml);
+    const fallbackImg = Array.from(iconFallbackDom.window.document.querySelectorAll("img"))
+      .find((img) => img.getAttribute("src") === iconSvgUrl);
+    assert.ok(fallbackImg, `<img src="${iconSvgUrl}"> should still appear when alt/link are blank`);
+    // Class-string fallback: alt must equal the most recent icon class
+    // (Phase A mutated it to iconMutatedClass), not the empty editor value.
+    assert.equal(
+      fallbackImg!.getAttribute("alt"),
+      iconMutatedClass,
+      `swapped <img> must fall back to the icon class string for alt when the editor leaves it blank`,
+    );
+    // No-link fallback: with a blank Icon Link the swapped <img> must
+    // not be wrapped in an <a>.
+    const fallbackParent = fallbackImg!.parentElement;
+    assert.ok(fallbackParent, "swapped <img> must have a parent element");
+    assert.notEqual(
+      fallbackParent!.tagName,
+      "A",
+      `swapped <img> must NOT be wrapped by <a> when the Icon Link is blank, got <${fallbackParent!.tagName.toLowerCase()}>`,
     );
   });
 

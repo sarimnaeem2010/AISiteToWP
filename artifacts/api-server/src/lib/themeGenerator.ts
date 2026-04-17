@@ -237,6 +237,17 @@ function wpb_render_section_template( string $template_path, array $attrs ): str
             $rest = $m[2] . $m[4];
             $rest = preg_replace( '/\\sdata-wpb-icon="[^"]*"/', '', ' ' . $rest );
             $rest = trim( $rest );
+            // Sibling Alt Text + Icon Link controls live at conventional
+            // field keys derived from this marker's class key. Looking
+            // them up here (rather than threading them through the
+            // marker) keeps the data-wpb-icon attribute compact and
+            // matches the contract the extractor encodes.
+            $alt_key  = preg_replace( '/_icon_class$/', '_icon_alt', $key );
+            $link_key = preg_replace( '/_icon_class$/', '_icon_link', $key );
+            $alt_text = isset( $attrs[ $alt_key ] )  ? (string) $attrs[ $alt_key ]  : '';
+            $link_url = isset( $attrs[ $link_key ] ) ? (string) $attrs[ $link_key ] : '';
+            $link_rel    = isset( $attrs[ '__rel:'    . $link_key ] ) ? (string) $attrs[ '__rel:'    . $link_key ] : '';
+            $link_target = isset( $attrs[ '__target:' . $link_key ] ) ? (string) $attrs[ '__target:' . $link_key ] : '';
             if ( $svg !== '' ) {
                 // Preserve the original class hook so any sibling CSS
                 // (sizing, color, alignment) keeps applying to the swapped
@@ -246,7 +257,20 @@ function wpb_render_section_template( string $template_path, array $attrs ): str
                 $cls = '';
                 if ( preg_match( '/\\sclass="([^"]*)"/i', ' ' . $rest, $cm ) ) $cls = trim( $cm[1] );
                 $cls_attr = $cls === '' ? '' : ' class="' . esc_attr( $cls ) . '"';
-                return '<img src="' . esc_url( $svg ) . '" alt=""' . $cls_attr . ' />';
+                // Editor's alt wins; fall back to the icon class string
+                // (a stable, descriptive default) only when blank.
+                $alt_value = $alt_text !== '' ? $alt_text : $cls;
+                $img = '<img src="' . esc_url( $svg ) . '" alt="' . esc_attr( $alt_value ) . '"' . $cls_attr . ' />';
+                if ( $link_url !== '' ) {
+                    // Mirror the button/link group's rel/target plumbing
+                    // so an editor-supplied Icon Link behaves identically
+                    // (nofollow + target=_blank metadata).
+                    $extra = '';
+                    if ( $link_rel    !== '' ) $extra .= ' rel="'    . esc_attr( $link_rel )    . '"';
+                    if ( $link_target !== '' ) $extra .= ' target="' . esc_attr( $link_target ) . '"';
+                    return '<a href="' . esc_url( $link_url ) . '"' . $extra . '>' . $img . '</a>';
+                }
+                return $img;
             }
             $open_attrs = $rest === '' ? '' : ' ' . $rest;
             return '<' . $tagn . $open_attrs . '>' . $m[5] . '</' . $tagn . '>';

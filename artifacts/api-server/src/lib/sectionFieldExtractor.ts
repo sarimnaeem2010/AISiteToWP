@@ -484,12 +484,24 @@ function buildSectionTemplate(section: Element): BuildResult {
     if (isIconLeaf(el)) {
       const gid = nextGroupId();
       const classKey = `${gid}_icon_class`;
+      const altKey = `${gid}_icon_alt`;
+      const linkKey = `${gid}_icon_link`;
       const cls = el.className?.toString() ?? "";
       addField(classKey, "attr", cls, "icon class");
+      // Editable alt text + optional link target for the case where the
+      // editor swaps the font icon for an SVG upload. Defaults are blank
+      // so an unmodified import still round-trips byte-identically — the
+      // swap pass falls back to the icon class string for alt and skips
+      // the <a> wrap when the link is empty.
+      addField(altKey, "text", "", "alt text");
+      addField(linkKey, "url", "", "link URL");
       el.setAttribute("class", `{{ATTR:${classKey}}}`);
       // Marker so the PHP renderer can swap the element for an <img>
       // when the user picks an SVG via the ICONS / MEDIA control. The
-      // marker is always stripped on its way out.
+      // marker is always stripped on its way out. Alt + link keys are
+      // derived from this marker's value by convention (replacing the
+      // _icon_class suffix with _icon_alt / _icon_link) so the swap pass
+      // does not need to thread them through the marker itself.
       el.setAttribute("data-wpb-icon", classKey);
       const labelText = cls.length > 32 ? cls.slice(0, 32) + "…" : cls;
       groups.push({
@@ -502,6 +514,8 @@ function buildSectionTemplate(section: Element): BuildResult {
           // attached MEDIA library. The default is the original class
           // so an unmodified import round-trips byte-identically.
           { key: classKey, fieldKey: classKey, type: "icons", label: "Icon", default: cls },
+          { key: altKey, fieldKey: altKey, type: "text", label: "Alt Text", default: "" },
+          { key: linkKey, fieldKey: linkKey, type: "url", label: "Icon Link", default: "" },
         ],
       });
       continue;
