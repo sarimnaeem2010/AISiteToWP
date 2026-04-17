@@ -38,8 +38,28 @@ export function composeElementorData(page: ExtractedPage): unknown[] {
   return page.sections.map((s) => {
     const safeId = s.blockName.split("/")[1].replace(/[^a-zA-Z0-9_]/g, "_");
     const widgetType = `wpb_${safeId}`;
-    const settings: Record<string, string> = {};
-    for (const f of s.fields) settings[f.key] = f.default;
+    // Settings shape mirrors what the Elementor controls registered in
+    // WPB_Widget_Base produce: a URL control yields {url, is_external,
+    // nofollow}, a MEDIA control yields {url, id}, everything else is a
+    // plain string. The widget renderer reduces these back to scalars
+    // before substituting into the template, so even a fresh import
+    // (settings = group defaults) round-trips byte-identically.
+    const settings: Record<string, unknown> = {};
+    if (s.groups && s.groups.length > 0) {
+      for (const g of s.groups) {
+        for (const c of g.controls) {
+          if (c.type === "url") {
+            settings[c.key] = { url: c.default, is_external: "", nofollow: "" };
+          } else if (c.type === "media") {
+            settings[c.key] = { url: c.default, id: 0 };
+          } else {
+            settings[c.key] = c.default;
+          }
+        }
+      }
+    } else {
+      for (const f of s.fields) settings[f.key] = f.default;
+    }
     return {
       id: elementorId(`${safeId}:section`),
       elType: "section",

@@ -1,7 +1,7 @@
 import { JSDOM } from "jsdom";
 import crypto from "node:crypto";
 
-export type FieldType = "text" | "url" | "attr";
+export type FieldType = "text" | "url" | "attr" | "tag";
 
 export interface ExtractedField {
   key: string;
@@ -10,13 +10,55 @@ export interface ExtractedField {
   label: string;
 }
 
+/**
+ * A semantic UI grouping over the flat `fields[]` list. Each group represents
+ * one meaningful element from the original HTML (a button, an `<a>` link, an
+ * `<img>`, a heading, a plain text node) and carries the ordered list of
+ * Elementor-style controls that should be rendered together for it. The
+ * widget runtime walks `groups[]` to register `start_controls_section()`
+ * blocks so the Elementor sidebar feels like editing a native widget rather
+ * than a flat list of strings.
+ *
+ * Each control's `fieldKey` references one entry in the flat `fields[]` so
+ * the existing `{{TEXT:k}}` / `{{URL:k}}` / `{{ATTR:k}}` / `{{TAG:k}}`
+ * placeholder substitution pipeline keeps working unchanged — groups are an
+ * organizational layer on top of the flat field model, not a replacement.
+ */
+export type GroupKind = "button" | "link" | "image" | "heading" | "text";
+
+export type ControlType = "text" | "textarea" | "url" | "media" | "choose";
+
+export interface ExtractedControl {
+  /** Unique key inside the widget. Used both as the Elementor control id and
+   *  (intentionally identical to) the flat field key for placeholder lookup. */
+  key: string;
+  /** Maps to the entry in the section's flat `fields[]` array. */
+  fieldKey: string;
+  type: ControlType;
+  label: string;
+  default: string;
+  /** For `type === "choose"`. Ordered list of allowed values. */
+  options?: string[];
+}
+
+export interface ExtractedGroup {
+  id: string;
+  kind: GroupKind;
+  label: string;
+  controls: ExtractedControl[];
+}
+
 export interface ExtractedSection {
   id: string;
   blockName: string;
   label: string;
   category: string;
   template: string;
+  /** Flat field list derived from `groups`. Drives `{{...}}` substitution
+   *  inside the template + powers the legacy block.json attribute schema. */
   fields: ExtractedField[];
+  /** Semantic groups for the Elementor sidebar UI. */
+  groups: ExtractedGroup[];
 }
 
 export interface ExtractedPage {
@@ -31,6 +73,8 @@ const TEXT_PARENTS = new Set([
   "LABEL", "FIGCAPTION", "BLOCKQUOTE", "CITE", "SUMMARY",
   "DT", "DD", "TD", "TH", "SMALL", "B", "I",
 ]);
+
+const HEADING_TAGS = new Set(["H1", "H2", "H3", "H4", "H5", "H6"]);
 
 const SECTION_TAGS = new Set(["SECTION", "HEADER", "FOOTER", "NAV", "ASIDE", "MAIN", "ARTICLE"]);
 
@@ -70,12 +114,6 @@ function shortHash(s: string): string {
   return crypto.createHash("sha1").update(s).digest("hex").slice(0, 8);
 }
 
-/**
- * Returns true if the URL is relative to the original site root and would
- * therefore resolve incorrectly when the section HTML is rendered inside a
- * WordPress page. Absolute http(s)://, protocol-relative //, anchors,
- * mailto:, tel:, javascript: and data: URIs are all left alone.
- */
 function isRelativeAssetUrl(u: string): boolean {
   const trimmed = u.trim();
   if (!trimmed) return false;
@@ -83,13 +121,6 @@ function isRelativeAssetUrl(u: string): boolean {
   return true;
 }
 
-/**
- * Rewrite every relative asset URL in the section HTML to a {{THEME_URI}}/...
- * placeholder. The render template engine substitutes {{THEME_URI}} with the
- * generated child theme's stylesheet directory URI at request time, so images
- * referenced by section markup load from the theme's bundled assets folder
- * regardless of which WP page the block is rendered on.
- */
 function rebaseAssetUrls(root: Element): void {
   const attrTargets: Array<[string, string[]]> = [
     ["img", ["src", "data-src", "data-lazy-src", "srcset"]],
@@ -104,8 +135,6 @@ function rebaseAssetUrls(root: Element): void {
     ["use", ["href", "xlink:href"]],
     ["a", ["href"]],
   ];
-  // Include the root element itself when searching for style attrs, since
-  // querySelectorAll only walks descendants.
   const allWithBg: Element[] = [
     ...(root.hasAttribute("style") ? [root] : []),
     ...Array.from(root.querySelectorAll("[style]")),
@@ -115,7 +144,6 @@ function rebaseAssetUrls(root: Element): void {
       for (const attr of attrs) {
         const v = el.getAttribute(attr);
         if (!v) continue;
-        // For anchor href, only rewrite if it looks like a file (has extension)
         if (selector === "a" && !/\.[a-z0-9]{1,5}(\?|#|$)/i.test(v)) continue;
         if (attr === "srcset") {
           const rewritten = v.split(",").map((part) => {
@@ -132,7 +160,6 @@ function rebaseAssetUrls(root: Element): void {
       }
     }
   }
-  // Inline style background images
   for (const el of Array.from(allWithBg)) {
     const style = el.getAttribute("style");
     if (!style) continue;
@@ -147,107 +174,281 @@ function rebaseAssetUrls(root: Element): void {
 function isMeaningfulText(s: string): boolean {
   const trimmed = s.trim();
   if (trimmed.length < 1) return false;
-  // Skip if only punctuation/icons
   if (/^[\s\-•·–—|/\\©®™]+$/.test(trimmed)) return false;
   return true;
 }
 
 /**
- * Walk the element subtree and replace every meaningful piece of editable
- * content (text-node content, anchor href, image src/alt) with a typed
- * placeholder. Returns the rewritten outerHTML and the list of fields.
+ * First piece of meaningful text inside the element subtree, used as the
+ * human-friendly label suffix on group names ("Button — Start Learning").
+ * Returns the empty string when no text node qualifies.
  */
-function buildSectionTemplate(
-  section: Element,
-  doc: Document,
-): { template: string; fields: ExtractedField[] } {
-  // Rebase any relative asset URLs first so the resulting fields' default
-  // values are also theme-relative — that way image fields persist as
-  // {{THEME_URI}}/... and survive when the user edits and re-saves.
-  rebaseAssetUrls(section);
-
-  const fields: ExtractedField[] = [];
-  let counter = 0;
-  const used = new Set<string>();
-
-  const mkKey = (hint: string): string => {
-    const base = hint.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 24) || "f";
-    let key = `${base}_${counter++}`;
-    while (used.has(key)) key = `${base}_${counter++}`;
-    used.add(key);
-    return key;
-  };
-
-  const labelFor = (el: Element, kind: string): string => {
-    const tag = el.tagName.toLowerCase();
-    return `${tag} ${kind}`;
-  };
-
-  // Walk text-bearing leaf elements first
-  const allElements = section.querySelectorAll("*");
-  const targets: Element[] = Array.from(allElements);
-  targets.unshift(section);
-
-  for (const el of targets) {
-    if (!TEXT_PARENTS.has(el.tagName)) continue;
-    // Only process direct text children (not nested element text)
-    for (const child of Array.from(el.childNodes)) {
-      if (child.nodeType !== 3 /* TEXT_NODE */) continue;
-      const raw = child.textContent ?? "";
-      if (!isMeaningfulText(raw)) continue;
-      const key = mkKey(`txt_${el.tagName.toLowerCase()}`);
-      fields.push({ key, type: "text", default: raw.trim(), label: labelFor(el, "text") });
-      child.textContent = raw.replace(raw.trim(), `{{TEXT:${key}}}`);
-    }
+function firstText(el: Element): string {
+  const walker = el.ownerDocument!.createTreeWalker(el, 4 /* SHOW_TEXT */);
+  let node = walker.nextNode();
+  while (node) {
+    const t = (node.textContent ?? "").trim();
+    if (isMeaningfulText(t)) return t.length > 32 ? t.slice(0, 32).trimEnd() + "…" : t;
+    node = walker.nextNode();
   }
+  return "";
+}
 
-  // Anchor hrefs
-  for (const a of Array.from(section.querySelectorAll("a"))) {
-    const href = a.getAttribute("href");
-    if (href && !href.startsWith("#") && !href.startsWith("javascript:")) {
-      const key = mkKey("href");
-      fields.push({ key, type: "url", default: href, label: "link URL" });
-      a.setAttribute("href", `{{URL:${key}}}`);
-    }
-  }
-
-  // Images
-  for (const img of Array.from(section.querySelectorAll("img"))) {
-    const src = img.getAttribute("src");
-    if (src) {
-      const key = mkKey("img");
-      fields.push({ key, type: "url", default: src, label: "image URL" });
-      img.setAttribute("src", `{{URL:${key}}}`);
-    }
-    const alt = img.getAttribute("alt");
-    if (alt && isMeaningfulText(alt)) {
-      const key = mkKey("alt");
-      fields.push({ key, type: "attr", default: alt, label: "image alt" });
-      img.setAttribute("alt", `{{ATTR:${key}}}`);
-    }
-  }
-
-  return { template: section.outerHTML, fields };
+function looksLikeButton(el: Element): boolean {
+  const tag = el.tagName;
+  if (tag === "BUTTON") return true;
+  if (tag !== "A") return false;
+  const role = (el.getAttribute("role") ?? "").toLowerCase();
+  if (role === "button") return true;
+  const cls = (el.className?.toString() ?? "").toLowerCase();
+  return /\b(btn|button|cta|action)\b/.test(cls);
 }
 
 /**
- * Scan a single HTML page document and return one ExtractedSection per
- * top-level semantic block found inside <body>. The block name is unique
- * per project (caller scopes the namespace) and the template + fields can
- * be turned into a Gutenberg block, an Elementor widget, or both.
+ * Collect every <img>, <a>, <button>, heading, and free-floating text node
+ * inside the section in document order. The walker stops descending into
+ * elements that themselves form a group (e.g. inside an <a> we do not also
+ * extract the inner <span>'s text as a separate group — it becomes the
+ * link's text control). This mirrors how Elementor's native widgets are
+ * scoped: one widget per logical UI element, not one per scalar.
  */
+function collectGroupTargets(section: Element): Element[] {
+  const out: Element[] = [];
+  const walk = (el: Element): void => {
+    const tag = el.tagName;
+    if (tag === "BUTTON" || tag === "A") {
+      out.push(el);
+      return; // do not descend; inner text is the button/link's text control
+    }
+    if (tag === "IMG") {
+      out.push(el);
+      return;
+    }
+    if (HEADING_TAGS.has(tag)) {
+      out.push(el);
+      return;
+    }
+    // Plain text-bearing element with at least one direct text child.
+    if (TEXT_PARENTS.has(tag)) {
+      const hasOwnText = Array.from(el.childNodes).some(
+        (c) => c.nodeType === 3 && isMeaningfulText(c.textContent ?? ""),
+      );
+      const hasInteractiveChild = Array.from(el.children).some((c) =>
+        c.tagName === "A" || c.tagName === "BUTTON" || c.tagName === "IMG" || HEADING_TAGS.has(c.tagName),
+      );
+      if (hasOwnText && !hasInteractiveChild) {
+        out.push(el);
+        return;
+      }
+    }
+    for (const child of Array.from(el.children)) walk(child);
+  };
+  walk(section);
+  return out;
+}
+
+/**
+ * For text-bearing leaf elements, extract every direct text-node child as
+ * a single concatenated string. Returns the trimmed text and rewrites the
+ * element's content to use a single `{{TEXT:key}}` placeholder per slot.
+ */
+function takeText(el: Element, key: string): string {
+  // Walk descendant text nodes in document order, not just direct children.
+  // Real-world button/link markup wraps the label in spans/icons, e.g.
+  //   <a><span>Sign up</span></a>  or  <button><i class="ico"/>Buy</button>
+  // Restricting to direct text-node children would silently drop the label
+  // and Elementor would lose its text control for that CTA.
+  const parts: string[] = [];
+  const textNodes: ChildNode[] = [];
+  const walk = (node: Node): void => {
+    for (const child of Array.from(node.childNodes)) {
+      if (child.nodeType === 3) {
+        const raw = child.textContent ?? "";
+        if (isMeaningfulText(raw)) {
+          textNodes.push(child as ChildNode);
+          parts.push(raw.trim());
+        }
+      } else if (child.nodeType === 1) {
+        walk(child);
+      }
+    }
+  };
+  walk(el);
+  for (let i = 0; i < textNodes.length; i++) {
+    const node = textNodes[i];
+    const raw = node.textContent ?? "";
+    if (i === 0) {
+      node.textContent = raw.replace(raw.trim(), `{{TEXT:${key}}}`);
+    } else {
+      node.textContent = raw.replace(raw.trim(), "");
+    }
+  }
+  return parts.join(" ").trim();
+}
+
+interface BuildResult {
+  template: string;
+  fields: ExtractedField[];
+  groups: ExtractedGroup[];
+}
+
+function buildSectionTemplate(section: Element): BuildResult {
+  rebaseAssetUrls(section);
+
+  const fields: ExtractedField[] = [];
+  const groups: ExtractedGroup[] = [];
+  const used = new Set<string>();
+
+  let groupIdx = 0;
+  const nextGroupId = (): string => {
+    let id = `g${groupIdx++}`;
+    while (used.has(id)) id = `g${groupIdx++}`;
+    used.add(id);
+    return id;
+  };
+
+  const addField = (key: string, type: FieldType, def: string, label: string): void => {
+    fields.push({ key, type, default: def, label });
+  };
+
+  const targets = collectGroupTargets(section);
+
+  for (const el of targets) {
+    const tag = el.tagName;
+
+    // ---- IMAGE ----
+    if (tag === "IMG") {
+      const gid = nextGroupId();
+      const srcKey = `${gid}_image`;
+      const altKey = `${gid}_alt`;
+      const src = el.getAttribute("src") ?? "";
+      const alt = el.getAttribute("alt") ?? "";
+      addField(srcKey, "url", src, "image");
+      el.setAttribute("src", `{{URL:${srcKey}}}`);
+      const controls: ExtractedControl[] = [
+        { key: srcKey, fieldKey: srcKey, type: "media", label: "Image", default: src },
+      ];
+      if (isMeaningfulText(alt)) {
+        addField(altKey, "attr", alt, "alt text");
+        el.setAttribute("alt", `{{ATTR:${altKey}}}`);
+        controls.push({ key: altKey, fieldKey: altKey, type: "text", label: "Alt Text", default: alt });
+      }
+      const labelText = isMeaningfulText(alt) ? alt : "Image";
+      groups.push({
+        id: gid,
+        kind: "image",
+        label: `Image — ${labelText.length > 32 ? labelText.slice(0, 32) + "…" : labelText}`,
+        controls,
+      });
+      continue;
+    }
+
+    // ---- HEADING ----
+    if (HEADING_TAGS.has(tag)) {
+      const gid = nextGroupId();
+      const textKey = `${gid}_text`;
+      const tagKey = `${gid}_tag`;
+      const text = takeText(el, textKey);
+      if (!text) continue;
+      addField(textKey, "text", text, "heading text");
+      // Tag-swap support: mark the original heading with a data attribute
+      // the PHP renderer recognises and rewrites to the saved tag value.
+      el.setAttribute("data-wpb-tag", tagKey);
+      addField(tagKey, "tag", tag.toLowerCase(), "heading tag");
+      const isLong = text.length > 80;
+      groups.push({
+        id: gid,
+        kind: "heading",
+        label: `Heading — ${text.length > 32 ? text.slice(0, 32) + "…" : text}`,
+        controls: [
+          { key: textKey, fieldKey: textKey, type: isLong ? "textarea" : "text", label: "Text", default: text },
+          {
+            key: tagKey,
+            fieldKey: tagKey,
+            type: "choose",
+            label: "HTML Tag",
+            default: tag.toLowerCase(),
+            options: ["h1", "h2", "h3", "h4", "h5", "h6"],
+          },
+        ],
+      });
+      continue;
+    }
+
+    // ---- BUTTON / LINK ----
+    if (tag === "BUTTON" || tag === "A") {
+      const gid = nextGroupId();
+      const textKey = `${gid}_text`;
+      const text = takeText(el, textKey);
+      if (text) addField(textKey, "text", text, "button text");
+      const controls: ExtractedControl[] = [];
+      if (text) {
+        const isLong = text.length > 80;
+        controls.push({
+          key: textKey,
+          fieldKey: textKey,
+          type: isLong ? "textarea" : "text",
+          label: "Text",
+          default: text,
+        });
+      }
+      const href = el.getAttribute("href");
+      if (href && !href.startsWith("#") && !href.startsWith("javascript:")) {
+        const linkKey = `${gid}_link`;
+        addField(linkKey, "url", href, "link URL");
+        el.setAttribute("href", `{{URL:${linkKey}}}`);
+        controls.push({ key: linkKey, fieldKey: linkKey, type: "url", label: "Link", default: href });
+      }
+      if (controls.length === 0) continue;
+      const labelText = text || (href ?? "Link");
+      const kind: GroupKind = looksLikeButton(el) ? "button" : "link";
+      const labelPrefix = kind === "button" ? "Button" : "Link";
+      groups.push({
+        id: gid,
+        kind,
+        label: `${labelPrefix} — ${labelText.length > 32 ? labelText.slice(0, 32) + "…" : labelText}`,
+        controls,
+      });
+      continue;
+    }
+
+    // ---- PLAIN TEXT ----
+    if (TEXT_PARENTS.has(tag)) {
+      const gid = nextGroupId();
+      const textKey = `${gid}_text`;
+      const text = takeText(el, textKey);
+      if (!text) continue;
+      addField(textKey, "text", text, "text");
+      const isLong = text.length > 80;
+      groups.push({
+        id: gid,
+        kind: "text",
+        label: `${tag.toLowerCase()} — ${text.length > 32 ? text.slice(0, 32) + "…" : text}`,
+        controls: [
+          {
+            key: textKey,
+            fieldKey: textKey,
+            type: isLong ? "textarea" : "text",
+            label: "Text",
+            default: text,
+          },
+        ],
+      });
+    }
+  }
+
+  return { template: section.outerHTML, fields, groups };
+}
+
 export function extractSectionsFromPage(
   html: string,
   pageSlug: string,
   projectSlug: string,
 ): ExtractedSection[] {
   const dom = new JSDOM(html);
-  const doc = dom.window.document;
-  const body = doc.body;
+  const body = dom.window.document.body;
   if (!body) return [];
 
-  // Collect top-level semantic blocks. If no <section>/<nav>/etc. exists,
-  // fall back to direct children of body.
   let candidates: Element[] = Array.from(body.children).filter((c) => SECTION_TAGS.has(c.tagName));
   if (candidates.length === 0) {
     candidates = Array.from(body.children).filter((c) => c.tagName !== "SCRIPT" && c.tagName !== "STYLE");
@@ -259,15 +460,13 @@ export function extractSectionsFromPage(
     idx++;
     const label = inferLabel(el);
     const category = inferCategory(el);
-    // Stable id: tag+index+hash of original outerHTML so repeat parses produce same name
     const hash = shortHash(el.outerHTML);
     const id = `${pageSlug}-${idx}-${category}-${hash}`;
-    // WP block name must be lowercase ascii [a-z][a-z0-9-]*
     const blockName = `wpb-${projectSlug}/sec-${idx}-${category}-${hash}`
       .toLowerCase()
       .replace(/[^a-z0-9/-]/g, "-");
-    const { template, fields } = buildSectionTemplate(el, doc);
-    sections.push({ id, blockName, label: `${label} (${category})`, category, template, fields });
+    const { template, fields, groups } = buildSectionTemplate(el);
+    sections.push({ id, blockName, label: `${label} (${category})`, category, template, fields, groups });
   }
   return sections;
 }

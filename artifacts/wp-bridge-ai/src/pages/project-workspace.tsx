@@ -238,14 +238,11 @@ export default function ProjectWorkspace() {
 
   const apiBase = import.meta.env.BASE_URL;
   const proj = project as any;
-  const renderer: "gutenberg" | "elementor" | "raw_html" | "pixel_perfect" =
-    proj.renderer === "elementor"
-      ? "elementor"
-      : proj.renderer === "raw_html"
-        ? "raw_html"
-        : proj.renderer === "pixel_perfect"
-          ? "pixel_perfect"
-          : "gutenberg";
+  // Renderer is fixed since the Elementor-only pivot — every project pushes
+  // through the generated child theme. We keep the variable so downstream
+  // conditionals (theme-status warnings, install/activate buttons) stay
+  // mounted; the legacy renderer choice UI was removed.
+  const renderer = "pixel_perfect" as const;
   const cpts: Array<{ slug: string; label: string; pluralLabel: string; sourceSemanticType: string; fields: string[]; enabled: boolean }> =
     Array.isArray(proj.customPostTypes) ? proj.customPostTypes : [];
 
@@ -377,20 +374,6 @@ export default function ProjectWorkspace() {
     }
   };
 
-  const setRenderer = async (value: "gutenberg" | "elementor" | "raw_html" | "pixel_perfect") => {
-    try {
-      const res = await fetch(`${apiBase}api/projects/${id}/renderer`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ renderer: value }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      toast({ title: `Renderer set to ${value}` });
-      refetch();
-    } catch (err) {
-      toast({ title: "Failed to set renderer", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
-    }
-  };
 
   const toggleCpt = async (slug: string, enabled: boolean) => {
     const next = cpts.map((c) => (c.slug === slug ? { ...c, enabled } : c));
@@ -607,7 +590,7 @@ export default function ProjectWorkspace() {
                   Source Files
                 </CardTitle>
                 <CardDescription>
-                  Re-upload a ZIP or paste raw HTML to refresh the parsed structure. Required for projects parsed before Raw HTML mode existed.
+                  Re-upload a ZIP or paste raw HTML to refresh the parsed structure and regenerate the per-section Elementor widgets.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -795,59 +778,18 @@ export default function ProjectWorkspace() {
                       />
                     )}
                     <div className="space-y-2">
-                      <Label className="font-mono">Page Renderer</Label>
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setRenderer("gutenberg")}
-                          className={`text-left rounded-md border p-3 text-xs font-mono ${renderer === "gutenberg" ? "border-primary bg-primary/10" : "border-border bg-muted/20"}`}
-                          data-testid="renderer-gutenberg"
-                        >
-                          <div className="font-semibold uppercase tracking-wider flex items-center gap-1.5">
-                            <Layers className="h-3.5 w-3.5" /> Gutenberg
-                          </div>
-                          <div className="text-muted-foreground mt-1">Generic editable blocks</div>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setRenderer("elementor")}
-                          className={`text-left rounded-md border p-3 text-xs font-mono ${renderer === "elementor" ? "border-primary bg-primary/10" : "border-border bg-muted/20"}`}
-                          data-testid="renderer-elementor"
-                        >
-                          <div className="font-semibold uppercase tracking-wider flex items-center gap-1.5">
-                            <Sparkles className="h-3.5 w-3.5" /> Elementor
-                          </div>
-                          <div className="text-muted-foreground mt-1">Elementor builder</div>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setRenderer("raw_html")}
-                          className={`text-left rounded-md border p-3 text-xs font-mono ${renderer === "raw_html" ? "border-primary bg-primary/10" : "border-border bg-muted/20"}`}
-                          data-testid="renderer-raw_html"
-                        >
-                          <div className="font-semibold uppercase tracking-wider flex items-center gap-1.5">
-                            <FileCode2 className="h-3.5 w-3.5" /> Raw HTML
-                          </div>
-                          <div className="text-muted-foreground mt-1">Verbatim, not editable</div>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setRenderer("pixel_perfect")}
-                          className={`text-left rounded-md border p-3 text-xs font-mono ${renderer === "pixel_perfect" ? "border-primary bg-primary/10" : "border-border bg-muted/20"}`}
-                          data-testid="renderer-pixel_perfect"
-                        >
-                          <div className="font-semibold uppercase tracking-wider flex items-center gap-1.5">
-                            <Sparkles className="h-3.5 w-3.5" /> Pixel-Perfect
-                          </div>
-                          <div className="text-muted-foreground mt-1">Custom theme + editable</div>
-                        </button>
+                      <Label className="font-mono">Output</Label>
+                      <div className="rounded-md border border-primary bg-primary/10 p-3 text-xs font-mono" data-testid="renderer-pixel_perfect">
+                        <div className="font-semibold uppercase tracking-wider flex items-center gap-1.5">
+                          <Sparkles className="h-3.5 w-3.5" /> Elementor + Custom Theme
+                        </div>
+                        <div className="text-muted-foreground mt-1">
+                          Generates a child theme with one Elementor widget per section. Each widget exposes
+                          native control groups (Button text + link, Image + alt, Heading + tag, etc.) so the
+                          sidebar in Elementor feels like a stock widget. Install the theme on your WordPress
+                          site first, then push your pages.
+                        </div>
                       </div>
-                      <p className="text-[10px] text-muted-foreground">
-                        {renderer === "elementor" && "Requires Elementor plugin installed on target WordPress site."}
-                        {renderer === "gutenberg" && "Maps each section to a native WordPress block (≈60–80% visual fidelity)."}
-                        {renderer === "raw_html" && "Pushes the original HTML + CSS verbatim and uploads all images. Page is identical to the source but no longer block-editable."}
-                        {renderer === "pixel_perfect" && "Generates a custom WordPress theme containing one block + Elementor widget per section. 100% pixel-fidelity AND editable in either editor — but you must install the generated theme on WP first (button below)."}
-                      </p>
                       {renderer === "pixel_perfect" && (
                         <div className="grid grid-cols-3 gap-2 pt-2">
                           <Button

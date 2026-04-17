@@ -130,8 +130,8 @@ function wpb_render_section_template( string $template_path, array $attrs ): str
             $attrs[ $k ] = str_replace( '{{THEME_URI}}', $theme_uri, $v );
         }
     }
-    return preg_replace_callback(
-        '/\\{\\{(TEXT|ATTR|URL):([A-Za-z0-9_]+)\\}\\}/',
+    $rendered = preg_replace_callback(
+        '/\\{\\{(TEXT|ATTR|URL|TAG):([A-Za-z0-9_]+)\\}\\}/',
         function ( $m ) use ( $attrs ) {
             $val = $attrs[ $m[2] ] ?? '';
             if ( ! is_string( $val ) ) $val = (string) $val;
@@ -139,11 +139,32 @@ function wpb_render_section_template( string $template_path, array $attrs ): str
                 case 'TEXT': return esc_html( $val );
                 case 'ATTR': return esc_attr( $val );
                 case 'URL':  return esc_url( $val );
+                case 'TAG':  return preg_match( '/^h[1-6]$/', $val ) ? $val : 'h2';
             }
             return '';
         },
         $tpl
     ) ?? '';
+    // Heading tag-swap pass: any element marked with data-wpb-tag="key"
+    // gets its open/close tag rewritten to whichever h1-h6 the saved field
+    // value asks for. We only touch h1-h6 elements so other markup stays
+    // intact, and we sanitise the target tag against the same allowlist.
+    $rendered = preg_replace_callback(
+        '/<(h[1-6])([^>]*?)\\sdata-wpb-tag="([A-Za-z0-9_]+)"([^>]*)>(.*?)<\\/\\1>/is',
+        function ( $m ) use ( $attrs ) {
+            $orig = $m[1];
+            $key  = $m[3];
+            $next = isset( $attrs[ $key ] ) && is_string( $attrs[ $key ] ) ? $attrs[ $key ] : $orig;
+            if ( ! preg_match( '/^h[1-6]$/', $next ) ) $next = $orig;
+            $rest_attrs = trim( $m[2] . ' ' . $m[4] );
+            $rest_attrs = preg_replace( '/\\sdata-wpb-tag="[^"]*"/', '', ' ' . $rest_attrs );
+            $rest_attrs = trim( $rest_attrs );
+            $open_attrs = $rest_attrs === '' ? '' : ' ' . $rest_attrs;
+            return '<' . $next . $open_attrs . '>' . $m[5] . '</' . $next . '>';
+        },
+        $rendered
+    ) ?? $rendered;
+    return $rendered;
 }
 
 /**
@@ -182,13 +203,72 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
     protected $wpb_label = '';
     protected $wpb_template_path = '';
     protected $wpb_fields = array();
+    protected $wpb_groups = array();
 
     public function get_name() { return 'wpb_' . $this->wpb_id; }
     public function get_title() { return $this->wpb_label; }
     public function get_icon() { return 'eicon-section'; }
     public function get_categories() { return array( 'general' ); }
 
+    /**
+     * Map our control type tag to Elementor's Controls_Manager constant.
+     * The CHOOSE control is rendered as a SELECT for compactness; for
+     * heading tag pickers we surface the h1-h6 options on the same row.
+     */
+    private function wpb_control_type( $type ) {
+        switch ( $type ) {
+            case 'textarea': return \\Elementor\\Controls_Manager::TEXTAREA;
+            case 'url':      return \\Elementor\\Controls_Manager::URL;
+            case 'media':    return \\Elementor\\Controls_Manager::MEDIA;
+            case 'choose':   return \\Elementor\\Controls_Manager::SELECT;
+            case 'text':
+            default:         return \\Elementor\\Controls_Manager::TEXT;
+        }
+    }
+
     protected function register_controls() {
+        // Preferred path: walk the semantic groups[] and emit one
+        // start_controls_section per element (Button, Image, Heading...).
+        // Falls back to the old flat fields[] list when groups are empty
+        // (legacy theme upgrade path).
+        if ( is_array( $this->wpb_groups ) && count( $this->wpb_groups ) > 0 ) {
+            foreach ( $this->wpb_groups as $g ) {
+                $section_id = 'wpb_grp_' . preg_replace( '/[^a-zA-Z0-9_]/', '_', $g['id'] ?? 'g' );
+                $this->start_controls_section( $section_id, array(
+                    'label' => esc_html( $g['label'] ?? 'Section' ),
+                    'tab'   => \\Elementor\\Controls_Manager::TAB_CONTENT,
+                ) );
+                foreach ( ($g['controls'] ?? array()) as $c ) {
+                    $type = $this->wpb_control_type( $c['type'] ?? 'text' );
+                    $args = array(
+                        'label'       => esc_html( $c['label'] ?? $c['key'] ),
+                        'type'        => $type,
+                        'label_block' => true,
+                    );
+                    if ( $type === \\Elementor\\Controls_Manager::URL ) {
+                        $args['default'] = array(
+                            'url'         => $c['default'] ?? '',
+                            'is_external' => false,
+                            'nofollow'    => false,
+                        );
+                    } elseif ( $type === \\Elementor\\Controls_Manager::MEDIA ) {
+                        $args['default'] = array(
+                            'url' => $c['default'] ?? '',
+                        );
+                    } elseif ( $type === \\Elementor\\Controls_Manager::SELECT ) {
+                        $opts = isset( $c['options'] ) && is_array( $c['options'] ) ? $c['options'] : array();
+                        $args['options'] = array_combine( $opts, $opts );
+                        $args['default'] = $c['default'] ?? ( $opts[0] ?? '' );
+                    } else {
+                        $args['default'] = $c['default'] ?? '';
+                    }
+                    $this->add_control( $c['key'], $args );
+                }
+                $this->end_controls_section();
+            }
+            return;
+        }
+
         $this->start_controls_section( 'content', array(
             'label' => esc_html__( 'Content', 'wpb' ),
             'tab'   => \\Elementor\\Controls_Manager::TAB_CONTENT,
@@ -206,9 +286,41 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
         $this->end_controls_section();
     }
 
+    /**
+     * Reduce the Elementor settings array (which uses structured shapes
+     * for URL / MEDIA controls) down to the flat scalar map the template
+     * renderer expects. Each control's value lands at $attrs[$fieldKey],
+     * keyed by whatever placeholder ({{TEXT:k}}, {{URL:k}}, ...) the
+     * template uses.
+     */
+    private function wpb_settings_to_attrs( $settings ) {
+        $attrs = array();
+        if ( ! is_array( $this->wpb_groups ) ) return $settings;
+        foreach ( $this->wpb_groups as $g ) {
+            foreach ( ($g['controls'] ?? array()) as $c ) {
+                $ck  = $c['key'] ?? '';
+                $fk  = $c['fieldKey'] ?? $ck;
+                $val = $settings[ $ck ] ?? ( $c['default'] ?? '' );
+                $type = $c['type'] ?? 'text';
+                if ( $type === 'url' && is_array( $val ) ) {
+                    $val = isset( $val['url'] ) ? (string) $val['url'] : '';
+                } elseif ( $type === 'media' && is_array( $val ) ) {
+                    $val = isset( $val['url'] ) ? (string) $val['url'] : '';
+                } else {
+                    $val = is_string( $val ) ? $val : (string) $val;
+                }
+                $attrs[ $fk ] = $val;
+            }
+        }
+        return $attrs;
+    }
+
     protected function render() {
         $settings = $this->get_settings_for_display();
-        echo wpb_render_section_template( WPB_THEME_DIR . '/' . $this->wpb_template_path, $settings );
+        $attrs    = is_array( $this->wpb_groups ) && count( $this->wpb_groups ) > 0
+            ? $this->wpb_settings_to_attrs( $settings )
+            : $settings;
+        echo wpb_render_section_template( WPB_THEME_DIR . '/' . $this->wpb_template_path, $attrs );
     }
 }
 }
@@ -316,6 +428,7 @@ echo wpb_render_section_template( __DIR__ . '/template.html', $attrs );
 function widgetPhpFor(section: ExtractedSection, templateRelPath: string): string {
   const safeId = section.blockName.split("/")[1].replace(/[^a-zA-Z0-9_]/g, "_");
   const fieldsJson = JSON.stringify(section.fields).replace(/'/g, "\\'");
+  const groupsJson = JSON.stringify(section.groups ?? []).replace(/'/g, "\\'");
   return `<?php
 if ( ! defined( 'ABSPATH' ) ) exit;
 if ( ! class_exists( 'WPB_Widget_Base' ) ) return;
@@ -325,6 +438,7 @@ class WPB_Widget_${safeId} extends WPB_Widget_Base {
         $this->wpb_label = ${JSON.stringify(section.label)};
         $this->wpb_template_path = ${JSON.stringify(templateRelPath)};
         $this->wpb_fields = json_decode( '${fieldsJson}', true ) ?: array();
+        $this->wpb_groups = json_decode( '${groupsJson}', true ) ?: array();
         parent::__construct( $data, $args );
     }
 }

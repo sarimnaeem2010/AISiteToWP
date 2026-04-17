@@ -24,36 +24,12 @@ import { scrapeUrl } from "../lib/urlScraper";
 import { applyChatRefinement } from "../lib/chatRefiner";
 import { generateApiKey, generateWordPressPlugin } from "../lib/pluginGenerator";
 import { extractZip } from "../lib/zipUpload";
-import { uploadZipAssets, rewriteAssetUrls } from "../lib/rawHtmlPush";
 import { generateAstroProject } from "../lib/astroGenerator";
-import { pageToElementorData } from "../lib/elementorGenerator";
 import type { SuggestedCpt } from "../lib/aiAnalyzer";
 import AdmZip from "adm-zip";
 import { z } from "zod";
 import { JSDOM } from "jsdom";
 
-/**
- * Extract a self-contained HTML fragment that can be embedded inside a
- * WordPress page (core/html block). Pulls inline <style> tags from <head>
- * plus the inner contents of <body>. External CSS/JS via <link>/<script src>
- * is preserved as-is so absolute URLs continue to work.
- */
-function extractRenderableHtml(rawHtml: string): string {
-  try {
-    const dom = new JSDOM(rawHtml);
-    const doc = dom.window.document;
-    const styleTags = Array.from(doc.querySelectorAll("head style"))
-      .map((el) => `<style>${el.textContent ?? ""}</style>`)
-      .join("\n");
-    const linkTags = Array.from(doc.querySelectorAll('head link[rel="stylesheet"]'))
-      .map((el) => el.outerHTML)
-      .join("\n");
-    const bodyInner = doc.body ? doc.body.innerHTML : rawHtml;
-    return `${linkTags}\n${styleTags}\n<div class="wp-bridge-raw-html">${bodyInner}</div>`;
-  } catch {
-    return rawHtml;
-  }
-}
 
 function suggestedToCpts(suggested: SuggestedCpt[] | undefined): CustomPostTypeDef[] {
   if (!Array.isArray(suggested)) return [];
@@ -67,7 +43,18 @@ function suggestedToCpts(suggested: SuggestedCpt[] | undefined): CustomPostTypeD
   }));
 }
 
-const RendererSchema = z.object({ renderer: z.enum(["gutenberg", "elementor", "raw_html", "pixel_perfect"]) });
+// Legacy enum values are accepted for backwards compatibility (older clients
+// still send "gutenberg" / "elementor" / "raw_html") but every value is
+// normalized to "pixel_perfect" server-side. The pivot is irreversible:
+// users no longer have a renderer choice — every push goes through the
+// generated child theme + Elementor widget pipeline.
+const RendererSchema = z.object({
+  renderer: z.enum(["gutenberg", "elementor", "raw_html", "pixel_perfect"]),
+});
+
+function normalizeRenderer(_v: unknown): "pixel_perfect" {
+  return "pixel_perfect";
+}
 
 /**
  * For a project that has a sourceZip and per-page HTML, run the section
@@ -223,7 +210,7 @@ router.get("/projects/:id", async (req, res): Promise<void> => {
     designSystem: project.designSystem ?? null,
     aiAnalysis: project.aiAnalysis ?? null,
     customPostTypes: project.customPostTypes ?? [],
-    renderer: project.renderer ?? "gutenberg",
+    renderer: project.renderer ?? "pixel_perfect",
     wpConfig: project.wpUrl
       ? {
           wpUrl: project.wpUrl,
@@ -564,9 +551,11 @@ router.put("/projects/:id/renderer", async (req, res): Promise<void> => {
     res.status(400).json({ error: body.error.message });
     return;
   }
+  // Renderer choice is fixed since the Elementor-only pivot. We accept the
+  // PUT for back-compat with older UIs but always store pixel_perfect.
   const [project] = await db
     .update(projectsTable)
-    .set({ renderer: body.data.renderer })
+    .set({ renderer: normalizeRenderer(body.data.renderer) })
     .where(eq(projectsTable.id, Number(params.data.id)))
     .returning();
   if (!project) {
@@ -703,7 +692,9 @@ router.get("/projects/:id/active-theme", async (req, res): Promise<void> => {
     return;
   }
   const { projectSlug } = buildExtractedPages(project);
-  const requiresCustomTheme = (project.renderer ?? "gutenberg") === "pixel_perfect";
+  // Every project now requires the custom theme — Gutenberg/raw-HTML modes
+  // were removed in the Elementor-only pivot.
+  const requiresCustomTheme = true;
   if (!project.wpUrl || project.authMode !== "api_key" || !project.wpApiKey) {
     res.json({
       reachable: false,
@@ -776,28 +767,14 @@ router.post("/projects/:id/push", async (req, res): Promise<void> => {
     pages: Array<{ title: string; slug: string; blocks: unknown[] }>;
     cptItems?: Array<{ cptSlug: string; title: string; fields: Record<string, unknown> }>;
   };
-  const renderer = (project.renderer === "elementor"
-    ? "elementor"
-    : project.renderer === "raw_html"
-      ? "raw_html"
-      : project.renderer === "pixel_perfect"
-        ? "pixel_perfect"
-        : "gutenberg") as "elementor" | "gutenberg" | "raw_html" | "pixel_perfect";
+  // Renderer pivot: every push is now pixel-perfect. Legacy values stored
+  // on existing projects (gutenberg / elementor / raw_html) are silently
+  // upgraded — there is no UI for choosing a different renderer.
+  const renderer = "pixel_perfect" as const;
 
-  // Build elementor data per page when elementor renderer is selected
-  let elementorPages: Array<{ slug: string; data: unknown[] }> | undefined =
-    renderer === "elementor"
-      ? wpStructure.pages.map((p) => ({
-          slug: p.slug,
-          data: pageToElementorData(p as never),
-        }))
-      : undefined;
-
-  // Pixel-perfect mode: extract sections from each source page, compose
-  // BOTH Gutenberg block markup (prebuiltContent) AND Elementor data so the
-  // same generated sections can be edited in either editor on the WP side.
+  let elementorPages: Array<{ slug: string; data: unknown[] }> | undefined;
   let prebuiltBySlug: Record<string, string> | undefined;
-  if (renderer === "pixel_perfect") {
+  {
     if (!project.sourcePagesHtml && !project.sourceHtml) {
       res.status(400).json({
         error: "Pixel-perfect mode requires the original source HTML. Re-upload your ZIP.",
@@ -849,57 +826,9 @@ router.post("/projects/:id/push", async (req, res): Promise<void> => {
     }
   }
 
-  // Raw HTML mode: replace each page's blocks with a single core/html block
-  // containing the ORIGINAL per-page source HTML (styles inlined). Image and
-  // font references in the HTML + CSS are rewritten to uploaded WP media URLs
-  // so the page renders identical to the original template.
-  let pagesPayload = wpStructure.pages;
-  let mediaUploaded = 0;
-  if (renderer === "raw_html") {
-    const sourcePagesHtml = (project.sourcePagesHtml ?? null) as
-      | Record<string, { path: string; content: string }>
-      | null;
-    const sourceZip = project.sourceZip as Buffer | null;
-    if (!sourcePagesHtml || !sourceZip) {
-      res.status(400).json({
-        error: "Pixel-perfect mode needs the original ZIP. Re-upload your ZIP from the Source Files card.",
-      });
-      return;
-    }
-
-    // Upload every image/font from the ZIP to WP media library (once per push).
-    const baseUrl = (project.wpUrl ?? "").replace(/\/$/, "");
-    const headers: Record<string, string> = {};
-    if (authMode === "api_key") {
-      if (project.wpApiKey) headers["X-Api-Key"] = project.wpApiKey;
-    } else {
-      if (project.wpUsername && project.wpAppPassword) {
-        headers.Authorization = `Basic ${Buffer.from(
-          `${project.wpUsername}:${project.wpAppPassword}`,
-        ).toString("base64")}`;
-      }
-    }
-    const { urlMap, uploaded } = await uploadZipAssets(sourceZip, {
-      baseUrl,
-      headers,
-      authMode,
-    });
-    mediaUploaded = uploaded;
-
-    // Per-page: rewrite asset URLs in source HTML and inline its CSS, then
-    // wrap as a single core/html block.
-    pagesPayload = wpStructure.pages.map((p) => {
-      const src = sourcePagesHtml[p.slug];
-      const rawHtml = src?.content ?? project.sourceHtml ?? "";
-      const rewrittenHtml = rewriteAssetUrls(rawHtml, urlMap);
-      const renderable = extractRenderableHtml(rewrittenHtml);
-      const finalHtml = rewriteAssetUrls(renderable, urlMap); // also rewrite inside <style>
-      return {
-        ...p,
-        blocks: [{ blockType: "core/html", fields: { content: finalHtml } }] as unknown[],
-      };
-    });
-  }
+  // Raw-HTML push removed in the Elementor-only pivot. Every page is
+  // pushed as Elementor data + theme widgets via the prebuiltContent path.
+  const pagesPayload = wpStructure.pages;
 
   const result = await pushToWordPress(
     {

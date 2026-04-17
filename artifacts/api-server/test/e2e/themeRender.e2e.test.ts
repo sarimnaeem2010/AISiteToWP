@@ -124,6 +124,17 @@ const FIXTURES: FixtureCase[] = [
     pageSlug: "complex-home",
     expectedSectionCount: 4,
   },
+  {
+    // Dedicated fixture for the semantic-groups widget pivot. Covers
+    // every supported group kind — button, link, image, heading, text —
+    // so a regression in any group's settings shape (URL → {url, ...},
+    // MEDIA → {url, id}, etc.) trips this fixture's elementor pass.
+    file: "widget-page.html",
+    projectSlug: "widget-fixture-site",
+    projectName: "Widget Fixture Site",
+    pageSlug: "widget-home",
+    expectedSectionCount: 3,
+  },
 ];
 
 function run(cmd: string, args: string[], opts: { input?: string } = {}): { stdout: string; stderr: string; status: number | null } {
@@ -157,6 +168,11 @@ function topLevelSections(html: string): Element[] {
 
 const WP_INJECTED_ATTRS = new Set([
   "decoding", "loading", "fetchpriority", "srcset", "sizes",
+  // The semantic-groups extractor stamps `data-wpb-tag="<key>"` on every
+  // heading so the PHP renderer can swap the tag from h1..h6 at render
+  // time. The marker is not present in the source fixture, so strip it
+  // before comparing rendered output to the fixture.
+  "data-wpb-tag",
 ]);
 
 /**
@@ -663,6 +679,7 @@ test("uploaded themes render end-to-end inside WordPress", { skip: ENABLED ? fal
       const themeUri = `/wp-content/themes/${fx.projectSlug}/assets/`;
       for (const section of sections) {
         for (const field of section.fields) {
+          if (field.type === "tag") continue; // tag-swap field, value is just "h1".."h6"
           const expected = field.default.includes("{{THEME_URI}}/assets/")
             ? field.default.replace("{{THEME_URI}}/assets/", themeUri)
             : field.default;
@@ -671,6 +688,63 @@ test("uploaded themes render end-to-end inside WordPress", { skip: ENABLED ? fal
             `${fx.file}: field "${field.key}" (${field.type}) from block ` +
               `${section.blockName} did not appear in the elementor-rendered page.\n` +
               `expected to find: ${expected}`,
+          );
+        }
+      }
+
+      // Semantic-groups assertion: every section must expose at least one
+      // group, and the composed Elementor settings for each group's
+      // controls must use the native control-shape Elementor expects
+      // (URL → {url, is_external, nofollow}, MEDIA → {url, id}, others
+      // are scalars). The widget-page.html fixture has been crafted to
+      // exercise every supported group kind so this asserts an example
+      // of each.
+      type ElData = Array<{ elements: Array<{ elements: Array<{ widgetType: string; settings: Record<string, unknown> }> }> }>;
+      const composed = elementorData as ElData;
+      const seenKinds = new Set<string>();
+      for (let si = 0; si < sections.length; si++) {
+        const section = sections[si];
+        assert.ok(
+          section.groups.length > 0,
+          `${fx.file}: section #${si + 1} (${section.blockName}) has no semantic groups — ` +
+            `the smart Elementor controls UI requires at least one group per section.`,
+        );
+        const widget = composed[si].elements[0].elements[0];
+        for (const g of section.groups) {
+          seenKinds.add(g.kind);
+          for (const c of g.controls) {
+            const v = widget.settings[c.key];
+            assert.ok(
+              v !== undefined,
+              `${fx.file}: control "${c.key}" (group ${g.id}/${g.kind}) missing from composed widget settings`,
+            );
+            if (c.type === "url") {
+              assert.equal(typeof v, "object", `${fx.file}: URL control ${c.key} must be an object`);
+              assert.equal((v as { url?: string }).url, c.default, `${fx.file}: URL control ${c.key} must carry .url = default`);
+              assert.ok("is_external" in (v as object), `${fx.file}: URL control ${c.key} missing is_external`);
+              assert.ok("nofollow" in (v as object), `${fx.file}: URL control ${c.key} missing nofollow`);
+            } else if (c.type === "media") {
+              assert.equal(typeof v, "object", `${fx.file}: MEDIA control ${c.key} must be an object`);
+              assert.equal((v as { url?: string }).url, c.default, `${fx.file}: MEDIA control ${c.key} must carry .url`);
+              assert.ok("id" in (v as object), `${fx.file}: MEDIA control ${c.key} missing id`);
+            } else if (c.type === "choose") {
+              assert.equal(v, c.default, `${fx.file}: SELECT control ${c.key} must default to ${c.default}`);
+              assert.ok(Array.isArray(c.options) && c.options.length > 0, `${fx.file}: SELECT control ${c.key} must declare options`);
+            } else {
+              assert.equal(v, c.default, `${fx.file}: TEXT control ${c.key} must default to its scalar value`);
+            }
+          }
+        }
+      }
+      // The widget-page.html fixture is the one that must exercise all
+      // group kinds end-to-end. The other fixtures are noisier so we
+      // only require their group settings round-trip correctly above.
+      if (fx.file === "widget-page.html") {
+        for (const required of ["button", "link", "image", "heading", "text"] as const) {
+          assert.ok(
+            seenKinds.has(required),
+            `${fx.file}: expected at least one "${required}" group across all sections, ` +
+              `got: [${Array.from(seenKinds).join(", ")}]`,
           );
         }
       }
