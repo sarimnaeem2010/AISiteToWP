@@ -88,6 +88,17 @@ add_action( 'init', function () {
 function wpb_render_section_template( string $template_path, array $attrs ): string {
     if ( ! file_exists( $template_path ) ) return '';
     $tpl = file_get_contents( $template_path );
+    // First pass: rebase any {{THEME_URI}} placeholders to the actual child theme URL.
+    // Field defaults that came from the original HTML's relative asset paths (images,
+    // CSS backgrounds, etc.) also use this placeholder so they keep working when the
+    // user edits and re-saves them.
+    $theme_uri = esc_url( get_stylesheet_directory_uri() );
+    $tpl = str_replace( '{{THEME_URI}}', $theme_uri, $tpl );
+    foreach ( $attrs as $k => $v ) {
+        if ( is_string( $v ) && strpos( $v, '{{THEME_URI}}' ) !== false ) {
+            $attrs[ $k ] = str_replace( '{{THEME_URI}}', $theme_uri, $v );
+        }
+    }
     return preg_replace_callback(
         '/\\{\\{(TEXT|ATTR|URL):([A-Za-z0-9_]+)\\}\\}/',
         function ( $m ) use ( $attrs ) {

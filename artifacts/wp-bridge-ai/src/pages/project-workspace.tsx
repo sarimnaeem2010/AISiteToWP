@@ -277,17 +277,31 @@ export default function ProjectWorkspace() {
     }
   };
 
-  const installAndActivateTheme = async () => {
+  const installTheme = async () => {
     try {
       const res = await fetch(`${apiBase}api/projects/${id}/install-theme`, { method: "POST" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error((data as { message?: string; error?: string }).message || (data as { error?: string }).error || `HTTP ${res.status}`);
       toast({
-        title: "Theme installed & activated",
-        description: `${(data as { blocksRegistered?: number }).blocksRegistered ?? 0} custom blocks registered. Push pages now to populate them.`,
+        title: "Theme installed",
+        description: `${(data as { blocksRegistered?: number }).blocksRegistered ?? 0} custom blocks bundled. Now click Activate to switch the site to this theme.`,
       });
     } catch (err) {
       toast({ title: "Theme install failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    }
+  };
+
+  const activateTheme = async () => {
+    try {
+      const res = await fetch(`${apiBase}api/projects/${id}/activate-theme`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data as { message?: string; error?: string }).message || (data as { error?: string }).error || `HTTP ${res.status}`);
+      toast({
+        title: "Theme activated",
+        description: `${(data as { themeSlug?: string }).themeSlug ?? "Theme"} is now the active theme on your site.`,
+      });
+    } catch (err) {
+      toast({ title: "Activation failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
     }
   };
 
@@ -763,7 +777,7 @@ export default function ProjectWorkspace() {
                         {renderer === "pixel_perfect" && "Generates a custom WordPress theme containing one block + Elementor widget per section. 100% pixel-fidelity AND editable in either editor — but you must install the generated theme on WP first (button below)."}
                       </p>
                       {renderer === "pixel_perfect" && (
-                        <div className="grid grid-cols-2 gap-2 pt-2">
+                        <div className="grid grid-cols-3 gap-2 pt-2">
                           <Button
                             type="button"
                             variant="outline"
@@ -772,17 +786,27 @@ export default function ProjectWorkspace() {
                             data-testid="button-download-theme-zip"
                             className="font-mono text-xs"
                           >
-                            <Download className="h-3.5 w-3.5 mr-1.5" /> Download Theme ZIP
+                            <Download className="h-3.5 w-3.5 mr-1.5" /> Download ZIP
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={installTheme}
+                            data-testid="button-install-theme"
+                            className="font-mono text-xs"
+                          >
+                            <UploadCloud className="h-3.5 w-3.5 mr-1.5" /> Install Theme
                           </Button>
                           <Button
                             type="button"
                             variant="default"
                             size="sm"
-                            onClick={installAndActivateTheme}
-                            data-testid="button-install-theme"
+                            onClick={activateTheme}
+                            data-testid="button-activate-theme"
                             className="font-mono text-xs"
                           >
-                            <UploadCloud className="h-3.5 w-3.5 mr-1.5" /> Install + Activate Theme
+                            <Check className="h-3.5 w-3.5 mr-1.5" /> Activate Theme
                           </Button>
                         </div>
                       )}

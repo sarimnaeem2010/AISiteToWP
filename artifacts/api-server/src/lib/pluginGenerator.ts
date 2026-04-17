@@ -172,41 +172,57 @@ function wp_bridge_theme_install_handler( WP_REST_Request $request ) {
     global $wp_filesystem;
 
     $themes_root = get_theme_root();
+    $themes_root_real = realpath( $themes_root );
+    if ( $themes_root_real === false ) {
+        return new WP_Error( 'no_themes_root', 'Cannot resolve themes root', array( 'status' => 500 ) );
+    }
+    // Extract into an isolated, slug-scoped staging dir under the themes root
+    // so we never touch unrelated theme directories. Validate the staged
+    // contents, then atomically rename into the final slug location.
+    $stage = trailingslashit( $themes_root ) . '_wpb_stage_' . $slug . '_' . wp_generate_password( 8, false, false );
+    if ( ! wp_mkdir_p( $stage ) ) {
+        return new WP_Error( 'mkdir_failed', 'Cannot create staging dir', array( 'status' => 500 ) );
+    }
     $tmp_zip = wp_tempnam( $slug . '.zip' );
     file_put_contents( $tmp_zip, $body );
+    $result = unzip_file( $tmp_zip, $stage );
+    @unlink( $tmp_zip );
+    if ( is_wp_error( $result ) ) {
+        $wp_filesystem->delete( $stage, true );
+        return new WP_Error( 'unzip_failed', $result->get_error_message(), array( 'status' => 500 ) );
+    }
+    // Locate the actual theme root inside the staging dir. Either it IS the
+    // staging dir (ZIP put files at root) or it's the single child directory.
+    $theme_src = null;
+    if ( file_exists( $stage . '/style.css' ) ) {
+        $theme_src = $stage;
+    } else {
+        $children = array_values( array_filter( scandir( $stage ), function ( $e ) { return $e !== '.' && $e !== '..'; } ) );
+        if ( count( $children ) === 1 ) {
+            $candidate = $stage . '/' . $children[0];
+            $candidate_real = realpath( $candidate );
+            if ( $candidate_real !== false
+                && strpos( $candidate_real, $themes_root_real . DIRECTORY_SEPARATOR ) === 0
+                && is_dir( $candidate )
+                && file_exists( $candidate . '/style.css' ) ) {
+                $theme_src = $candidate;
+            }
+        }
+    }
+    if ( $theme_src === null ) {
+        $wp_filesystem->delete( $stage, true );
+        return new WP_Error( 'no_style', 'Theme missing style.css inside ZIP', array( 'status' => 500 ) );
+    }
     $dest = trailingslashit( $themes_root ) . $slug;
     if ( $wp_filesystem->is_dir( $dest ) ) {
         $wp_filesystem->delete( $dest, true );
     }
-    $result = unzip_file( $tmp_zip, $themes_root );
-    @unlink( $tmp_zip );
-    if ( is_wp_error( $result ) ) {
-        return new WP_Error( 'unzip_failed', $result->get_error_message(), array( 'status' => 500 ) );
+    if ( ! rename( $theme_src, $dest ) ) {
+        $wp_filesystem->delete( $stage, true );
+        return new WP_Error( 'install_failed', 'Cannot move theme into place', array( 'status' => 500 ) );
     }
-    // The ZIP root is the theme dir, so we end up with $themes_root/$slug/.
-    if ( ! $wp_filesystem->is_dir( $dest ) ) {
-        // Some ZIPs include a wrapper dir — find the first child that has a style.css and rename it.
-        // Resolve the realpath of the themes root and ensure every candidate stays inside it,
-        // otherwise reject (defence-in-depth against ZIP entries with traversal segments).
-        $themes_root_real = realpath( $themes_root );
-        if ( $themes_root_real === false ) {
-            return new WP_Error( 'no_themes_root', 'Cannot resolve themes root', array( 'status' => 500 ) );
-        }
-        foreach ( scandir( $themes_root ) as $entry ) {
-            if ( $entry === '.' || $entry === '..' ) continue;
-            $candidate = $themes_root . '/' . $entry;
-            $candidate_real = realpath( $candidate );
-            if ( $candidate_real === false ) continue;
-            if ( strpos( $candidate_real, $themes_root_real . DIRECTORY_SEPARATOR ) !== 0 ) continue;
-            if ( is_dir( $candidate ) && file_exists( $candidate . '/style.css' ) && $entry !== $slug ) {
-                if ( ! file_exists( $dest ) ) rename( $candidate, $dest );
-                break;
-            }
-        }
-    }
-    if ( ! file_exists( $dest . '/style.css' ) ) {
-        return new WP_Error( 'no_style', 'Theme missing style.css after unzip', array( 'status' => 500 ) );
-    }
+    // Clean up staging dir if it still exists (theme_src was a child).
+    if ( is_dir( $stage ) ) $wp_filesystem->delete( $stage, true );
     return rest_ensure_response( array( 'success' => true, 'slug' => $slug, 'path' => $dest ) );
 }
 
@@ -361,7 +377,10 @@ function wp_bridge_import_handler( WP_REST_Request $request ) {
             continue;
         }
 
-        if ( $renderer === 'elementor' && is_array( $elementor_data ) ) {
+        // Write Elementor metadata for either pure Elementor mode OR pixel-perfect
+        // mode (which sends both prebuiltContent for Gutenberg AND elementorData,
+        // so the same generated sections can be edited in either editor).
+        if ( is_array( $elementor_data ) && ( $renderer === 'elementor' || $renderer === 'pixel_perfect' ) ) {
             update_post_meta( $page_id, '_elementor_edit_mode', 'builder' );
             update_post_meta( $page_id, '_elementor_template_type', 'wp-page' );
             update_post_meta( $page_id, '_elementor_version', '3.18.0' );

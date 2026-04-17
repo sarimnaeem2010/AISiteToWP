@@ -728,7 +728,7 @@ router.post("/projects/:id/push", async (req, res): Promise<void> => {
         : "gutenberg") as "elementor" | "gutenberg" | "raw_html" | "pixel_perfect";
 
   // Build elementor data per page when elementor renderer is selected
-  const elementorPages =
+  let elementorPages: Array<{ slug: string; data: unknown[] }> | undefined =
     renderer === "elementor"
       ? wpStructure.pages.map((p) => ({
           slug: p.slug,
@@ -737,8 +737,8 @@ router.post("/projects/:id/push", async (req, res): Promise<void> => {
       : undefined;
 
   // Pixel-perfect mode: extract sections from each source page, compose
-  // Gutenberg block markup that references our custom theme blocks, and
-  // attach it as prebuiltContent so the plugin uses it verbatim.
+  // BOTH Gutenberg block markup (prebuiltContent) AND Elementor data so the
+  // same generated sections can be edited in either editor on the WP side.
   let prebuiltBySlug: Record<string, string> | undefined;
   if (renderer === "pixel_perfect") {
     if (!project.sourcePagesHtml && !project.sourceHtml) {
@@ -749,8 +749,10 @@ router.post("/projects/:id/push", async (req, res): Promise<void> => {
     }
     const { pages: extPages } = buildExtractedPages(project);
     prebuiltBySlug = {};
+    elementorPages = [];
     for (const ep of extPages) {
       prebuiltBySlug[ep.slug] = composeGutenbergContent(ep);
+      elementorPages.push({ slug: ep.slug, data: composeElementorData(ep) });
     }
   }
 
@@ -1136,8 +1138,46 @@ router.get("/projects/:id/theme-zip", async (req, res): Promise<void> => {
   res.send(zipBuffer);
 });
 
+// PIXEL-PERFECT: activate the previously installed theme (separate step from
+// install so a failure here is reported distinctly from an install failure).
+router.post("/projects/:id/activate-theme", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const params = GetProjectParams.safeParse({ id: raw });
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+  const [project] = await db
+    .select()
+    .from(projectsTable)
+    .where(eq(projectsTable.id, Number(params.data.id)));
+  if (!project) {
+    res.status(404).json({ error: "Project not found" });
+    return;
+  }
+  if (!project.wpUrl || project.authMode !== "api_key" || !project.wpApiKey) {
+    res.status(400).json({ error: "Theme activation requires API-key auth via the companion plugin." });
+    return;
+  }
+  const { projectSlug } = buildExtractedPages(project);
+  const cfg = {
+    wpUrl: project.wpUrl,
+    wpUsername: project.wpUsername,
+    wpAppPassword: project.wpAppPassword,
+    wpApiKey: project.wpApiKey,
+    authMode: "api_key" as const,
+    useAcf: project.useAcf === "true",
+  };
+  const result = await activateTheme(cfg, projectSlug);
+  if (!result.success) {
+    res.status(502).json({ stage: "activate", themeSlug: projectSlug, ...result });
+    return;
+  }
+  res.json({ stage: "activate", themeSlug: projectSlug, ...result });
+});
+
 // PIXEL-PERFECT: build the theme ZIP server-side, push it to WP via the
-// companion plugin's /theme-install endpoint, and immediately activate it.
+// companion plugin's /theme-install endpoint. Activation is a separate call.
 router.post("/projects/:id/install-theme", async (req, res): Promise<void> => {
   const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
   const params = GetProjectParams.safeParse({ id: raw });
@@ -1195,13 +1235,12 @@ router.post("/projects/:id/install-theme", async (req, res): Promise<void> => {
   };
   const installResult = await installTheme(cfg, projectSlug, zipBuffer);
   if (!installResult.success) {
-    res.status(502).json({ stage: "install", ...installResult });
+    res.status(502).json({ stage: "install", themeSlug: projectSlug, ...installResult });
     return;
   }
-  const activateResult = await activateTheme(cfg, projectSlug);
   res.json({
+    stage: "install",
     install: installResult,
-    activate: activateResult,
     themeSlug: projectSlug,
     blocksRegistered: pages.reduce((n, p) => n + p.sections.length, 0),
   });

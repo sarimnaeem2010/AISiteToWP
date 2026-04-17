@@ -70,6 +70,80 @@ function shortHash(s: string): string {
   return crypto.createHash("sha1").update(s).digest("hex").slice(0, 8);
 }
 
+/**
+ * Returns true if the URL is relative to the original site root and would
+ * therefore resolve incorrectly when the section HTML is rendered inside a
+ * WordPress page. Absolute http(s)://, protocol-relative //, anchors,
+ * mailto:, tel:, javascript: and data: URIs are all left alone.
+ */
+function isRelativeAssetUrl(u: string): boolean {
+  const trimmed = u.trim();
+  if (!trimmed) return false;
+  if (/^([a-z][a-z0-9+.-]*:|\/\/|#|mailto:|tel:|javascript:|data:)/i.test(trimmed)) return false;
+  return true;
+}
+
+/**
+ * Rewrite every relative asset URL in the section HTML to a {{THEME_URI}}/...
+ * placeholder. The render template engine substitutes {{THEME_URI}} with the
+ * generated child theme's stylesheet directory URI at request time, so images
+ * referenced by section markup load from the theme's bundled assets folder
+ * regardless of which WP page the block is rendered on.
+ */
+function rebaseAssetUrls(root: Element): void {
+  const attrTargets: Array<[string, string[]]> = [
+    ["img", ["src", "data-src", "data-lazy-src", "srcset"]],
+    ["source", ["src", "srcset"]],
+    ["video", ["src", "poster"]],
+    ["audio", ["src"]],
+    ["iframe", ["src"]],
+    ["embed", ["src"]],
+    ["object", ["data"]],
+    ["link", ["href"]],
+    ["script", ["src"]],
+    ["use", ["href", "xlink:href"]],
+    ["a", ["href"]],
+  ];
+  // Include the root element itself when searching for style attrs, since
+  // querySelectorAll only walks descendants.
+  const allWithBg: Element[] = [
+    ...(root.hasAttribute("style") ? [root] : []),
+    ...Array.from(root.querySelectorAll("[style]")),
+  ];
+  for (const [selector, attrs] of attrTargets) {
+    for (const el of Array.from(root.querySelectorAll(selector))) {
+      for (const attr of attrs) {
+        const v = el.getAttribute(attr);
+        if (!v) continue;
+        // For anchor href, only rewrite if it looks like a file (has extension)
+        if (selector === "a" && !/\.[a-z0-9]{1,5}(\?|#|$)/i.test(v)) continue;
+        if (attr === "srcset") {
+          const rewritten = v.split(",").map((part) => {
+            const segs = part.trim().split(/\s+/);
+            if (segs[0] && isRelativeAssetUrl(segs[0])) {
+              segs[0] = `{{THEME_URI}}/${segs[0].replace(/^\.?\/+/, "")}`;
+            }
+            return segs.join(" ");
+          }).join(", ");
+          el.setAttribute(attr, rewritten);
+        } else if (isRelativeAssetUrl(v)) {
+          el.setAttribute(attr, `{{THEME_URI}}/${v.replace(/^\.?\/+/, "")}`);
+        }
+      }
+    }
+  }
+  // Inline style background images
+  for (const el of Array.from(allWithBg)) {
+    const style = el.getAttribute("style");
+    if (!style) continue;
+    const rewritten = style.replace(/url\((['"]?)([^'")]+)\1\)/gi, (_m, q, url) => {
+      if (!isRelativeAssetUrl(url)) return `url(${q}${url}${q})`;
+      return `url(${q}{{THEME_URI}}/${url.replace(/^\.?\/+/, "")}${q})`;
+    });
+    if (rewritten !== style) el.setAttribute("style", rewritten);
+  }
+}
+
 function isMeaningfulText(s: string): boolean {
   const trimmed = s.trim();
   if (trimmed.length < 1) return false;
@@ -87,6 +161,11 @@ function buildSectionTemplate(
   section: Element,
   doc: Document,
 ): { template: string; fields: ExtractedField[] } {
+  // Rebase any relative asset URLs first so the resulting fields' default
+  // values are also theme-relative — that way image fields persist as
+  // {{THEME_URI}}/... and survive when the user edits and re-saves.
+  rebaseAssetUrls(section);
+
   const fields: ExtractedField[] = [];
   let counter = 0;
   const used = new Set<string>();
