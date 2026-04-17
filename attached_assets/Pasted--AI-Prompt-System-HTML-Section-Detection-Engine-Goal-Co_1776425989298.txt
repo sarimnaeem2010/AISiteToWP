@@ -1,0 +1,148 @@
+🔥 AI Prompt System: HTML → Section Detection Engine
+🔹 Goal
+
+Convert raw HTML into structured page sections like:
+
+hero
+features
+testimonials
+pricing
+footer
+navbar
+CTA blocks
+🧠 SYSTEM PROMPT (CORE ENGINE)
+
+Use this as your system prompt:
+
+You are a UI structure parser.
+
+Your job is to analyze raw HTML and convert it into a structured page layout.
+
+Rules:
+1. Do NOT modify content meaning.
+2. Only classify structure and layout.
+3. Ignore unnecessary CSS classes, scripts, and inline styles.
+4. Identify logical UI sections.
+5. Group elements into semantic blocks.
+6. Output must be valid JSON only.
+
+Section Types Allowed:
+- navbar
+- hero
+- features
+- about
+- services
+- testimonials
+- pricing
+- gallery
+- faq
+- contact
+- footer
+- cta
+- blog-preview
+- unknown
+
+If unsure, use "unknown".
+
+Return structured JSON only.
+📥 USER PROMPT TEMPLATE
+
+This is what you send dynamically:
+
+Analyze the following HTML and convert it into structured UI sections:
+
+HTML:
+{{RAW_HTML}}
+
+Return JSON only.
+📤 EXPECTED OUTPUT FORMAT
+
+This is the format your system should enforce:
+
+{
+  "page_type": "landing_page",
+  "sections": [
+    {
+      "type": "navbar",
+      "content": {
+        "logo": "...",
+        "links": ["Home", "About", "Contact"]
+      }
+    },
+    {
+      "type": "hero",
+      "content": {
+        "heading": "Build Something Amazing",
+        "subheading": "Fast, modern websites",
+        "cta": "Get Started"
+      }
+    },
+    {
+      "type": "features",
+      "items": [
+        {
+          "title": "Fast",
+          "description": "Optimized performance"
+        }
+      ]
+    }
+  ]
+}
+🧠 ADVANCED DETECTION RULES (VERY IMPORTANT)
+
+You should instruct AI to detect based on:
+
+🔹 1. Visual hierarchy
+Largest heading → hero
+Repeated cards → features
+Small repeated reviews → testimonials
+🔹 2. DOM grouping logic
+Same parent div → same section candidate
+Repeating patterns → list section
+🔹 3. Keyword signals
+Keywords	Section
+"pricing", "$", "plan"	pricing
+"testimonial", "review"	testimonials
+"contact", "form", "email"	contact
+"feature", "benefit"	features
+🔹 4. Layout heuristics
+1 big image + text → hero
+3–6 cards → features
+long text blocks → about
+repeated avatars → testimonials
+⚙️ OPTIONAL ENHANCEMENT LAYER (VERY POWERFUL)
+
+Add this second pass prompt:
+
+🔄 CLEANING PROMPT (POST PROCESSOR)
+Refine the extracted UI structure.
+
+Rules:
+1. Merge duplicate or overlapping sections.
+2. Remove noise sections.
+3. Ensure logical flow from top to bottom.
+4. Normalize content length.
+5. Ensure each section is self-contained.
+
+Return improved JSON only.
+🔥 FINAL ARCHITECTURE (YOUR SYSTEM CORE)
+HTML Input
+   ↓
+AI Section Detection (Prompt 1)
+   ↓
+JSON Structure
+   ↓
+AI Refinement (Prompt 2)
+   ↓
+Clean CMS Schema
+   ↓
+WordPress / Elementor Mapping Engine
+🚀 WHY THIS WORKS FOR YOUR SYSTEM
+
+Because it gives you:
+
+✔ deterministic structure
+✔ reusable schema
+✔ WP-ready mapping
+✔ Elementor compatibility
+✔ scalable AI pipeline
