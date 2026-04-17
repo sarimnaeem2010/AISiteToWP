@@ -166,8 +166,14 @@ export default function ProjectWorkspace() {
 
   const apiBase = import.meta.env.BASE_URL;
   const proj = project as any;
-  const renderer: "gutenberg" | "elementor" | "raw_html" =
-    proj.renderer === "elementor" ? "elementor" : proj.renderer === "raw_html" ? "raw_html" : "gutenberg";
+  const renderer: "gutenberg" | "elementor" | "raw_html" | "pixel_perfect" =
+    proj.renderer === "elementor"
+      ? "elementor"
+      : proj.renderer === "raw_html"
+        ? "raw_html"
+        : proj.renderer === "pixel_perfect"
+          ? "pixel_perfect"
+          : "gutenberg";
   const cpts: Array<{ slug: string; label: string; pluralLabel: string; sourceSemanticType: string; fields: string[]; enabled: boolean }> =
     Array.isArray(proj.customPostTypes) ? proj.customPostTypes : [];
 
@@ -251,7 +257,41 @@ export default function ProjectWorkspace() {
     }
   };
 
-  const setRenderer = async (value: "gutenberg" | "elementor" | "raw_html") => {
+  const downloadThemeZip = async () => {
+    try {
+      const res = await fetch(`${apiBase}api/projects/${id}/theme-zip`);
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        throw new Error(`HTTP ${res.status}: ${errText.slice(0, 200)}`);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${(proj.name ?? "site").toLowerCase().replace(/[^a-z0-9]+/g, "-")}-theme.zip`;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+      toast({ title: "Theme ZIP downloaded", description: "Upload via WordPress → Appearance → Themes → Add New → Upload Theme." });
+    } catch (err) {
+      toast({ title: "Theme ZIP failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    }
+  };
+
+  const installAndActivateTheme = async () => {
+    try {
+      const res = await fetch(`${apiBase}api/projects/${id}/install-theme`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data as { message?: string; error?: string }).message || (data as { error?: string }).error || `HTTP ${res.status}`);
+      toast({
+        title: "Theme installed & activated",
+        description: `${(data as { blocksRegistered?: number }).blocksRegistered ?? 0} custom blocks registered. Push pages now to populate them.`,
+      });
+    } catch (err) {
+      toast({ title: "Theme install failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    }
+  };
+
+  const setRenderer = async (value: "gutenberg" | "elementor" | "raw_html" | "pixel_perfect") => {
     try {
       const res = await fetch(`${apiBase}api/projects/${id}/renderer`, {
         method: "PUT",
@@ -670,7 +710,7 @@ export default function ProjectWorkspace() {
                     )}
                     <div className="space-y-2">
                       <Label className="font-mono">Page Renderer</Label>
-                      <div className="grid grid-cols-3 gap-2">
+                      <div className="grid grid-cols-2 gap-2">
                         <button
                           type="button"
                           onClick={() => setRenderer("gutenberg")}
@@ -680,7 +720,7 @@ export default function ProjectWorkspace() {
                           <div className="font-semibold uppercase tracking-wider flex items-center gap-1.5">
                             <Layers className="h-3.5 w-3.5" /> Gutenberg
                           </div>
-                          <div className="text-muted-foreground mt-1">Editable native blocks</div>
+                          <div className="text-muted-foreground mt-1">Generic editable blocks</div>
                         </button>
                         <button
                           type="button"
@@ -700,16 +740,52 @@ export default function ProjectWorkspace() {
                           data-testid="renderer-raw_html"
                         >
                           <div className="font-semibold uppercase tracking-wider flex items-center gap-1.5">
-                            <Layers className="h-3.5 w-3.5" /> Pixel-Perfect
+                            <FileCode2 className="h-3.5 w-3.5" /> Raw HTML
                           </div>
-                          <div className="text-muted-foreground mt-1">100% original UI</div>
+                          <div className="text-muted-foreground mt-1">Verbatim, not editable</div>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setRenderer("pixel_perfect")}
+                          className={`text-left rounded-md border p-3 text-xs font-mono ${renderer === "pixel_perfect" ? "border-primary bg-primary/10" : "border-border bg-muted/20"}`}
+                          data-testid="renderer-pixel_perfect"
+                        >
+                          <div className="font-semibold uppercase tracking-wider flex items-center gap-1.5">
+                            <Sparkles className="h-3.5 w-3.5" /> Pixel-Perfect
+                          </div>
+                          <div className="text-muted-foreground mt-1">Custom theme + editable</div>
                         </button>
                       </div>
                       <p className="text-[10px] text-muted-foreground">
                         {renderer === "elementor" && "Requires Elementor plugin installed on target WordPress site."}
-                        {renderer === "gutenberg" && "Default. Maps every page in your ZIP to native WordPress blocks."}
-                        {renderer === "raw_html" && "Pushes the original HTML + CSS verbatim and uploads all images. Page is identical to the source but no longer block-editable in Gutenberg."}
+                        {renderer === "gutenberg" && "Maps each section to a native WordPress block (≈60–80% visual fidelity)."}
+                        {renderer === "raw_html" && "Pushes the original HTML + CSS verbatim and uploads all images. Page is identical to the source but no longer block-editable."}
+                        {renderer === "pixel_perfect" && "Generates a custom WordPress theme containing one block + Elementor widget per section. 100% pixel-fidelity AND editable in either editor — but you must install the generated theme on WP first (button below)."}
                       </p>
+                      {renderer === "pixel_perfect" && (
+                        <div className="grid grid-cols-2 gap-2 pt-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={downloadThemeZip}
+                            data-testid="button-download-theme-zip"
+                            className="font-mono text-xs"
+                          >
+                            <Download className="h-3.5 w-3.5 mr-1.5" /> Download Theme ZIP
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="default"
+                            size="sm"
+                            onClick={installAndActivateTheme}
+                            data-testid="button-install-theme"
+                            className="font-mono text-xs"
+                          >
+                            <UploadCloud className="h-3.5 w-3.5 mr-1.5" /> Install + Activate Theme
+                          </Button>
+                        </div>
+                      )}
                     </div>
                     <FormField
                       control={form.control}

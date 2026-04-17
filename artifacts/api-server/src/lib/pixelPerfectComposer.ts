@@ -1,0 +1,55 @@
+import type { ExtractedPage, ExtractedSection } from "./sectionFieldExtractor";
+
+/**
+ * Build Gutenberg post_content for a page composed entirely of our custom
+ * per-section blocks. Each block is self-closing and carries its attribute
+ * values (the original text/links/images) in the comment delimiter so the
+ * render.php substitutes them back into the saved template.
+ */
+export function composeGutenbergContent(page: ExtractedPage): string {
+  const parts: string[] = [];
+  for (const s of page.sections) {
+    const attrs: Record<string, string> = {};
+    for (const f of s.fields) attrs[f.key] = f.default;
+    const json = JSON.stringify(attrs).replace(/--/g, "\\u002d\\u002d");
+    parts.push(`<!-- wp:${s.blockName} ${json} /-->`);
+  }
+  return parts.join("\n\n");
+}
+
+/**
+ * Build the elementor_data JSON array for a page. Each section becomes one
+ * Elementor section containing a single column containing our custom
+ * widget. Widget settings are the field defaults.
+ */
+export function composeElementorData(page: ExtractedPage): unknown[] {
+  return page.sections.map((s) => {
+    const safeId = s.blockName.split("/")[1].replace(/[^a-zA-Z0-9_]/g, "_");
+    const widgetType = `wpb_${safeId}`;
+    const settings: Record<string, string> = {};
+    for (const f of s.fields) settings[f.key] = f.default;
+    return {
+      id: safeId.slice(0, 7).padEnd(7, "0"),
+      elType: "section",
+      settings: {},
+      isInner: false,
+      elements: [
+        {
+          id: (safeId + "x").slice(0, 7).padEnd(7, "0"),
+          elType: "column",
+          settings: { _column_size: 100 },
+          isInner: false,
+          elements: [
+            {
+              id: (safeId + "y").slice(0, 7).padEnd(7, "0"),
+              elType: "widget",
+              widgetType,
+              settings,
+              elements: [],
+            },
+          ],
+        },
+      ],
+    };
+  });
+}

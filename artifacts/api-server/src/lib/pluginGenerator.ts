@@ -144,7 +144,86 @@ add_action( 'rest_api_init', function () {
         'callback'            => 'wp_bridge_media_handler',
         'permission_callback' => 'wp_bridge_auth_check',
     ) );
+    register_rest_route( 'ai-cms/v1', '/theme-install', array(
+        'methods'             => 'POST',
+        'callback'            => 'wp_bridge_theme_install_handler',
+        'permission_callback' => 'wp_bridge_auth_check',
+    ) );
+    register_rest_route( 'ai-cms/v1', '/theme-activate', array(
+        'methods'             => 'POST',
+        'callback'            => 'wp_bridge_theme_activate_handler',
+        'permission_callback' => 'wp_bridge_auth_check',
+    ) );
 } );
+
+/**
+ * Receive a raw .zip body and unpack it as a WordPress theme. The
+ * X-Theme-Slug header names the destination directory. Existing dir of
+ * the same name is wiped first so re-uploads are idempotent.
+ */
+function wp_bridge_theme_install_handler( WP_REST_Request $request ) {
+    $body = $request->get_body();
+    if ( empty( $body ) ) return new WP_Error( 'no_body', 'Empty body', array( 'status' => 400 ) );
+    $slug = sanitize_key( $request->get_header( 'X-Theme-Slug' ) ?: '' );
+    if ( ! $slug ) return new WP_Error( 'no_slug', 'X-Theme-Slug header required', array( 'status' => 400 ) );
+
+    require_once ABSPATH . 'wp-admin/includes/file.php';
+    WP_Filesystem();
+    global $wp_filesystem;
+
+    $themes_root = get_theme_root();
+    $tmp_zip = wp_tempnam( $slug . '.zip' );
+    file_put_contents( $tmp_zip, $body );
+    $dest = trailingslashit( $themes_root ) . $slug;
+    if ( $wp_filesystem->is_dir( $dest ) ) {
+        $wp_filesystem->delete( $dest, true );
+    }
+    $result = unzip_file( $tmp_zip, $themes_root );
+    @unlink( $tmp_zip );
+    if ( is_wp_error( $result ) ) {
+        return new WP_Error( 'unzip_failed', $result->get_error_message(), array( 'status' => 500 ) );
+    }
+    // The ZIP root is the theme dir, so we end up with $themes_root/$slug/.
+    if ( ! $wp_filesystem->is_dir( $dest ) ) {
+        // Some ZIPs include a wrapper dir — find the first child that has a style.css and rename it.
+        // Resolve the realpath of the themes root and ensure every candidate stays inside it,
+        // otherwise reject (defence-in-depth against ZIP entries with traversal segments).
+        $themes_root_real = realpath( $themes_root );
+        if ( $themes_root_real === false ) {
+            return new WP_Error( 'no_themes_root', 'Cannot resolve themes root', array( 'status' => 500 ) );
+        }
+        foreach ( scandir( $themes_root ) as $entry ) {
+            if ( $entry === '.' || $entry === '..' ) continue;
+            $candidate = $themes_root . '/' . $entry;
+            $candidate_real = realpath( $candidate );
+            if ( $candidate_real === false ) continue;
+            if ( strpos( $candidate_real, $themes_root_real . DIRECTORY_SEPARATOR ) !== 0 ) continue;
+            if ( is_dir( $candidate ) && file_exists( $candidate . '/style.css' ) && $entry !== $slug ) {
+                if ( ! file_exists( $dest ) ) rename( $candidate, $dest );
+                break;
+            }
+        }
+    }
+    if ( ! file_exists( $dest . '/style.css' ) ) {
+        return new WP_Error( 'no_style', 'Theme missing style.css after unzip', array( 'status' => 500 ) );
+    }
+    return rest_ensure_response( array( 'success' => true, 'slug' => $slug, 'path' => $dest ) );
+}
+
+/**
+ * Activate a theme by slug. Caller must have installed it first.
+ */
+function wp_bridge_theme_activate_handler( WP_REST_Request $request ) {
+    $params = $request->get_json_params();
+    $slug = isset( $params['slug'] ) ? sanitize_key( $params['slug'] ) : '';
+    if ( ! $slug ) return new WP_Error( 'no_slug', 'slug required', array( 'status' => 400 ) );
+    $theme = wp_get_theme( $slug );
+    if ( ! $theme->exists() ) {
+        return new WP_Error( 'no_theme', 'Theme not installed', array( 'status' => 404 ) );
+    }
+    switch_theme( $slug );
+    return rest_ensure_response( array( 'success' => true, 'slug' => $slug, 'name' => (string) $theme->get( 'Name' ) ) );
+}
 
 /**
  * Accept a raw binary upload from the agent and store it in the WordPress
@@ -243,6 +322,10 @@ function wp_bridge_import_handler( WP_REST_Request $request ) {
 
         if ( $renderer === 'elementor' && is_array( $elementor_data ) ) {
             $content = '';
+        } elseif ( ! empty( $page_data['prebuiltContent'] ) && is_string( $page_data['prebuiltContent'] ) ) {
+            // Pixel-perfect mode: composer already built the block markup
+            // referencing our theme's custom blocks.
+            $content = $page_data['prebuiltContent'];
         } else {
             $content = wp_bridge_build_block_content( $blocks );
         }

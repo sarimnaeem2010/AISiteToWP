@@ -73,6 +73,67 @@ function buildHeaders(config: WpConfig): Record<string, string> {
   return headers;
 }
 
+/**
+ * Upload a raw theme .zip body to the companion plugin's theme-install
+ * endpoint. Auth must be api_key (basic doesn't expose this endpoint).
+ */
+export async function installTheme(
+  config: WpConfig,
+  themeSlug: string,
+  zipBytes: Buffer,
+): Promise<{ success: boolean; message: string; path?: string }> {
+  if (!config.wpUrl) return { success: false, message: "WP URL not set" };
+  await assertSafeUrl(config.wpUrl);
+  if (config.authMode !== "api_key" || !config.wpApiKey) {
+    return { success: false, message: "Theme install requires api_key auth (companion plugin)" };
+  }
+  const url = `${config.wpUrl.replace(/\/$/, "")}/wp-json/ai-cms/v1/theme-install`;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "X-Api-Key": config.wpApiKey,
+        "X-Theme-Slug": themeSlug,
+        "Content-Type": "application/zip",
+      },
+      body: zipBytes as unknown as BodyInit,
+      signal: AbortSignal.timeout(60000),
+    });
+    const text = await res.text();
+    if (!res.ok) return { success: false, message: `HTTP ${res.status}: ${text.slice(0, 200)}` };
+    let data: { success?: boolean; path?: string } = {};
+    try { data = JSON.parse(text); } catch { /* leave empty */ }
+    return { success: !!data.success, message: data.success ? "Theme installed" : "Install reported failure", path: data.path };
+  } catch (err) {
+    return { success: false, message: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+export async function activateTheme(
+  config: WpConfig,
+  themeSlug: string,
+): Promise<{ success: boolean; message: string }> {
+  if (!config.wpUrl) return { success: false, message: "WP URL not set" };
+  await assertSafeUrl(config.wpUrl);
+  if (config.authMode !== "api_key" || !config.wpApiKey) {
+    return { success: false, message: "Theme activate requires api_key auth" };
+  }
+  const url = `${config.wpUrl.replace(/\/$/, "")}/wp-json/ai-cms/v1/theme-activate`;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "X-Api-Key": config.wpApiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({ slug: themeSlug }),
+      signal: AbortSignal.timeout(30000),
+    });
+    const text = await res.text();
+    if (!res.ok) return { success: false, message: `HTTP ${res.status}: ${text.slice(0, 200)}` };
+    return { success: true, message: "Theme activated" };
+  } catch (err) {
+    return { success: false, message: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 interface WpBlock {
   blockType: string;
   acfGroup?: string | null;
@@ -95,9 +156,12 @@ interface CptItem {
 interface WpStructure {
   pages: WpPage[];
   cptItems?: CptItem[];
-  renderer?: "gutenberg" | "elementor" | "raw_html";
+  renderer?: "gutenberg" | "elementor" | "raw_html" | "pixel_perfect";
   elementorPages?: Array<{ slug: string; data: unknown[] }>;
   injectedCss?: string | null;
+  // Pixel-perfect: per-page pre-built block markup that references custom
+  // theme blocks. The plugin uses this verbatim as post_content.
+  prebuiltBySlug?: Record<string, string>;
 }
 
 interface PushLogEntry {
@@ -346,9 +410,11 @@ export async function pushToWordPress(
       const elementorBySlug = new Map(
         (wpStructure.elementorPages ?? []).map((p) => [p.slug, p.data]),
       );
+      const prebuilt = wpStructure.prebuiltBySlug ?? {};
       const pagesPayload = wpStructure.pages.map((p) => ({
         ...p,
         elementorData: elementorBySlug.get(p.slug) ?? null,
+        prebuiltContent: prebuilt[p.slug] ?? null,
       }));
       const res = await fetch(`${baseUrl}/wp-json/ai-cms/v1/import`, {
         method: "POST",

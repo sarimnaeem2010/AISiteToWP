@@ -16,7 +16,10 @@ import {
 } from "@workspace/api-zod";
 import { parseHtml, parseSingleHtmlPage, type ParsedPage, type ParsedSite, type DesignSystem } from "../lib/parser";
 import { mapToWordPress, type CustomPostTypeDef } from "../lib/wpMapper";
-import { testConnection, pushToWordPress, setAsHomepage } from "../lib/wpSync";
+import { testConnection, pushToWordPress, setAsHomepage, installTheme, activateTheme } from "../lib/wpSync";
+import { extractSectionsFromPage, type ExtractedPage } from "../lib/sectionFieldExtractor";
+import { generateThemeZip } from "../lib/themeGenerator";
+import { composeGutenbergContent, composeElementorData } from "../lib/pixelPerfectComposer";
 import { scrapeUrl } from "../lib/urlScraper";
 import { applyChatRefinement } from "../lib/chatRefiner";
 import { generateApiKey, generateWordPressPlugin } from "../lib/pluginGenerator";
@@ -64,7 +67,37 @@ function suggestedToCpts(suggested: SuggestedCpt[] | undefined): CustomPostTypeD
   }));
 }
 
-const RendererSchema = z.object({ renderer: z.enum(["gutenberg", "elementor", "raw_html"]) });
+const RendererSchema = z.object({ renderer: z.enum(["gutenberg", "elementor", "raw_html", "pixel_perfect"]) });
+
+/**
+ * For a project that has a sourceZip and per-page HTML, run the section
+ * extractor across every page and return one ExtractedPage per slug. The
+ * project's slug is used as the block namespace so two projects' blocks
+ * never collide on the same WP install.
+ */
+function buildExtractedPages(project: {
+  name: string;
+  sourcePagesHtml: unknown;
+  sourceHtml: string | null;
+}): { pages: ExtractedPage[]; projectSlug: string } {
+  const projectSlug = project.name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40) || "wpb-project";
+  const sourcePagesHtml = (project.sourcePagesHtml ?? null) as Record<string, { path: string; content: string }> | null;
+  const pages: ExtractedPage[] = [];
+  if (sourcePagesHtml && Object.keys(sourcePagesHtml).length > 0) {
+    for (const [slug, src] of Object.entries(sourcePagesHtml)) {
+      const sections = extractSectionsFromPage(src.content, slug, projectSlug);
+      pages.push({ slug, title: slug === "home" ? "Home" : slug.replace(/-/g, " "), sections });
+    }
+  } else if (project.sourceHtml) {
+    const sections = extractSectionsFromPage(project.sourceHtml, "home", projectSlug);
+    pages.push({ slug: "home", title: "Home", sections });
+  }
+  return { pages, projectSlug };
+}
 const CustomPostTypesSchema = z.object({
   customPostTypes: z.array(
     z.object({
@@ -690,7 +723,9 @@ router.post("/projects/:id/push", async (req, res): Promise<void> => {
     ? "elementor"
     : project.renderer === "raw_html"
       ? "raw_html"
-      : "gutenberg") as "elementor" | "gutenberg" | "raw_html";
+      : project.renderer === "pixel_perfect"
+        ? "pixel_perfect"
+        : "gutenberg") as "elementor" | "gutenberg" | "raw_html" | "pixel_perfect";
 
   // Build elementor data per page when elementor renderer is selected
   const elementorPages =
@@ -700,6 +735,24 @@ router.post("/projects/:id/push", async (req, res): Promise<void> => {
           data: pageToElementorData(p as never),
         }))
       : undefined;
+
+  // Pixel-perfect mode: extract sections from each source page, compose
+  // Gutenberg block markup that references our custom theme blocks, and
+  // attach it as prebuiltContent so the plugin uses it verbatim.
+  let prebuiltBySlug: Record<string, string> | undefined;
+  if (renderer === "pixel_perfect") {
+    if (!project.sourcePagesHtml && !project.sourceHtml) {
+      res.status(400).json({
+        error: "Pixel-perfect mode requires the original source HTML. Re-upload your ZIP.",
+      });
+      return;
+    }
+    const { pages: extPages } = buildExtractedPages(project);
+    prebuiltBySlug = {};
+    for (const ep of extPages) {
+      prebuiltBySlug[ep.slug] = composeGutenbergContent(ep);
+    }
+  }
 
   // Raw HTML mode: replace each page's blocks with a single core/html block
   // containing the ORIGINAL per-page source HTML (styles inlined). Image and
@@ -768,6 +821,7 @@ router.post("/projects/:id/push", async (req, res): Promise<void> => {
       renderer,
       elementorPages,
       injectedCss: project.sourceCss ?? null,
+      prebuiltBySlug,
     },
   );
 
@@ -1026,6 +1080,130 @@ router.post("/projects/:id/upload-zip", upload.single("file"), async (req, res):
     wpStructure,
     aiAnalysis,
     customPostTypes: mergedCpts,
+  });
+});
+
+// PIXEL-PERFECT: download the auto-generated child theme as a ZIP. The user
+// uploads it via WP Admin → Appearance → Themes → Add New, or uses the
+// /install-theme endpoint below to push it through the companion plugin.
+router.get("/projects/:id/theme-zip", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const params = GetProjectParams.safeParse({ id: raw });
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+  const [project] = await db
+    .select()
+    .from(projectsTable)
+    .where(eq(projectsTable.id, Number(params.data.id)));
+  if (!project) {
+    res.status(404).json({ error: "Project not found" });
+    return;
+  }
+  if (!project.sourcePagesHtml && !project.sourceHtml) {
+    res.status(400).json({ error: "Upload a ZIP or scrape a URL first." });
+    return;
+  }
+
+  const { pages, projectSlug } = buildExtractedPages(project);
+  const totalSections = pages.reduce((n, p) => n + p.sections.length, 0);
+  if (totalSections === 0) {
+    res.status(422).json({ error: "Could not extract any sections from source HTML." });
+    return;
+  }
+  const sourceZip = (project.sourceZip as Buffer | null) ?? null;
+  // Re-collect JS from the ZIP if we have it (we never persist it separately).
+  let combinedJs = "";
+  if (sourceZip) {
+    try {
+      const AdmZip = (await import("adm-zip")).default;
+      const z = new AdmZip(sourceZip);
+      const jsFiles = z.getEntries().filter((e) => !e.isDirectory && /\.js$/i.test(e.entryName) && !e.entryName.startsWith("__MACOSX/"));
+      combinedJs = jsFiles.map((e) => `/* ${e.entryName} */\n${e.getData().toString("utf8")}`).join("\n\n");
+    } catch { /* ignore */ }
+  }
+  const zipBuffer = generateThemeZip({
+    projectName: project.name,
+    projectSlug,
+    combinedCss: project.sourceCss ?? "",
+    combinedJs,
+    pages,
+    sourceZip,
+  });
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", `attachment; filename="${projectSlug}-theme.zip"`);
+  res.send(zipBuffer);
+});
+
+// PIXEL-PERFECT: build the theme ZIP server-side, push it to WP via the
+// companion plugin's /theme-install endpoint, and immediately activate it.
+router.post("/projects/:id/install-theme", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const params = GetProjectParams.safeParse({ id: raw });
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+  const [project] = await db
+    .select()
+    .from(projectsTable)
+    .where(eq(projectsTable.id, Number(params.data.id)));
+  if (!project) {
+    res.status(404).json({ error: "Project not found" });
+    return;
+  }
+  if (!project.wpUrl || project.authMode !== "api_key" || !project.wpApiKey) {
+    res.status(400).json({ error: "Theme install requires API-key auth via the companion plugin." });
+    return;
+  }
+  if (!project.sourcePagesHtml && !project.sourceHtml) {
+    res.status(400).json({ error: "Upload a ZIP first." });
+    return;
+  }
+
+  const { pages, projectSlug } = buildExtractedPages(project);
+  if (pages.reduce((n, p) => n + p.sections.length, 0) === 0) {
+    res.status(422).json({ error: "Could not extract any sections from source HTML." });
+    return;
+  }
+  const sourceZip = (project.sourceZip as Buffer | null) ?? null;
+  let combinedJs = "";
+  if (sourceZip) {
+    try {
+      const z = new AdmZip(sourceZip);
+      const jsFiles = z.getEntries().filter((e) => !e.isDirectory && /\.js$/i.test(e.entryName) && !e.entryName.startsWith("__MACOSX/"));
+      combinedJs = jsFiles.map((e) => `/* ${e.entryName} */\n${e.getData().toString("utf8")}`).join("\n\n");
+    } catch { /* ignore */ }
+  }
+  const zipBuffer = generateThemeZip({
+    projectName: project.name,
+    projectSlug,
+    combinedCss: project.sourceCss ?? "",
+    combinedJs,
+    pages,
+    sourceZip,
+  });
+
+  const cfg = {
+    wpUrl: project.wpUrl,
+    wpUsername: project.wpUsername,
+    wpAppPassword: project.wpAppPassword,
+    wpApiKey: project.wpApiKey,
+    authMode: "api_key" as const,
+    useAcf: project.useAcf === "true",
+  };
+  const installResult = await installTheme(cfg, projectSlug, zipBuffer);
+  if (!installResult.success) {
+    res.status(502).json({ stage: "install", ...installResult });
+    return;
+  }
+  const activateResult = await activateTheme(cfg, projectSlug);
+  res.json({
+    install: installResult,
+    activate: activateResult,
+    themeSlug: projectSlug,
+    blocksRegistered: pages.reduce((n, p) => n + p.sections.length, 0),
   });
 });
 
