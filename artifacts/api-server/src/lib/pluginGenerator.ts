@@ -39,7 +39,7 @@ export function generateWordPressPlugin(
  * Plugin Name: WP Bridge AI Importer
  * Plugin URI: https://wpbridgeai.com
  * Description: Receives structured JSON from WP Bridge AI. Imports pages as Gutenberg blocks or Elementor data, registers Custom Post Types, and writes ACF fields.
- * Version: 1.3.0
+ * Version: 1.3.1
  * Author: WP Bridge AI
  * License: MIT
  * Text Domain: wp-bridge-ai
@@ -109,7 +109,7 @@ function wp_bridge_auth_check( WP_REST_Request $request ) {
 function wp_bridge_status_handler( WP_REST_Request $request ) {
     return rest_ensure_response( array(
         'active'             => true,
-        'version'            => '1.3.0',
+        'version'            => '1.3.1',
         'project'            => WP_BRIDGE_PROJECT_SLUG,
         'wp_version'         => get_bloginfo( 'version' ),
         'site_name'          => get_bloginfo( 'name' ),
@@ -279,12 +279,27 @@ function wp_bridge_build_block_content( array $blocks ): string {
                 $subheadline = esc_html( $fields['subheadline'] ?? '' );
                 $cta_text    = esc_html( $fields['cta_text'] ?? '' );
                 $cta_url     = esc_url( $fields['cta_url'] ?? '#' );
-                $content .= "<!-- wp:cover {\\"dimRatio\\":50} -->\\n";
-                $content .= "<div class=\\"wp-block-cover\\"><div class=\\"wp-block-cover__inner-container\\">";
+                $bg_image    = esc_url( $fields['background_image'] ?? '' );
+                // Skip emitting an empty cover (would otherwise fall back to theme placeholder pattern)
+                if ( ! $headline && ! $subheadline && ! $cta_text && ! $bg_image ) {
+                    break;
+                }
+                if ( $bg_image ) {
+                    $content .= "<!-- wp:cover {\\"url\\":\\"{$bg_image}\\",\\"dimRatio\\":50} -->\\n";
+                    $content .= "<div class=\\"wp-block-cover\\"><img class=\\"wp-block-cover__image-background\\" src=\\"{$bg_image}\\" alt=\\"\\"/><span aria-hidden=\\"true\\" class=\\"wp-block-cover__background has-background-dim\\"></span><div class=\\"wp-block-cover__inner-container\\">";
+                } else {
+                    // No background image: render as plain group instead of cover so the theme
+                    // doesn't fill an empty cover with its default pattern image.
+                    $content .= "<!-- wp:group {\\"layout\\":{\\"type\\":\\"constrained\\"}} -->\\n<div class=\\"wp-block-group\\">";
+                }
                 if ( $headline ) $content .= "<!-- wp:heading --><h2 class=\\"wp-block-heading\\">{$headline}</h2><!-- /wp:heading -->";
                 if ( $subheadline ) $content .= "<!-- wp:paragraph --><p>{$subheadline}</p><!-- /wp:paragraph -->";
                 if ( $cta_text ) $content .= "<!-- wp:buttons --><div class=\\"wp-block-buttons\\"><!-- wp:button --><div class=\\"wp-block-button\\"><a class=\\"wp-block-button__link\\" href=\\"{$cta_url}\\">{$cta_text}</a></div><!-- /wp:button --></div><!-- /wp:buttons -->";
-                $content .= "</div></div><!-- /wp:cover -->\\n";
+                if ( $bg_image ) {
+                    $content .= "</div></div><!-- /wp:cover -->\\n";
+                } else {
+                    $content .= "</div><!-- /wp:group -->\\n";
+                }
                 break;
 
             case 'core/html':
