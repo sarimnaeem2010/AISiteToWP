@@ -535,6 +535,7 @@ router.post("/projects/:id/push", async (req, res): Promise<void> => {
       cptItems: wpStructure.cptItems ?? [],
       renderer,
       elementorPages,
+      injectedCss: project.sourceCss ?? null,
     },
   );
 
@@ -726,6 +727,27 @@ router.post("/projects/:id/upload-zip", upload.single("file"), async (req, res):
     return;
   }
   const parsedSite: ParsedSite = { pages: parsedPages };
+
+  // Build a combined stylesheet from every <style> tag in every HTML page plus
+  // every .css file found in the ZIP. Injected on push so WordPress pages
+  // inherit the original template's fonts, colors, backgrounds, etc.
+  const inlineStyleChunks: string[] = [];
+  for (const htmlPage of extracted.htmlPages) {
+    try {
+      const dom = new JSDOM(htmlPage.content);
+      for (const el of Array.from(dom.window.document.querySelectorAll("style"))) {
+        if (el.textContent) inlineStyleChunks.push(el.textContent);
+      }
+    } catch { /* ignore */ }
+  }
+  const MAX_CSS_BYTES = 1_048_576; // 1 MB cap matches plugin
+  const rawCombinedCss = [
+    ...extracted.cssFiles.map((f) => `/* ${f.path} */\n${f.content}`),
+    ...inlineStyleChunks.map((c) => `/* inline */\n${c}`),
+  ].join("\n\n");
+  const combinedCss = rawCombinedCss.length > MAX_CSS_BYTES
+    ? rawCombinedCss.slice(0, MAX_CSS_BYTES)
+    : rawCombinedCss;
   const designSystem = mergedDesignSystem ?? { font: "system-ui", colors: [], buttonStyle: "rounded", headingStyle: "bold" };
   const aiAnalysis = mergedAiAnalysis;
 
@@ -748,6 +770,7 @@ router.post("/projects/:id/upload-zip", upload.single("file"), async (req, res):
       customPostTypes: mergedCpts as never,
       uploadedFiles: { files: extracted.files, indexPath: extracted.indexPath } as never,
       sourceHtml: extracted.indexHtml,
+      sourceCss: combinedCss,
       pageCount: parsedSite.pages.length,
     })
     .where(eq(projectsTable.id, project.id));

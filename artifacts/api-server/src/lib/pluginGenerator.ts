@@ -39,7 +39,7 @@ export function generateWordPressPlugin(
  * Plugin Name: WP Bridge AI Importer
  * Plugin URI: https://wpbridgeai.com
  * Description: Receives structured JSON from WP Bridge AI. Imports pages as Gutenberg blocks or Elementor data, registers Custom Post Types, and writes ACF fields.
- * Version: 1.3.1
+ * Version: 1.4.0
  * Author: WP Bridge AI
  * License: MIT
  * Text Domain: wp-bridge-ai
@@ -85,6 +85,49 @@ function wp_bridge_on_activate() {
 }
 register_deactivation_hook( __FILE__, function() { flush_rewrite_rules(); } );
 
+/**
+ * Write template CSS into the active theme's "Additional CSS" via the
+ * Customizer post type. Bypasses kses (which strips <style> from page content).
+ * Falls back to storing in an option + enqueuing manually if customizer fails.
+ */
+function wp_bridge_apply_custom_css( $css ) {
+    $css = (string) $css;
+    // Hard cap to prevent oversized options blowing up the database.
+    if ( strlen( $css ) > 1048576 ) { // 1 MB
+        $css = substr( $css, 0, 1048576 );
+    }
+    // Reject obvious HTML/script breakouts. Imported templates are
+    // user-supplied content, so neutralize anything that could escape
+    // the <style> wrapper or execute JavaScript.
+    $css = preg_replace( '/<\\s*\\/\\s*style/i', '<\\/style', $css );
+    $css = preg_replace( '/<\\s*script\\b/i', '<-script', $css );
+    $css = preg_replace( '/<\\s*\\/\\s*script/i', '<\\/-script', $css );
+    // Strip any other raw HTML tags that have no business inside a stylesheet.
+    $css = preg_replace( '/<\\s*[a-zA-Z!]/', '<-', $css );
+    // Drop javascript: / vbscript: / data: text/html URI schemes from url(...).
+    $css = preg_replace( '/url\\(\\s*[\'"]?\\s*(javascript|vbscript|data:\\s*text\\/html)/i', 'url(about:blank', $css );
+    // expression() in legacy IE CSS could execute JS.
+    $css = preg_replace( '/expression\\s*\\(/i', '_expression_(', $css );
+
+    update_option( 'wp_bridge_injected_css', $css, false );
+
+    if ( function_exists( 'wp_update_custom_css_post' ) ) {
+        // Wraps in /* Custom CSS */ for the active theme. Returns WP_Error on fail.
+        wp_update_custom_css_post( $css );
+    }
+}
+
+// Always enqueue our stored CSS as a separate stylesheet so the styling
+// persists regardless of whether the Customizer write succeeded. Loaded last
+// so it overrides theme defaults.
+add_action( 'wp_enqueue_scripts', function () {
+    $css = get_option( 'wp_bridge_injected_css', '' );
+    if ( empty( $css ) ) return;
+    wp_register_style( 'wp-bridge-injected', false, array(), '1.4.0' );
+    wp_enqueue_style( 'wp-bridge-injected' );
+    wp_add_inline_style( 'wp-bridge-injected', $css );
+}, 9999 );
+
 add_action( 'rest_api_init', function () {
     register_rest_route( 'ai-cms/v1', '/import', array(
         'methods'             => 'POST',
@@ -109,7 +152,7 @@ function wp_bridge_auth_check( WP_REST_Request $request ) {
 function wp_bridge_status_handler( WP_REST_Request $request ) {
     return rest_ensure_response( array(
         'active'             => true,
-        'version'            => '1.3.1',
+        'version'            => '1.4.0',
         'project'            => WP_BRIDGE_PROJECT_SLUG,
         'wp_version'         => get_bloginfo( 'version' ),
         'site_name'          => get_bloginfo( 'name' ),
@@ -137,6 +180,13 @@ function wp_bridge_import_handler( WP_REST_Request $request ) {
     $renderer = isset( $body['renderer'] ) && $body['renderer'] === 'elementor' ? 'elementor' : 'gutenberg';
     $results = array();
     $cpt_results = array();
+
+    // Inject the original template's CSS site-wide via the Customizer's
+    // Additional CSS. This bypasses kses sanitization (which strips <style>
+    // from page content for users without unfiltered_html, e.g. Hostinger).
+    if ( ! empty( $body['injectedCss'] ) && is_string( $body['injectedCss'] ) ) {
+        wp_bridge_apply_custom_css( $body['injectedCss'] );
+    }
 
     foreach ( $body['pages'] as $page_data ) {
         $title  = sanitize_text_field( $page_data['title'] ?? 'Imported Page' );

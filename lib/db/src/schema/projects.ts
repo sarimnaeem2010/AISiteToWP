@@ -21,6 +21,7 @@ export const projectsTable = pgTable("projects", {
   customPostTypes: jsonb("custom_post_types"),
   aiAnalysis: jsonb("ai_analysis"),
   sourceHtml: text("source_html"),
+  sourceCss: text("source_css"),
   lastPushedAt: timestamp("last_pushed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),

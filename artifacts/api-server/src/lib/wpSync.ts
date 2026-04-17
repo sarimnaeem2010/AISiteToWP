@@ -97,6 +97,7 @@ interface WpStructure {
   cptItems?: CptItem[];
   renderer?: "gutenberg" | "elementor";
   elementorPages?: Array<{ slug: string; data: unknown[] }>;
+  injectedCss?: string | null;
 }
 
 interface PushLogEntry {
@@ -118,8 +119,18 @@ interface PushResult {
   log: PushLogEntry[];
 }
 
-function blocksToGutenbergContent(blocks: WpBlock[]): string {
+function buildInjectedCssBlock(css: string | null | undefined): string {
+  if (!css) return "";
+  // Strip any closing </style> in source CSS (extremely unlikely but safe).
+  const safe = css.replace(/<\/style>/gi, "<\\/style>");
+  return `<!-- wp:html -->\n<style id="wp-bridge-injected-css">\n${safe}\n</style>\n<!-- /wp:html -->`;
+}
+
+function blocksToGutenbergContent(blocks: WpBlock[], injectedCss?: string | null): string {
   const lines: string[] = [];
+
+  const cssBlock = buildInjectedCssBlock(injectedCss);
+  if (cssBlock) lines.push(cssBlock);
 
   for (const block of blocks) {
     const { blockType, fields, innerBlocks } = block;
@@ -311,6 +322,7 @@ export async function pushToWordPress(
           renderer: wpStructure.renderer ?? "gutenberg",
           pages: pagesPayload,
           cptItems: wpStructure.cptItems ?? [],
+          injectedCss: wpStructure.injectedCss ?? null,
         }),
         signal: AbortSignal.timeout(60000),
       });
@@ -353,7 +365,7 @@ export async function pushToWordPress(
 
   for (const page of wpStructure.pages) {
     try {
-      const content = blocksToGutenbergContent(page.blocks);
+      const content = blocksToGutenbergContent(page.blocks, wpStructure.injectedCss);
 
       const existingRes = await fetch(
         `${baseUrl}/wp-json/wp/v2/pages?slug=${encodeURIComponent(page.slug)}&status=any`,
