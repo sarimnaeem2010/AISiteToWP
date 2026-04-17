@@ -41,6 +41,38 @@ if [[ ! -d "$PLUGIN_DIR" ]]; then
   rm -rf "$tmp"
 fi
 
+# Elementor plugin: downloaded but not activated here. The Elementor e2e
+# test activates it on demand via apply-elementor.php so the Gutenberg-only
+# test path stays unaffected.
+ELEMENTOR_DIR="$WP_DIR/wp-content/plugins/elementor"
+ELEMENTOR_REF="${WPB_E2E_ELEMENTOR_REF:-}"
+if [[ ! -d "$ELEMENTOR_DIR" ]]; then
+  echo "[setup-wp] downloading elementor plugin${ELEMENTOR_REF:+ ($ELEMENTOR_REF)}..."
+  tmp="$(mktemp -d)"
+  if [[ -n "$ELEMENTOR_REF" ]]; then
+    url="https://downloads.wordpress.org/plugin/elementor.${ELEMENTOR_REF}.zip"
+  else
+    url="https://downloads.wordpress.org/plugin/elementor.zip"
+  fi
+  curl -fsSL "$url" -o "$tmp/elementor.zip"
+  # Use PHP's zip extension (already required by the harness) instead of
+  # depending on the `unzip` binary, which isn't always installed.
+  php -r '
+    $zip = new ZipArchive();
+    if ($zip->open($argv[1]) !== true) { fwrite(STDERR, "open failed\n"); exit(1); }
+    if (!$zip->extractTo($argv[2])) { fwrite(STDERR, "extract failed\n"); exit(1); }
+    $zip->close();
+  ' "$tmp/elementor.zip" "$tmp"
+  if [[ ! -d "$tmp/elementor" ]]; then
+    echo "[setup-wp] elementor zip did not contain expected 'elementor/' folder" >&2
+    ls -la "$tmp" >&2
+    exit 1
+  fi
+  mkdir -p "$ELEMENTOR_DIR"
+  cp -a "$tmp/elementor/." "$ELEMENTOR_DIR/"
+  rm -rf "$tmp"
+fi
+
 # Drop-in: tells WordPress to use SQLite instead of MySQL.
 if [[ ! -f "$WP_DIR/wp-content/db.php" ]]; then
   cp "$PLUGIN_DIR/db.copy" "$WP_DIR/wp-content/db.php"

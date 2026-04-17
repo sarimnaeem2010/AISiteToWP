@@ -30,31 +30,47 @@ That sets `RUN_WP_E2E=1` and runs `test/e2e/themeRender.e2e.test.ts`.
 ## What it does
 
 1. **`setup-wp.sh`** — idempotent bootstrap. Downloads WordPress + the
-   `sqlite-database-integration` plugin into `/tmp/wpb-e2e/wp` (override
-   with `WPB_E2E_DIR`), wires the SQLite drop-in into `wp-content/db.php`,
-   writes a minimal `wp-config.php`, and runs the WP installer once. Set
-   `WPB_E2E_FRESH=1` to wipe and reinstall.
-2. **`themeRender.e2e.test.ts`** — generates a theme zip from
-   `test/fixtures/simple-page.html`, extracts it into
-   `wp-content/themes/<slug>/`, then invokes:
-3. **`apply-theme.php`** — bootstraps WP, calls `switch_theme()`, and
-   inserts a page whose `post_content` is the composed Gutenberg block
-   markup (read from stdin). Sets it as the static front page.
-4. The test boots `php -S 127.0.0.1:<random>` against the WP dir using
-   **`router.php`** (so pretty permalinks resolve), fetches
-   `?page_id=<id>`, and asserts:
+   `sqlite-database-integration` plugin + the Elementor plugin into
+   `/tmp/wpb-e2e/wp` (override with `WPB_E2E_DIR`), wires the SQLite
+   drop-in into `wp-content/db.php`, writes a minimal `wp-config.php`,
+   and runs the WP installer once. Elementor is downloaded but left
+   inactive — the Elementor test activates it on demand. Set
+   `WPB_E2E_FRESH=1` to wipe and reinstall, or `WPB_E2E_ELEMENTOR_REF`
+   to pin a specific Elementor release (e.g. `3.21.0`).
+2. **`themeRender.e2e.test.ts`** — two tests, both backed by the same
+   generated theme zip from `test/fixtures/simple-page.html` (extracted
+   into `wp-content/themes/<slug>/`):
+   - **Gutenberg path** invokes **`apply-theme.php`**, which bootstraps
+     WP, calls `switch_theme()`, and inserts a page whose `post_content`
+     is the composed Gutenberg block markup (read from stdin). Sets it
+     as the static front page.
+   - **Elementor path** invokes **`apply-elementor.php`**, which
+     activates the Elementor plugin, switches the theme, inserts an
+     empty-content page, and writes the `_elementor_data` /
+     `_elementor_edit_mode` / `_elementor_template_type` /
+     `_elementor_version` post meta from the JSON produced by
+     `composeElementorData()` (read from stdin). The frontend then has
+     Elementor take over `the_content` for that page.
+3. Both tests boot `php -S 127.0.0.1:<random>` against the WP dir using
+   **`router.php`** (so pretty permalinks resolve), fetch
+   `?page_id=<id>`, and assert:
    - the response is HTTP 200,
    - the raw `<!-- wp:wpb-... -->` block markers are gone (proving the
      blocks registered and rendered),
    - **every top-level `<header>` / `<section>` / `<footer>` from the
      source fixture matches its rendered counterpart structurally**:
-     same tags, same children, same attributes, same text. The
-     normalizer strips the few mutations WordPress legitimately makes
-     (`decoding`/`loading`/`fetchpriority`/`srcset`/`sizes` injected on
-     `<img>`, and `{{THEME_URI}}/assets/...` rewritten to absolute
-     `http://.../wp-content/themes/<slug>/assets/...`). Anything else —
-     reordered elements, lost attributes, missing text, extra wrapper
-     divs from a misbehaving block — fails the diff.
+     same tags, same children, same attributes, same text. For the
+     Gutenberg path the rendered counterparts are the top-level
+     sections of `<body>`; for the Elementor path they're the first
+     element child of each `.elementor-widget-container` (Elementor
+     wraps every widget in its own section/column/widget div tree).
+     The normalizer strips the few mutations WordPress legitimately
+     makes (`decoding`/`loading`/`fetchpriority`/`srcset`/`sizes`
+     injected on `<img>`, and `{{THEME_URI}}/assets/...` rewritten to
+     absolute `http://.../wp-content/themes/<slug>/assets/...`).
+     Anything else — reordered elements, lost attributes, missing
+     text, extra wrapper divs from a misbehaving block or widget —
+     fails the diff.
 
 The PHP server is killed via the test's `t.after()` hook even on failure.
 

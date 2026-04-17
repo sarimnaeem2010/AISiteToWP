@@ -8,19 +8,21 @@
  * The first run downloads ~30MB and installs WordPress into
  * /tmp/wpb-e2e/wp (override with WPB_E2E_DIR). Subsequent runs reuse it.
  *
- * Flow (per fixture):
- *   1. setup-wp.sh   — ensures WP + SQLite drop-in + installer have run
+ * Flow (per fixture, per editor mode):
+ *   1. setup-wp.sh   — ensures WP + SQLite drop-in + Elementor + installer have run
  *   2. generate the theme zip from the fixture HTML
  *   3. extract the theme into wp-content/themes/<slug>/
- *   4. apply-theme.php — activates theme, creates a page from composed
- *      Gutenberg content
+ *   4. apply-theme.php (Gutenberg) or apply-elementor.php (Elementor) —
+ *      activates theme, creates a page from composed block / Elementor data
  *   5. boot `php -S` against the WP dir (once, reused across fixtures)
  *   6. fetch the page HTML and assert that every section's text/url/alt
  *      field round-trips back into the rendered output
  *
- * Each fixture in FIXTURES gets its own theme + page, so the loop also
- * verifies that the generator can install multiple themes side-by-side
- * without colliding.
+ * Each fixture in FIXTURES gets its own theme + page, so the loops also
+ * verify that the generator can install multiple themes side-by-side
+ * without colliding. The Elementor pass reuses the same generated themes
+ * but exercises the Elementor widget render path instead of Gutenberg
+ * blocks, catching regressions specific to the Elementor editor.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -32,8 +34,14 @@ import { setTimeout as sleep } from "node:timers/promises";
 import AdmZip from "adm-zip";
 import { JSDOM } from "jsdom";
 
-import { extractSectionsFromPage } from "../../src/lib/sectionFieldExtractor";
-import { composeGutenbergContent } from "../../src/lib/pixelPerfectComposer";
+import {
+  extractSectionsFromPage,
+  type ExtractedSection,
+} from "../../src/lib/sectionFieldExtractor";
+import {
+  composeGutenbergContent,
+  composeElementorData,
+} from "../../src/lib/pixelPerfectComposer";
 import { generateThemeZip } from "../../src/lib/themeGenerator";
 
 const ENABLED = process.env.RUN_WP_E2E === "1";
@@ -185,6 +193,37 @@ async function waitForServer(url: string, timeoutMs = 15000): Promise<void> {
   throw new Error(`server at ${url} never came up: ${String(lastErr)}`);
 }
 
+/**
+ * Build the theme zip for a fixture and extract it into
+ * wp-content/themes/<slug>/. Wipes any prior copy first so re-runs are
+ * deterministic. Shared by both the Gutenberg and Elementor passes
+ * because they exercise the same generated theme — only the editor that
+ * drives the page differs.
+ */
+function buildAndExtractTheme(fx: FixtureCase, sections: ExtractedSection[]): void {
+  const themeZip = generateThemeZip({
+    projectName: fx.projectName,
+    projectSlug: fx.projectSlug,
+    combinedCss: "body{margin:0}",
+    combinedJs: "",
+    pages: [{ slug: fx.pageSlug, title: fx.projectName, sections }],
+    sourceZip: null,
+  });
+  const themesDir = path.join(WP_DIR, "wp-content/themes", fx.projectSlug);
+  rmSync(themesDir, { recursive: true, force: true });
+  mkdirSync(themesDir, { recursive: true });
+  const ad = new AdmZip(themeZip);
+  // Entries are namespaced by `${projectSlug}/...`; strip that prefix
+  // when extracting so files land directly under wp-content/themes/<slug>/.
+  for (const e of ad.getEntries()) {
+    if (e.isDirectory) continue;
+    const rel = e.entryName.replace(/^[^/]+\//, "");
+    const dest = path.join(themesDir, rel);
+    mkdirSync(path.dirname(dest), { recursive: true });
+    writeFileSync(dest, e.getData());
+  }
+}
+
 test("uploaded themes render end-to-end inside WordPress", { skip: !ENABLED }, async (t) => {
   // 1. Bootstrap WordPress (once for the whole suite).
   const setup = run("bash", [path.join(__dirname, "setup-wp.sh")]);
@@ -203,7 +242,7 @@ test("uploaded themes render end-to-end inside WordPress", { skip: !ENABLED }, a
   await waitForServer(base + "/");
 
   for (const fx of FIXTURES) {
-    await t.test(fx.file, async () => {
+    await t.test(`${fx.file} (gutenberg)`, async () => {
       // 2. Generate theme zip from fixture.
       const fixturePath = path.join(FIXTURE_DIR, fx.file);
       const fixture = readFileSync(fixturePath, "utf8");
@@ -214,29 +253,8 @@ test("uploaded themes render end-to-end inside WordPress", { skip: !ENABLED }, a
         `${fx.file}: expected ${fx.expectedSectionCount} extracted sections, got ${sections.length}`,
       );
 
-      const themeZip = generateThemeZip({
-        projectName: fx.projectName,
-        projectSlug: fx.projectSlug,
-        combinedCss: "body{margin:0}",
-        combinedJs: "",
-        pages: [{ slug: fx.pageSlug, title: fx.projectName, sections }],
-        sourceZip: null,
-      });
-
       // 3. Wipe + extract into wp-content/themes/<slug>.
-      const themesDir = path.join(WP_DIR, "wp-content/themes", fx.projectSlug);
-      rmSync(themesDir, { recursive: true, force: true });
-      mkdirSync(themesDir, { recursive: true });
-      const ad = new AdmZip(themeZip);
-      // Entries are namespaced by `${projectSlug}/...`; strip that prefix
-      // when extracting so files land directly under wp-content/themes/<slug>/.
-      for (const e of ad.getEntries()) {
-        if (e.isDirectory) continue;
-        const rel = e.entryName.replace(/^[^/]+\//, "");
-        const dest = path.join(themesDir, rel);
-        mkdirSync(path.dirname(dest), { recursive: true });
-        writeFileSync(dest, e.getData());
-      }
+      buildAndExtractTheme(fx, sections);
 
       // 4. Compose page content + activate theme + insert page.
       const content = composeGutenbergContent({ slug: fx.pageSlug, title: fx.projectName, sections });
@@ -313,6 +331,131 @@ test("uploaded themes render end-to-end inside WordPress", { skip: !ENABLED }, a
             renderedBody.includes(expected),
             `${fx.file}: field "${field.key}" (${field.type}) from block ` +
               `${section.blockName} did not appear in the rendered page.\n` +
+              `expected to find: ${expected}`,
+          );
+        }
+      }
+    });
+  }
+
+  // Elementor pass: same fixtures, same generated themes, but the page
+  // is driven by Elementor's frontend instead of Gutenberg blocks. This
+  // catches regressions in the Elementor editor path that the Gutenberg
+  // pass would silently miss — typos in widget class names, broken
+  // get_settings_for_display, mis-wired register hooks, etc. We use a
+  // distinct page slug per fixture so the Gutenberg page above stays
+  // untouched (`apply-elementor.php` is otherwise identical in shape).
+  for (const fx of FIXTURES) {
+    await t.test(`${fx.file} (elementor)`, async () => {
+      const fixturePath = path.join(FIXTURE_DIR, fx.file);
+      const fixture = readFileSync(fixturePath, "utf8");
+      const sections = extractSectionsFromPage(fixture, fx.pageSlug, fx.projectSlug);
+      assert.equal(
+        sections.length,
+        fx.expectedSectionCount,
+        `${fx.file}: expected ${fx.expectedSectionCount} extracted sections, got ${sections.length}`,
+      );
+
+      // Re-extract the theme. The gutenberg subtest above already
+      // populated this dir, but re-extracting keeps each subtest
+      // independently runnable (e.g. with --test-name-pattern).
+      buildAndExtractTheme(fx, sections);
+
+      const elementorData = composeElementorData({
+        slug: fx.pageSlug,
+        title: fx.projectName,
+        sections,
+      });
+      assert.equal(
+        elementorData.length,
+        sections.length,
+        `${fx.file}: composeElementorData should emit one top-level section per extracted section`,
+      );
+
+      const elementorPageSlug = `${fx.pageSlug}-elementor`;
+      const apply = run(
+        "php",
+        [
+          path.join(__dirname, "apply-elementor.php"),
+          WP_DIR,
+          fx.projectSlug,
+          elementorPageSlug,
+          `${fx.projectName} (Elementor)`,
+        ],
+        { input: JSON.stringify(elementorData) },
+      );
+      assert.equal(apply.status, 0, `${fx.file}: apply-elementor.php failed:\n${apply.stderr}`);
+      const pageId = parseInt(apply.stdout.trim(), 10);
+      assert.ok(Number.isFinite(pageId) && pageId > 0, `${fx.file}: unexpected page id: ${apply.stdout}`);
+
+      const res = await fetch(`${base}/?page_id=${pageId}`);
+      assert.equal(res.status, 200, `${fx.file}: WP responded ${res.status}\nserver stderr:\n${serverErr}`);
+      const html = await res.text();
+
+      // Sanity: if Elementor failed to take over the_content, the page
+      // is empty (apply-elementor.php deliberately stores no
+      // post_content). The widget-container marker is the unambiguous
+      // "Elementor rendered our widgets" signal.
+      assert.ok(
+        html.includes("elementor-widget-container"),
+        `${fx.file}: no .elementor-widget-container in the response — ` +
+          `Elementor likely did not render the page.\n` +
+          `server stderr:\n${serverErr}\n` +
+          `First 1200 chars:\n${html.slice(0, 1200)}`,
+      );
+
+      const dom = new JSDOM(html);
+      const containers = Array.from(
+        dom.window.document.querySelectorAll(".elementor-widget-container"),
+      );
+      const fixtureSections = topLevelSections(fixture);
+      assert.equal(
+        containers.length,
+        fixtureSections.length,
+        `${fx.file}: expected ${fixtureSections.length} elementor widget ` +
+          `containers (one per fixture section), got ${containers.length}`,
+      );
+
+      // Each widget renders the same template that the Gutenberg block
+      // renders, so the first element child of every widget container
+      // must be the original <header>/<section>/<footer>, byte-identical
+      // (after the same WP-injected-attr / theme-URI normalization) to
+      // the fixture.
+      for (let i = 0; i < fixtureSections.length; i++) {
+        const child = containers[i].firstElementChild;
+        assert.ok(
+          child,
+          `${fx.file}: elementor widget container #${i + 1} has no element ` +
+            `child — render() likely produced empty output.\n` +
+            `container HTML: ${containers[i].outerHTML.slice(0, 400)}`,
+        );
+        const expected = normalize(fixtureSections[i], fx.projectSlug);
+        const actual = normalize(child!, fx.projectSlug);
+        assert.equal(
+          actual,
+          expected,
+          `${fx.file}: elementor widget #${i + 1} ` +
+            `(${fixtureSections[i].tagName.toLowerCase()}) does not match the fixture.\n` +
+            `expected: ${expected}\n` +
+            `actual:   ${actual}`,
+        );
+      }
+
+      // Field round-trip check: same as the Gutenberg pass — every
+      // extracted field's default value must appear in the rendered
+      // body. URL placeholders are rebased to absolute theme URLs.
+      const bodyStart = html.indexOf("<body");
+      const renderedBody = bodyStart >= 0 ? html.slice(bodyStart) : html;
+      const themeUri = `/wp-content/themes/${fx.projectSlug}/assets/`;
+      for (const section of sections) {
+        for (const field of section.fields) {
+          const expected = field.default.includes("{{THEME_URI}}/assets/")
+            ? field.default.replace("{{THEME_URI}}/assets/", themeUri)
+            : field.default;
+          assert.ok(
+            renderedBody.includes(expected),
+            `${fx.file}: field "${field.key}" (${field.type}) from block ` +
+              `${section.blockName} did not appear in the elementor-rendered page.\n` +
               `expected to find: ${expected}`,
           );
         }
