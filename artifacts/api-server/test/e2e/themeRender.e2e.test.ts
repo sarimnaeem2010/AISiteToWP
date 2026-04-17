@@ -1,12 +1,18 @@
 /**
  * End-to-end check that generated themes render correctly inside a real
- * WordPress install. Opt-in: only runs when RUN_WP_E2E=1, because it
- * downloads WordPress and boots the PHP built-in server (slow).
+ * WordPress install. Runs as part of the normal `pnpm test` pipeline so
+ * regressions get caught before merge.
  *
- *   RUN_WP_E2E=1 pnpm --filter @workspace/api-server test:e2e
+ *   pnpm --filter @workspace/api-server test
  *
- * The first run downloads ~30MB and installs WordPress into
- * /tmp/wpb-e2e/wp (override with WPB_E2E_DIR). Subsequent runs reuse it.
+ * The first run downloads ~30MB and installs WordPress + Elementor into
+ * /tmp/wpb-e2e/wp (override with WPB_E2E_DIR). Subsequent runs reuse the
+ * cached install and complete in well under a minute.
+ *
+ * Opt out (e.g. on machines without PHP, or for quick inner-loop unit
+ * test runs) with SKIP_WP_E2E=1. The test also auto-skips with a clear
+ * message if `php` isn't on PATH so contributors without PHP installed
+ * still get green unit tests; CI is expected to have PHP.
  *
  * Flow (per fixture, per editor mode):
  *   1. setup-wp.sh   — ensures WP + SQLite drop-in + Elementor + installer have run
@@ -44,7 +50,32 @@ import {
 } from "../../src/lib/pixelPerfectComposer";
 import { generateThemeZip } from "../../src/lib/themeGenerator";
 
-const ENABLED = process.env.RUN_WP_E2E === "1";
+/**
+ * Default-on so the WordPress render check runs on every `pnpm test`.
+ * Two opt-outs:
+ *   - SKIP_WP_E2E=1   explicit skip (dev wants fast unit-only loop)
+ *   - php not on PATH  auto-skip with a clear reason (so contributors
+ *                      without PHP installed don't see a confusing fail)
+ * RUN_WP_E2E=0 is also honored for symmetry with the historical opt-in.
+ */
+function detectE2eEnabled(): { enabled: boolean; reason?: string } {
+  if (process.env.SKIP_WP_E2E === "1") {
+    return { enabled: false, reason: "SKIP_WP_E2E=1" };
+  }
+  if (process.env.RUN_WP_E2E === "0") {
+    return { enabled: false, reason: "RUN_WP_E2E=0" };
+  }
+  const probe = spawnSync("php", ["--version"], { stdio: "ignore" });
+  if (probe.status !== 0) {
+    return {
+      enabled: false,
+      reason: "php not available on PATH (install PHP 8+ to enable the WP render check)",
+    };
+  }
+  return { enabled: true };
+}
+const E2E = detectE2eEnabled();
+const ENABLED = E2E.enabled;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WP_DIR = process.env.WPB_E2E_DIR ?? "/tmp/wpb-e2e/wp";
 const FIXTURE_DIR = path.resolve(__dirname, "../fixtures");
@@ -224,7 +255,7 @@ function buildAndExtractTheme(fx: FixtureCase, sections: ExtractedSection[]): vo
   }
 }
 
-test("uploaded themes render end-to-end inside WordPress", { skip: !ENABLED }, async (t) => {
+test("uploaded themes render end-to-end inside WordPress", { skip: ENABLED ? false : (E2E.reason ?? true) }, async (t) => {
   // 1. Bootstrap WordPress (once for the whole suite).
   const setup = run("bash", [path.join(__dirname, "setup-wp.sh")]);
   assert.equal(setup.status, 0, `setup-wp.sh failed:\n${setup.stderr}`);
