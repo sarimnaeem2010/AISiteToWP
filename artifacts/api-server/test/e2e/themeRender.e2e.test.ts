@@ -1,5 +1,5 @@
 /**
- * End-to-end check that a generated theme renders correctly inside a real
+ * End-to-end check that generated themes render correctly inside a real
  * WordPress install. Opt-in: only runs when RUN_WP_E2E=1, because it
  * downloads WordPress and boots the PHP built-in server (slow).
  *
@@ -8,15 +8,19 @@
  * The first run downloads ~30MB and installs WordPress into
  * /tmp/wpb-e2e/wp (override with WPB_E2E_DIR). Subsequent runs reuse it.
  *
- * Flow:
+ * Flow (per fixture):
  *   1. setup-wp.sh   — ensures WP + SQLite drop-in + installer have run
- *   2. generate the theme zip from test/fixtures/simple-page.html
+ *   2. generate the theme zip from the fixture HTML
  *   3. extract the theme into wp-content/themes/<slug>/
  *   4. apply-theme.php — activates theme, creates a page from composed
  *      Gutenberg content
- *   5. boot `php -S` against the WP dir
+ *   5. boot `php -S` against the WP dir (once, reused across fixtures)
  *   6. fetch the page HTML and assert that every section's text/url/alt
  *      field round-trips back into the rendered output
+ *
+ * Each fixture in FIXTURES gets its own theme + page, so the loop also
+ * verifies that the generator can install multiple themes side-by-side
+ * without colliding.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -35,10 +39,43 @@ import { generateThemeZip } from "../../src/lib/themeGenerator";
 const ENABLED = process.env.RUN_WP_E2E === "1";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WP_DIR = process.env.WPB_E2E_DIR ?? "/tmp/wpb-e2e/wp";
-const FIXTURE_PATH = path.resolve(__dirname, "../fixtures/simple-page.html");
-const PROJECT_SLUG = "fixture-site";
-const PROJECT_NAME = "Fixture Site";
-const PAGE_SLUG = "home";
+const FIXTURE_DIR = path.resolve(__dirname, "../fixtures");
+
+interface FixtureCase {
+  /** Fixture file under test/fixtures/ */
+  file: string;
+  /** Unique theme slug — also the wp-content/themes/<slug> directory. */
+  projectSlug: string;
+  /** Human-readable theme name. */
+  projectName: string;
+  /** Page slug used inside WordPress. */
+  pageSlug: string;
+  /** Expected number of top-level <header>/<section>/<footer>/... sections. */
+  expectedSectionCount: number;
+}
+
+/**
+ * The fixtures we round-trip end-to-end. simple-page covers the minimal
+ * happy path; complex-page mirrors the messy uploads we see in the wild
+ * (image-heavy hero with inline background-image styles, nested grid /
+ * card layouts, inline SVG decorations, multi-column footer).
+ */
+const FIXTURES: FixtureCase[] = [
+  {
+    file: "simple-page.html",
+    projectSlug: "fixture-site",
+    projectName: "Fixture Site",
+    pageSlug: "home",
+    expectedSectionCount: 4,
+  },
+  {
+    file: "complex-page.html",
+    projectSlug: "complex-fixture-site",
+    projectName: "Complex Fixture Site",
+    pageSlug: "complex-home",
+    expectedSectionCount: 4,
+  },
+];
 
 function run(cmd: string, args: string[], opts: { input?: string } = {}): { stdout: string; stderr: string; status: number | null } {
   const r = spawnSync(cmd, args, { input: opts.input, encoding: "utf8" });
@@ -79,7 +116,8 @@ const WP_INJECTED_ATTRS = new Set([
  * handful of well-known ways that we strip here:
  *   - injects `decoding`, `loading`, `fetchpriority` on <img>
  *   - rewrites our `{{THEME_URI}}/assets/X` placeholder into an absolute
- *     URL like `http://localhost/wp-content/themes/<slug>/assets/X`
+ *     URL like `http://localhost/wp-content/themes/<slug>/assets/X`,
+ *     both in `src`/`href` and inside inline `style="...url(...)..."`
  *   - adds extra whitespace between block-level elements
  * Anything else is treated as a real difference.
  */
@@ -92,7 +130,9 @@ function normalize(el: Element, themeSlug: string): string {
   const clone = doc.importNode(cloneSrc, true) as Element;
   doc.body.appendChild(clone);
 
-  const themeAssetPrefix = new RegExp(`^https?://[^/]+/wp-content/themes/${themeSlug}/assets/`);
+  const themeAssetPrefixSrc = `https?://[^/]+/wp-content/themes/${themeSlug}/assets/`;
+  const themeAssetPrefix = new RegExp("^" + themeAssetPrefixSrc);
+  const themeAssetUrlInStyle = new RegExp(themeAssetPrefixSrc, "g");
 
   const walk = (node: Element): void => {
     for (const a of Array.from(node.attributes)) {
@@ -102,6 +142,11 @@ function normalize(el: Element, themeSlug: string): string {
       }
       if (a.name === "src" || a.name === "href") {
         const v = a.value.replace(themeAssetPrefix, "");
+        node.setAttribute(a.name, v);
+      } else if (a.name === "style") {
+        // background:url(http://.../wp-content/themes/<slug>/assets/x.jpg)
+        // → url(x.jpg) so it lines up with the source fixture's relative URL.
+        const v = a.value.replace(themeAssetUrlInStyle, "");
         node.setAttribute(a.name, v);
       }
     }
@@ -140,52 +185,12 @@ async function waitForServer(url: string, timeoutMs = 15000): Promise<void> {
   throw new Error(`server at ${url} never came up: ${String(lastErr)}`);
 }
 
-test("uploaded theme renders end-to-end inside WordPress", { skip: !ENABLED }, async (t) => {
-  // 1. Bootstrap WordPress.
+test("uploaded themes render end-to-end inside WordPress", { skip: !ENABLED }, async (t) => {
+  // 1. Bootstrap WordPress (once for the whole suite).
   const setup = run("bash", [path.join(__dirname, "setup-wp.sh")]);
   assert.equal(setup.status, 0, `setup-wp.sh failed:\n${setup.stderr}`);
 
-  // 2. Generate theme zip from the same fixture used by the unit tests.
-  const fixture = readFileSync(FIXTURE_PATH, "utf8");
-  const sections = extractSectionsFromPage(fixture, PAGE_SLUG, PROJECT_SLUG);
-  assert.ok(sections.length > 0, "fixture must yield at least one section");
-
-  const themeZip = generateThemeZip({
-    projectName: PROJECT_NAME,
-    projectSlug: PROJECT_SLUG,
-    combinedCss: "body{margin:0}",
-    combinedJs: "",
-    pages: [{ slug: PAGE_SLUG, title: "Home", sections }],
-    sourceZip: null,
-  });
-
-  // 3. Wipe + extract into wp-content/themes/<slug>.
-  const themesDir = path.join(WP_DIR, "wp-content/themes", PROJECT_SLUG);
-  rmSync(themesDir, { recursive: true, force: true });
-  mkdirSync(themesDir, { recursive: true });
-  const ad = new AdmZip(themeZip);
-  // Entries are namespaced by `${PROJECT_SLUG}/...`; strip that prefix when
-  // extracting so files land directly under wp-content/themes/<slug>/.
-  for (const e of ad.getEntries()) {
-    if (e.isDirectory) continue;
-    const rel = e.entryName.replace(/^[^/]+\//, "");
-    const dest = path.join(themesDir, rel);
-    mkdirSync(path.dirname(dest), { recursive: true });
-    writeFileSync(dest, e.getData());
-  }
-
-  // 4. Compose page content + activate theme + insert page.
-  const content = composeGutenbergContent({ slug: PAGE_SLUG, title: "Home", sections });
-  const apply = run(
-    "php",
-    [path.join(__dirname, "apply-theme.php"), WP_DIR, PROJECT_SLUG, PAGE_SLUG, "Home"],
-    { input: content },
-  );
-  assert.equal(apply.status, 0, `apply-theme.php failed:\n${apply.stderr}`);
-  const pageId = parseInt(apply.stdout.trim(), 10);
-  assert.ok(Number.isFinite(pageId) && pageId > 0, `unexpected page id: ${apply.stdout}`);
-
-  // 5. Boot php -S in the background.
+  // Boot php -S in the background once; we'll switch themes per fixture.
   const port = 18000 + Math.floor(Math.random() * 1000);
   const router = path.join(__dirname, "router.php");
   const server = spawn("php", ["-S", `127.0.0.1:${port}`, "-t", WP_DIR, router], {
@@ -194,44 +199,124 @@ test("uploaded theme renders end-to-end inside WordPress", { skip: !ENABLED }, a
   let serverErr = "";
   server.stderr.on("data", (b) => { serverErr += b.toString(); });
   t.after(() => { server.kill("SIGTERM"); });
-
   const base = `http://127.0.0.1:${port}`;
-  await waitForServer(base + "/?p=" + pageId);
+  await waitForServer(base + "/");
 
-  // 6. Fetch the rendered page and diff field defaults against the response.
-  const res = await fetch(`${base}/?page_id=${pageId}`);
-  assert.equal(res.status, 200, `WP responded ${res.status}\nserver stderr:\n${serverErr}`);
-  const html = await res.text();
+  for (const fx of FIXTURES) {
+    await t.test(fx.file, async () => {
+      // 2. Generate theme zip from fixture.
+      const fixturePath = path.join(FIXTURE_DIR, fx.file);
+      const fixture = readFileSync(fixturePath, "utf8");
+      const sections = extractSectionsFromPage(fixture, fx.pageSlug, fx.projectSlug);
+      assert.equal(
+        sections.length,
+        fx.expectedSectionCount,
+        `${fx.file}: expected ${fx.expectedSectionCount} extracted sections, got ${sections.length}`,
+      );
 
-  // Sanity: if functions.php errored, the block comment falls through to
-  // the raw `<!-- wp:wpb-... -->` text. Catch that early with a clearer
-  // message than the structural diff would give.
-  assert.ok(
-    !html.includes("<!-- wp:wpb-fixture-site/"),
-    "block comments were not replaced by rendered HTML — register_block_type likely failed.\nserver stderr:\n" + serverErr + "\nFirst 800 chars:\n" + html.slice(0, 800),
-  );
+      const themeZip = generateThemeZip({
+        projectName: fx.projectName,
+        projectSlug: fx.projectSlug,
+        combinedCss: "body{margin:0}",
+        combinedJs: "",
+        pages: [{ slug: fx.pageSlug, title: fx.projectName, sections }],
+        sourceZip: null,
+      });
 
-  // Real diff: every top-level <header>/<section>/<footer> from the
-  // fixture must appear, in order, in the rendered body, and each pair's
-  // normalized markup must match exactly (after stripping the well-known
-  // WP mutations: injected attrs + absolute theme-URI rewrites).
-  const fixtureSections = topLevelSections(fixture);
-  const renderedSections = topLevelSections(html);
-  assert.equal(
-    renderedSections.length,
-    fixtureSections.length,
-    `rendered page should contain ${fixtureSections.length} top-level sections, got ${renderedSections.length}.\nrendered body sample:\n${html.slice(html.indexOf("<body"), html.indexOf("<body") + 2000)}`,
-  );
+      // 3. Wipe + extract into wp-content/themes/<slug>.
+      const themesDir = path.join(WP_DIR, "wp-content/themes", fx.projectSlug);
+      rmSync(themesDir, { recursive: true, force: true });
+      mkdirSync(themesDir, { recursive: true });
+      const ad = new AdmZip(themeZip);
+      // Entries are namespaced by `${projectSlug}/...`; strip that prefix
+      // when extracting so files land directly under wp-content/themes/<slug>/.
+      for (const e of ad.getEntries()) {
+        if (e.isDirectory) continue;
+        const rel = e.entryName.replace(/^[^/]+\//, "");
+        const dest = path.join(themesDir, rel);
+        mkdirSync(path.dirname(dest), { recursive: true });
+        writeFileSync(dest, e.getData());
+      }
 
-  for (let i = 0; i < fixtureSections.length; i++) {
-    const expected = normalize(fixtureSections[i], PROJECT_SLUG);
-    const actual = normalize(renderedSections[i], PROJECT_SLUG);
-    assert.equal(
-      actual,
-      expected,
-      `section #${i + 1} (${fixtureSections[i].tagName.toLowerCase()}) does not match the fixture.\n` +
-        `expected: ${expected}\n` +
-        `actual:   ${actual}`,
-    );
+      // 4. Compose page content + activate theme + insert page.
+      const content = composeGutenbergContent({ slug: fx.pageSlug, title: fx.projectName, sections });
+      const apply = run(
+        "php",
+        [path.join(__dirname, "apply-theme.php"), WP_DIR, fx.projectSlug, fx.pageSlug, fx.projectName],
+        { input: content },
+      );
+      assert.equal(apply.status, 0, `${fx.file}: apply-theme.php failed:\n${apply.stderr}`);
+      const pageId = parseInt(apply.stdout.trim(), 10);
+      assert.ok(Number.isFinite(pageId) && pageId > 0, `${fx.file}: unexpected page id: ${apply.stdout}`);
+
+      // 5. Fetch the rendered page and diff fields against the response.
+      const res = await fetch(`${base}/?page_id=${pageId}`);
+      assert.equal(res.status, 200, `${fx.file}: WP responded ${res.status}\nserver stderr:\n${serverErr}`);
+      const html = await res.text();
+
+      // Sanity: if functions.php errored, the block comment falls through
+      // to the raw `<!-- wp:wpb-... -->` text. Catch that early with a
+      // clearer message than the structural diff would give.
+      assert.ok(
+        !html.includes(`<!-- wp:wpb-${fx.projectSlug}/`),
+        `${fx.file}: block comments were not replaced by rendered HTML — ` +
+          `register_block_type likely failed.\nserver stderr:\n${serverErr}\n` +
+          `First 800 chars:\n${html.slice(0, 800)}`,
+      );
+
+      // Real diff: every top-level <header>/<section>/<footer> from the
+      // fixture must appear, in order, in the rendered body, and each
+      // pair's normalized markup must match exactly (after stripping the
+      // well-known WP mutations: injected attrs + absolute theme-URI
+      // rewrites).
+      const fixtureSections = topLevelSections(fixture);
+      const renderedSections = topLevelSections(html);
+      assert.equal(
+        renderedSections.length,
+        fixtureSections.length,
+        `${fx.file}: rendered page should contain ${fixtureSections.length} ` +
+          `top-level sections, got ${renderedSections.length}.\n` +
+          `rendered body sample:\n${html.slice(html.indexOf("<body"), html.indexOf("<body") + 2000)}`,
+      );
+
+      for (let i = 0; i < fixtureSections.length; i++) {
+        const expected = normalize(fixtureSections[i], fx.projectSlug);
+        const actual = normalize(renderedSections[i], fx.projectSlug);
+        assert.equal(
+          actual,
+          expected,
+          `${fx.file}: section #${i + 1} (${fixtureSections[i].tagName.toLowerCase()}) ` +
+            `does not match the fixture.\n` +
+            `expected: ${expected}\n` +
+            `actual:   ${actual}`,
+        );
+      }
+
+      // Field round-trip check: every extracted field's default value
+      // must appear somewhere in the rendered page body. The structural
+      // diff above already implies this, but checking each field by name
+      // gives a far clearer failure if a single attribute went missing
+      // (e.g. block.json forgot to declare it, or render.php dropped the
+      // placeholder).
+      const bodyStart = html.indexOf("<body");
+      const renderedBody = bodyStart >= 0 ? html.slice(bodyStart) : html;
+      const themeUri = `/wp-content/themes/${fx.projectSlug}/assets/`;
+      for (const section of sections) {
+        for (const field of section.fields) {
+          // For URL fields whose default is a {{THEME_URI}} placeholder
+          // (relative asset paths get rebased during extraction), check
+          // for the rebased asset URL the renderer actually emits.
+          const expected = field.default.includes("{{THEME_URI}}/assets/")
+            ? field.default.replace("{{THEME_URI}}/assets/", themeUri)
+            : field.default;
+          assert.ok(
+            renderedBody.includes(expected),
+            `${fx.file}: field "${field.key}" (${field.type}) from block ` +
+              `${section.blockName} did not appear in the rendered page.\n` +
+              `expected to find: ${expected}`,
+          );
+        }
+      }
+    });
   }
 });

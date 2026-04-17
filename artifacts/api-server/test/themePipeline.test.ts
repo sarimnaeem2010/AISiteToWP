@@ -17,6 +17,16 @@ const FIXTURE = readFileSync(path.join(__dirname, "fixtures/simple-page.html"), 
 const PAGE_SLUG = "home";
 const PROJECT_SLUG = "fixture-site";
 
+/**
+ * Fixtures that the parameterized "every fixture round-trips" tests at
+ * the bottom of this file iterate over. Add a new entry here whenever a
+ * new HTML pattern from real uploads needs the unit-level coverage too.
+ */
+const ALL_FIXTURES: Array<{ file: string; pageSlug: string; projectSlug: string; minSections: number }> = [
+  { file: "simple-page.html", pageSlug: "home", projectSlug: "fixture-site", minSections: 4 },
+  { file: "complex-page.html", pageSlug: "complex-home", projectSlug: "complex-fixture-site", minSections: 4 },
+];
+
 test("extractSectionsFromPage finds the expected top-level sections", () => {
   const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG);
   // header, hero section, features section, footer = 4 top-level semantic blocks
@@ -276,4 +286,108 @@ test("checkJsSyntax flags an unterminated string", () => {
   const broken = `var x = 'oops;\n`;
   const result = checkJsSyntax(broken, "broken.js");
   assert.equal(result.ok, false);
+});
+
+
+// ----------------------------------------------------------------------
+// Parameterized fixture coverage
+//
+// The simple-page.html-only assertions above lock down the happy path.
+// The tests below run the full extract → compose → generate pipeline
+// against every fixture in ALL_FIXTURES so richer real-world layouts
+// (nested grids, image-heavy heroes with inline background-image
+// styles, inline SVGs, multi-column footers) are exercised without
+// having to spin up WordPress.
+// ----------------------------------------------------------------------
+
+for (const fx of ALL_FIXTURES) {
+  test(`[${fx.file}] extract → compose → generate produces a valid theme bundle`, () => {
+    const html = readFileSync(path.join(__dirname, "fixtures", fx.file), "utf8");
+    const sections = extractSectionsFromPage(html, fx.pageSlug, fx.projectSlug);
+    assert.ok(
+      sections.length >= fx.minSections,
+      `${fx.file}: expected at least ${fx.minSections} sections, got ${sections.length}`,
+    );
+
+    // Every section must declare at least one editable field — otherwise
+    // the upstream "no missing field values" guarantee is meaningless.
+    for (const s of sections) {
+      assert.ok(s.fields.length > 0, `${fx.file}: ${s.blockName} produced zero fields`);
+      // Field keys must be unique within a section so block.json
+      // attributes don't clobber each other.
+      const keys = s.fields.map((f) => f.key);
+      assert.equal(new Set(keys).size, keys.length, `${fx.file}: duplicate field keys in ${s.blockName}: ${keys.join(",")}`);
+    }
+
+    // Composition must emit one self-closing block comment per section
+    // and carry every field's default in the JSON attribute payload.
+    const content = composeGutenbergContent({ slug: fx.pageSlug, title: fx.pageSlug, sections });
+    const matches = content.match(new RegExp(`<!-- wp:wpb-${fx.projectSlug}/[^ ]+ \\{[\\s\\S]*?\\} /-->`, "g")) ?? [];
+    assert.equal(matches.length, sections.length, `${fx.file}: one block comment per section`);
+
+    // Theme zip must contain the canonical files plus per-section
+    // assets, and every block.json must declare every field as an
+    // attribute — this is the "no missing field values" invariant the
+    // e2e check relies on.
+    const buf = generateThemeZip({
+      projectName: fx.projectSlug,
+      projectSlug: fx.projectSlug,
+      combinedCss: "body{margin:0}",
+      combinedJs: "",
+      pages: [{ slug: fx.pageSlug, title: fx.pageSlug, sections }],
+      sourceZip: null,
+    });
+    const zip = new AdmZip(buf);
+    const entries = zip.getEntries().map((e) => e.entryName.replace(/\\/g, "/"));
+    for (const required of [
+      `${fx.projectSlug}/style.css`,
+      `${fx.projectSlug}/functions.php`,
+      `${fx.projectSlug}/page.php`,
+    ]) {
+      assert.ok(entries.includes(required), `${fx.file}: theme zip must contain ${required}`);
+    }
+    for (const section of sections) {
+      const dir = section.blockName.split("/")[1];
+      const blockJsonEntry = zip.getEntry(`${fx.projectSlug}/blocks/${dir}/block.json`);
+      assert.ok(blockJsonEntry, `${fx.file}: missing block.json for ${section.blockName}`);
+      const json = JSON.parse(blockJsonEntry!.getData().toString("utf8"));
+      for (const f of section.fields) {
+        assert.ok(
+          json.attributes[f.key],
+          `${fx.file}: block.json for ${section.blockName} must declare attribute ${f.key}`,
+        );
+        assert.equal(
+          json.attributes[f.key].default,
+          f.default,
+          `${fx.file}: ${section.blockName} attribute ${f.key} default mismatch`,
+        );
+      }
+    }
+
+    // Every PHP file must parse cleanly — richer fixtures could expose
+    // escaping bugs in our PHP code generator that simple-page misses.
+    const phpEntries = zip.getEntries().filter((e) => !e.isDirectory && e.entryName.endsWith(".php"));
+    for (const entry of phpEntries) {
+      const result = checkPhpSyntax(entry.getData().toString("utf8"), entry.entryName);
+      assert.ok(result.ok, `${fx.file}: PHP syntax error in ${entry.entryName}: ${result.error}`);
+    }
+  });
+}
+
+test("[complex-page.html] image-heavy hero rebases inline background-image to {{THEME_URI}}", () => {
+  const html = readFileSync(path.join(__dirname, "fixtures/complex-page.html"), "utf8");
+  const sections = extractSectionsFromPage(html, "complex-home", "complex-fixture-site");
+  const hero = sections.find((s) => s.category === "hero");
+  assert.ok(hero, "complex-page.html should produce a hero section");
+  // Inline background-image url() in the hero <section> must be rebased
+  // so the rendered theme can resolve it against the bundled assets/.
+  assert.match(
+    hero!.template,
+    /background-image:url\(\{\{THEME_URI\}\}\/assets\/images\/hero-bg\.jpg\)/,
+    "hero inline background-image url() must be rewritten to a {{THEME_URI}}/assets/ placeholder",
+  );
+  // And the hero should expose multiple image url fields (logo isn't
+  // here — that's in the header — but the screenshot is).
+  const urlFields = hero!.fields.filter((f) => f.type === "url");
+  assert.ok(urlFields.length >= 2, `hero should expose multiple url fields, got ${urlFields.length}`);
 });
