@@ -692,3 +692,57 @@ test("composer + theme generator: native page emits zero widget-*.php files", ()
     .filter((n) => /\/widgets\/widget-[^/]+\.php$/.test(n));
   assert.equal(widgetFiles.length, 0, `native-only theme must emit zero widget-*.php files, got ${widgetFiles.join(",")}`);
 });
+
+test("native decomposer propagates ancestor wrapper classes onto widget _css_classes", () => {
+  // Visual-fidelity guarantee: when the decomposer descends through
+  // wrapper DIVs (e.g. .container .grid .col .cta-row), the chain of
+  // wrapper classes must be reattached to each emitted widget so that
+  // user CSS like `.cta-row .btn { ... }` keeps matching the rendered
+  // Elementor DOM. Without this propagation, sites look "messy" after
+  // the Phase 1 pivot because intermediate wrappers vanish.
+  const html = `<!doctype html><html><body>
+    <section class="hero">
+      <div class="container">
+        <div class="grid two-col">
+          <div class="col copy">
+            <h1>Title</h1>
+            <div class="cta-row">
+              <a href="/x" class="btn primary">Go</a>
+            </div>
+          </div>
+          <div class="col media"><img src="/i.png" alt="i"></div>
+        </div>
+      </div>
+    </section>
+  </body></html>`;
+  const sections = extractSectionsFromPage(html, "home", "fidelity-fixture");
+  const hero = sections[0];
+  assert.ok(hero.nativeElementor, "hero must be decomposed natively");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sec = hero.nativeElementor as any;
+  assert.equal(sec.elements.length, 2, "two columns expected from .grid.two-col");
+
+  // Column 1 (".col copy") must carry its own class so .col.copy h1 still matches.
+  const col1 = sec.elements[0];
+  assert.equal(col1.elType, "column");
+  assert.equal(col1.settings._css_classes, "col copy");
+
+  // The button is nested inside .cta-row inside .col copy. The dropped
+  // ancestor chain (container, grid two-col, cta-row) must end up on
+  // the button widget's _css_classes alongside the button's own class.
+  const buttonWidget = col1.elements.find((w: { widgetType: string }) => w.widgetType === "button");
+  assert.ok(buttonWidget, "button widget should exist in column 1");
+  const cssClasses: string = buttonWidget.settings._css_classes;
+  assert.ok(cssClasses.includes("btn primary"), `button must keep its own class, got: "${cssClasses}"`);
+  assert.ok(cssClasses.includes("cta-row"), `button must inherit .cta-row wrapper class, got: "${cssClasses}"`);
+  assert.ok(cssClasses.includes("container"), `button must inherit .container wrapper class, got: "${cssClasses}"`);
+  assert.ok(cssClasses.includes("grid"), `button must inherit .grid wrapper class, got: "${cssClasses}"`);
+
+  // The heading also lives under .container .grid (no .cta-row though).
+  const headingWidget = col1.elements.find((w: { widgetType: string }) => w.widgetType === "heading");
+  assert.ok(headingWidget, "heading widget should exist in column 1");
+  const headingClasses: string = headingWidget.settings._css_classes;
+  assert.ok(headingClasses.includes("container"), "heading must inherit .container ancestor class");
+  assert.ok(headingClasses.includes("grid"), "heading must inherit .grid ancestor class");
+  assert.ok(!headingClasses.includes("cta-row"), "heading must NOT inherit .cta-row (not an ancestor of it)");
+});

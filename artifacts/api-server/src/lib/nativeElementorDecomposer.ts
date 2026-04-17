@@ -140,9 +140,16 @@ function isLayoutContainer(el: Element): boolean {
  * Walk down through useless single-child wrappers so a section like
  * `<section><div><div><div class="row">...</div></div></div></section>`
  * is recognized as a row container.
+ *
+ * Also collects the classes of every wrapper we descended PAST so the
+ * caller can reattach those classes to the next live Elementor element.
+ * Without this, original CSS like `.container .grid h1 { ... }` would
+ * stop matching after Phase 1 (since `.container` and `.grid` aren't in
+ * the rendered DOM anymore) and the page would look visually broken.
  */
-function unwrapSingleChild(el: Element): Element {
+function unwrapSingleChild(el: Element): { final: Element; droppedClasses: string[] } {
   let cur = el;
+  const droppedClasses: string[] = [];
   while (
     cur.children.length === 1 &&
     !Array.from(cur.childNodes).some((c) => c.nodeType === 3 && isMeaningfulText(c.textContent ?? ""))
@@ -150,9 +157,17 @@ function unwrapSingleChild(el: Element): Element {
     const onlyChild = cur.children[0];
     if (SKIP_TAGS.has(onlyChild.tagName)) break;
     if (HTML_FALLBACK_TAGS.has(onlyChild.tagName)) break;
+    // Record only INTERMEDIATE wrappers — `el` itself is the caller's
+    // anchor (section root in planColumns, column root in buildColumn)
+    // whose class is already applied to the corresponding Elementor
+    // node by the caller. Including it here would double-apply.
+    if (cur !== el) {
+      const c = classOf(cur);
+      if (c) droppedClasses.push(c);
+    }
     cur = onlyChild;
   }
-  return cur;
+  return { final: cur, droppedClasses };
 }
 
 interface ElementorNode {
@@ -312,12 +327,43 @@ function nextSeed(ctx: WalkContext, kind: string): string {
 }
 
 /**
+ * Add ancestor wrapper classes to a widget's `_css_classes` setting.
+ * Elementor renders this string onto the widget's outer wrapper div, so
+ * descendant selectors like `.cta-row .btn` keep matching even though
+ * the original `.cta-row` div was dropped during decomposition.
+ *
+ * Without this propagation, after Phase 1 the page would look "messy"
+ * because the user's site CSS targets the original ancestor chain that
+ * no longer exists in the rendered DOM.
+ */
+function withAncestorClasses(node: ElementorNode, ancestorClasses: string[]): ElementorNode {
+  if (ancestorClasses.length === 0) return node;
+  const own = (node.settings._css_classes as string | undefined) ?? "";
+  const merged = [...ancestorClasses, ...(own ? [own] : [])].join(" ").trim();
+  if (merged) node.settings._css_classes = merged;
+  return node;
+}
+
+/**
  * Walk a column's DOM subtree and emit native widgets in document order.
  * Anything not understood collapses into an `html` fallback widget so
  * layout/visual content is never lost.
+ *
+ * `ancestorClasses` carries the class strings of every wrapper we
+ * recursed THROUGH on the way down to this subtree. Each emitted widget
+ * gets those classes prepended to its `_css_classes` so the original
+ * site CSS keeps targeting the right elements after Phase 1 drops the
+ * intermediate wrapper DOM nodes.
  */
-function walkColumnContents(root: Element, ctx: WalkContext): ElementorNode[] {
+function walkColumnContents(
+  root: Element,
+  ctx: WalkContext,
+  ancestorClasses: string[] = [],
+): ElementorNode[] {
   const out: ElementorNode[] = [];
+  const push = (n: ElementorNode): void => {
+    out.push(withAncestorClasses(n, ancestorClasses));
+  };
   // Buffer of consecutive unrecognized siblings → flushed together as one
   // html-fallback widget (keeps original wrapper markup intact).
   let htmlBuffer: string[] = [];
@@ -331,12 +377,11 @@ function walkColumnContents(root: Element, ctx: WalkContext): ElementorNode[] {
 
   for (const node of Array.from(root.childNodes)) {
     if (node.nodeType === 3) {
-      // raw text node at column level — wrap as text-editor paragraph
       const t = (node.textContent ?? "").trim();
       if (isMeaningfulText(t)) {
         flushHtml();
         const settings: Record<string, unknown> = { editor: `<p>${t}</p>` };
-        out.push(widget(nextSeed(ctx, "text"), "text-editor", settings));
+        push(widget(nextSeed(ctx, "text"), "text-editor", settings));
       }
       continue;
     }
@@ -350,35 +395,30 @@ function walkColumnContents(root: Element, ctx: WalkContext): ElementorNode[] {
       continue;
     }
 
-    // ICON leaf
     if (isIconLeaf(el)) {
       flushHtml();
-      out.push(emitIconWidget(nextSeed(ctx, "icon"), el));
+      push(emitIconWidget(nextSeed(ctx, "icon"), el));
       continue;
     }
 
-    // HEADING
     if (HEADING_TAGS.has(tag)) {
       flushHtml();
-      out.push(emitHeadingWidget(nextSeed(ctx, "heading"), el));
+      push(emitHeadingWidget(nextSeed(ctx, "heading"), el));
       continue;
     }
 
-    // IMAGE (top-level)
     if (tag === "IMG") {
       flushHtml();
-      out.push(emitImageWidget(nextSeed(ctx, "image"), el));
+      push(emitImageWidget(nextSeed(ctx, "image"), el));
       continue;
     }
 
-    // BUTTON
     if (tag === "BUTTON" || (tag === "A" && looksLikeButton(el))) {
       flushHtml();
-      out.push(emitButtonWidget(nextSeed(ctx, "button"), el));
+      push(emitButtonWidget(nextSeed(ctx, "button"), el));
       continue;
     }
 
-    // LINKED IMAGE — `<a><img></a>` becomes an Image widget with link_to=custom.
     if (tag === "A") {
       const onlyImg =
         el.children.length === 1 &&
@@ -386,7 +426,7 @@ function walkColumnContents(root: Element, ctx: WalkContext): ElementorNode[] {
         !isMeaningfulText(el.textContent ?? "");
       if (onlyImg) {
         flushHtml();
-        out.push(emitImageWidget(nextSeed(ctx, "image"), el.children[0], el));
+        push(emitImageWidget(nextSeed(ctx, "image"), el.children[0], el));
         continue;
       }
       const onlyIcon =
@@ -395,22 +435,19 @@ function walkColumnContents(root: Element, ctx: WalkContext): ElementorNode[] {
         !isMeaningfulText(el.textContent ?? "");
       if (onlyIcon) {
         flushHtml();
-        out.push(emitIconWidget(nextSeed(ctx, "icon"), el.children[0], el));
+        push(emitIconWidget(nextSeed(ctx, "icon"), el.children[0], el));
         continue;
       }
-      // text link — emit a button widget (Elementor has no separate "text link"
-      // widget; the Button widget with style=link is the standard choice).
       const linkText = (el.textContent ?? "").trim();
       if (isMeaningfulText(linkText)) {
         flushHtml();
-        out.push(emitButtonWidget(nextSeed(ctx, "button"), el));
+        push(emitButtonWidget(nextSeed(ctx, "button"), el));
         continue;
       }
       htmlBuffer.push(el.outerHTML);
       continue;
     }
 
-    // PLAIN-TEXT LIST → icon-list widget
     if (tag === "UL" || tag === "OL") {
       const lis = Array.from(el.children).filter((c) => c.tagName === "LI");
       const allPlain =
@@ -419,14 +456,13 @@ function walkColumnContents(root: Element, ctx: WalkContext): ElementorNode[] {
         lis.every((li) => Array.from(li.children).every((c) => c.tagName === "A"));
       if (allPlain) {
         flushHtml();
-        out.push(emitIconListWidget(nextSeed(ctx, "list"), el));
+        push(emitIconListWidget(nextSeed(ctx, "list"), el));
         continue;
       }
       htmlBuffer.push(el.outerHTML);
       continue;
     }
 
-    // PARAGRAPH / inline text wrapper
     if (
       tag === "P" ||
       tag === "BLOCKQUOTE" ||
@@ -436,37 +472,33 @@ function walkColumnContents(root: Element, ctx: WalkContext): ElementorNode[] {
       const t = (el.textContent ?? "").trim();
       if (isMeaningfulText(t)) {
         flushHtml();
-        out.push(emitTextEditorWidget(nextSeed(ctx, "text"), el));
+        push(emitTextEditorWidget(nextSeed(ctx, "text"), el));
       }
       continue;
     }
 
-    // GENERIC CONTAINER (DIV / ARTICLE / SECTION / etc.) — recurse so
-    // nested recognized leaves are still surfaced as native widgets.
-    // We descend through wrappers (single-child or multi-child) as long
-    // as they don't carry their own meaningful text. This means a
-    // `<div class="cta-row"><a>…</a><a>…</a></div>` produces TWO real
-    // Button widgets even though the wrapper class itself is dropped —
-    // the ergonomic gain (each button selectable in the sidebar) wins
-    // over preserving the wrapper's class hook.
+    // GENERIC CONTAINER — recurse, propagating this wrapper's class
+    // (and any ancestor classes already in scope) down to its leaves.
     if (tag === "DIV" || tag === "ARTICLE" || tag === "SECTION" || tag === "HEADER" || tag === "FOOTER" || tag === "ASIDE" || tag === "MAIN" || tag === "PICTURE" || tag === "FIGURE") {
       const ownText = Array.from(el.childNodes).some(
         (c) => c.nodeType === 3 && isMeaningfulText(c.textContent ?? ""),
       );
       if (ownText) {
-        // Has its own free-floating text → keep as a single text-editor
-        // so the text isn't lost.
         flushHtml();
-        out.push(emitTextEditorWidget(nextSeed(ctx, "text"), el));
+        push(emitTextEditorWidget(nextSeed(ctx, "text"), el));
         continue;
       }
       flushHtml();
-      const inner = walkColumnContents(el, ctx);
+      const wrapperCls = classOf(el);
+      const nextAncestors = wrapperCls ? [...ancestorClasses, wrapperCls] : ancestorClasses;
+      const inner = walkColumnContents(el, ctx, nextAncestors);
+      // `inner` widgets already had `nextAncestors` baked in by their
+      // own recursive call, so push them through verbatim — don't
+      // double-prepend the same chain.
       for (const w of inner) out.push(w);
       continue;
     }
 
-    // Fallback — preserve as html
     htmlBuffer.push(el.outerHTML);
   }
   flushHtml();
@@ -478,12 +510,24 @@ interface ColumnPlan {
   size: number; // 1..100
 }
 
-function planColumns(root: Element): ColumnPlan[] {
-  const target = unwrapSingleChild(root);
+interface ColumnPlanResult {
+  plans: ColumnPlan[];
+  /**
+   * Classes from wrapper DOM nodes that planColumns walked PAST on the
+   * way from the section root to the layout container (e.g. the
+   * `.container .grid` chain in `<section><div class="container"><div
+   * class="grid two-col"><div class="col">…`). The caller forwards
+   * these into each column's `_css_classes` so original CSS like
+   * `.container .grid h1 { ... }` keeps targeting the rendered DOM.
+   */
+  droppedAncestorClasses: string[];
+}
+
+function planColumns(root: Element): ColumnPlanResult {
+  const { final: target, droppedClasses } = unwrapSingleChild(root);
   if (target !== root && isLayoutContainer(target)) {
     const kids = Array.from(target.children).filter((c) => !SKIP_TAGS.has(c.tagName));
     if (kids.length >= 2) {
-      // Try to read explicit `col-N` widths first.
       const widths = kids.map((k) => {
         const cls = classOf(k);
         const m = cls.match(/\bcol(?:-\w+)?-(\d{1,2})\b/);
@@ -501,37 +545,77 @@ function planColumns(root: Element): ColumnPlan[] {
       });
       const explicit = widths.every((w) => w > 0);
       const equal = Math.round(100 / kids.length);
-      return kids.map((el, i) => ({
-        el,
-        size: explicit ? widths[i] : equal,
-      }));
+      // The layout container's own class is part of the chain too —
+      // it sits between the section root and the columns and is
+      // dropped from the rendered DOM along with the wrappers.
+      const layoutCls = classOf(target);
+      const chain = layoutCls ? [...droppedClasses, layoutCls] : droppedClasses;
+      return {
+        plans: kids.map((el, i) => ({ el, size: explicit ? widths[i] : equal })),
+        droppedAncestorClasses: chain,
+      };
     }
   }
   if (isLayoutContainer(root)) {
     const kids = Array.from(root.children).filter((c) => !SKIP_TAGS.has(c.tagName));
     if (kids.length >= 2) {
       const equal = Math.round(100 / kids.length);
-      return kids.map((el) => ({ el, size: equal }));
+      return {
+        plans: kids.map((el) => ({ el, size: equal })),
+        droppedAncestorClasses: [],
+      };
     }
   }
-  return [{ el: root, size: 100 }];
+  return {
+    plans: [{ el: root, size: 100 }],
+    droppedAncestorClasses: droppedClasses,
+  };
 }
 
-function buildColumn(plan: ColumnPlan, ctx: WalkContext, idx: number): ElementorNode {
+function buildColumn(
+  plan: ColumnPlan,
+  ctx: WalkContext,
+  idx: number,
+  ancestorClasses: string[],
+): ElementorNode {
   const colCtx: WalkContext = {
     seedPrefix: `${ctx.seedPrefix}:col-${idx}`,
     counter: { n: 0 },
   };
-  const widgets = walkColumnContents(plan.el, colCtx);
-  // If the column ended up empty (e.g. wrapper-only), preserve its raw HTML.
+  // The column's own DOM wrapper class (e.g. `col copy`) lives on the
+  // Elementor column's `_css_classes` setting so selectors like
+  // `.col.copy h1` keep matching. The dropped wrapper chain
+  // (e.g. `container grid two-col`) is forwarded into the widgets
+  // inside this column instead of the column itself, since Elementor
+  // renders columns inside their parent section's wrapper — the
+  // wrapper-chain classes only become visible to descendant CSS when
+  // they sit on each leaf's own wrapper.
+  const ownCls = classOf(plan.el);
+  const colClasses = ownCls ? ownCls : "";
+  const widgets = walkColumnContents(plan.el, colCtx, ancestorClasses);
   if (widgets.length === 0 && plan.el.innerHTML.trim().length > 0) {
-    widgets.push(emitHtmlFallbackWidget(`${colCtx.seedPrefix}:html-empty`, plan.el.innerHTML));
+    // Same fidelity rule applies to the empty-column fallback: keep
+    // the ancestor wrapper chain on the html widget so original CSS
+    // selectors keep matching the preserved markup.
+    widgets.push(
+      withAncestorClasses(
+        emitHtmlFallbackWidget(`${colCtx.seedPrefix}:html-empty`, plan.el.innerHTML),
+        ancestorClasses,
+      ),
+    );
   }
+  const settings: Record<string, unknown> = {
+    _column_size: plan.size,
+    _inline_size: null,
+  };
+  if (colClasses) settings._css_classes = colClasses;
+  const ownId = idOf(plan.el);
+  if (ownId) settings._element_id = ownId;
   return {
     id: elementorId(`${colCtx.seedPrefix}:wrap`),
     elType: "column",
     isInner: false,
-    settings: { _column_size: plan.size, _inline_size: null },
+    settings,
     elements: widgets,
   };
 }
@@ -555,7 +639,8 @@ export function decomposeSectionToNative(
   const seedPrefix = `${projectSlug}:${pageSlug}:sec-${sectionIndex}`;
   const ctx: WalkContext = { seedPrefix, counter: { n: 0 } };
 
-  const columns = planColumns(rootEl).map((p, i) => buildColumn(p, ctx, i));
+  const { plans, droppedAncestorClasses } = planColumns(rootEl);
+  const columns = plans.map((p, i) => buildColumn(p, ctx, i, droppedAncestorClasses));
   // Filter columns whose only widget is an empty html fallback.
   const nonEmpty = columns.filter((c) => c.elements.length > 0);
   if (nonEmpty.length === 0) return null;
