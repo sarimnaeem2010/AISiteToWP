@@ -34,8 +34,10 @@
   "devDependencies": {
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.19",
+    "@types/css-tree": "^2.3.11",
     "@types/express": "^5.0.6",
     "@types/node": "catalog:",
+    "css-tree": "^3.2.1",
     "esbuild": "^0.27.3",
     "esbuild-plugin-pino": "^2.3.3",
     "pino-pretty": "^13",

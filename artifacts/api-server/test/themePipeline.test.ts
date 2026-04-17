@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import AdmZip from "adm-zip";
+import * as csstree from "css-tree";
 
 import { extractSectionsFromPage } from "../src/lib/sectionFieldExtractor";
 import { composeGutenbergContent } from "../src/lib/pixelPerfectComposer";
@@ -285,6 +286,92 @@ test("checkJsSyntax catches a syntax error introduced into a generated JS templa
 test("checkJsSyntax flags an unterminated string", () => {
   const broken = `var x = 'oops;\n`;
   const result = checkJsSyntax(broken, "broken.js");
+  assert.equal(result.ok, false);
+});
+
+function checkCssSyntax(src: string, filename: string): { ok: boolean; error?: string } {
+  const errors: Array<{ message: string; line?: number; column?: number }> = [];
+  try {
+    csstree.parse(src, {
+      filename,
+      positions: true,
+      onParseError: (err: { message: string; line?: number; column?: number }) => {
+        errors.push({ message: err.message, line: err.line, column: err.column });
+      },
+    });
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+  if (errors.length > 0) {
+    const e = errors[0];
+    return { ok: false, error: `${e.message}${e.line ? ` (line ${e.line}, col ${e.column})` : ""}` };
+  }
+  return { ok: true };
+}
+
+test("every CSS file in the generated theme parses cleanly", () => {
+  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG);
+  const buf = generateThemeZip({
+    projectName: "Fixture Site",
+    projectSlug: PROJECT_SLUG,
+    combinedCss: "body{margin:0}\n.hero{display:flex;gap:1rem}\n@media (min-width:768px){.hero{gap:2rem}}",
+    combinedJs: "",
+    pages: [{ slug: PAGE_SLUG, title: "Home", sections }],
+    sourceZip: null,
+  });
+  const zip = new AdmZip(buf);
+  const cssEntries = zip.getEntries().filter((e) => !e.isDirectory && e.entryName.endsWith(".css"));
+  assert.ok(cssEntries.length > 0, "theme must contain CSS files");
+
+  const names = cssEntries.map((e) => e.entryName.replace(/\\/g, "/"));
+  assert.ok(names.some((n) => n.endsWith("/style.css")), "expected style.css in the theme");
+  assert.ok(names.some((n) => n.endsWith("/assets/template.css")), "expected assets/template.css in the theme");
+
+  for (const entry of cssEntries) {
+    const src = entry.getData().toString("utf8");
+    const result = checkCssSyntax(src, entry.entryName);
+    assert.ok(result.ok, `CSS syntax error in ${entry.entryName}: ${result.error}`);
+  }
+});
+
+test("checkCssSyntax accepts representative stylesheet shapes the generator emits", () => {
+  const sample = `/* comment */
+body { margin: 0; padding: 0; }
+.hero { display: flex; gap: 1rem; background-image: url('assets/images/x.jpg'); }
+@media (min-width: 768px) { .hero { gap: 2rem; } }
+@keyframes pulse { 0% { opacity: 0; } 100% { opacity: 1; } }
+`;
+  const result = checkCssSyntax(sample, "sample.css");
+  assert.ok(result.ok, `expected sample to pass: ${result.error}`);
+});
+
+test("checkCssSyntax catches a syntax error introduced into a generated stylesheet", () => {
+  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG);
+  const buf = generateThemeZip({
+    projectName: "Fixture Site",
+    projectSlug: PROJECT_SLUG,
+    combinedCss: "body{margin:0}\n.hero{display:flex}",
+    combinedJs: "",
+    pages: [{ slug: PAGE_SLUG, title: "Home", sections }],
+    sourceZip: null,
+  });
+  const zip = new AdmZip(buf);
+  const tplCss = zip.getEntries().find((e) => e.entryName.endsWith("/assets/template.css"))!;
+  const original = tplCss.getData().toString("utf8");
+
+  // Inject a stray closing brace before the first rule — the kind of typo
+  // a future edit to the CSS pipeline could ship and that silently turns
+  // the rendered site into an unstyled wall of text.
+  const broken = "}\n" + original;
+  assert.notEqual(broken, original, "test scaffolding failed to mutate template.css");
+
+  const result = checkCssSyntax(broken, "assets/template.css");
+  assert.equal(result.ok, false, "validator must flag the unbalanced rule");
+});
+
+test("checkCssSyntax flags a stray closing brace", () => {
+  const broken = `body { color: red; } }\n`;
+  const result = checkCssSyntax(broken, "broken.css");
   assert.equal(result.ok, false);
 });
 
