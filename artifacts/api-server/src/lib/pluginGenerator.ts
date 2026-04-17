@@ -319,7 +319,10 @@ function wp_bridge_import_handler( WP_REST_Request $request ) {
         return new WP_Error( 'invalid_data', 'Missing pages array', array( 'status' => 400 ) );
     }
 
-    $renderer = isset( $body['renderer'] ) && $body['renderer'] === 'elementor' ? 'elementor' : 'gutenberg';
+    $allowed_renderers = array( 'elementor', 'gutenberg', 'raw_html', 'pixel_perfect' );
+    $renderer = isset( $body['renderer'] ) && in_array( $body['renderer'], $allowed_renderers, true )
+        ? $body['renderer']
+        : 'gutenberg';
     $results = array();
     $cpt_results = array();
 
