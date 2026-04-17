@@ -246,6 +246,29 @@ function wpb_render_section_template( string $template_path, array $attrs ): str
             $svg  = isset( $attrs[ '__icon_svg:' . $key ] ) ? (string) $attrs[ '__icon_svg:' . $key ] : '';
             $rest = $m[2] . $m[4];
             $rest = preg_replace( '/\\sdata-wpb-icon="[^"]*"/', '', ' ' . $rest );
+            // legacy_native: a data-wpb-leaf-class marker carries the
+            // section's wpb-leaf-{gid} CSS hook the new native style
+            // controls bind to. The user-editable ICONS control fully
+            // overwrites the class attribute, so without this re-merge
+            // every editor edit would silently break the scoped style
+            // controls. Strip the marker after reading and force-prepend
+            // the value into the rendered class attribute.
+            $leaf_hook = '';
+            if ( preg_match( '/\\sdata-wpb-leaf-class="([^"]+)"/', $rest, $lhm ) ) {
+                $leaf_hook = $lhm[1];
+                $rest = preg_replace( '/\\sdata-wpb-leaf-class="[^"]*"/', '', $rest );
+            }
+            if ( $leaf_hook !== '' ) {
+                if ( preg_match( '/\\sclass="([^"]*)"/i', $rest, $cm2 ) ) {
+                    $cur = $cm2[1];
+                    if ( strpos( ' ' . $cur . ' ', ' ' . $leaf_hook . ' ' ) === false ) {
+                        $merged = trim( $leaf_hook . ' ' . $cur );
+                        $rest = preg_replace( '/\\sclass="[^"]*"/i', ' class="' . $merged . '"', $rest, 1 );
+                    }
+                } else {
+                    $rest .= ' class="' . $leaf_hook . '"';
+                }
+            }
             $rest = trim( $rest );
             // Sibling Alt Text + Icon Link controls live at conventional
             // field keys derived from this marker's class key. Looking
@@ -314,6 +337,10 @@ function wpb_render_section_template( string $template_path, array $attrs ): str
     // gets its open/close tag rewritten to whichever h1-h6 the saved field
     // value asks for. We only touch h1-h6 elements so other markup stays
     // intact, and we sanitise the target tag against the same allowlist.
+    // The pass also reads the sibling data-wpb-heading-link marker so it
+    // can wrap the heading's text content in an <a href> when the editor
+    // sets a Link value (mirrors the native Heading widget's Link
+    // control). The marker is always stripped on its way out.
     $rendered = preg_replace_callback(
         '/<(h[1-6])([^>]*?)\\sdata-wpb-tag="([A-Za-z0-9_]+)"([^>]*)>(.*?)<\\/\\1>/is',
         function ( $m ) use ( $attrs ) {
@@ -323,12 +350,38 @@ function wpb_render_section_template( string $template_path, array $attrs ): str
             if ( ! preg_match( '/^h[1-6]$/', $next ) ) $next = $orig;
             $rest_attrs = trim( $m[2] . ' ' . $m[4] );
             $rest_attrs = preg_replace( '/\\sdata-wpb-tag="[^"]*"/', '', ' ' . $rest_attrs );
+            // Resolve the optional Heading Link control. The marker key
+            // points at a URL field in $attrs; we also honour the
+            // sibling __rel/__target plumbing the URL control writes so
+            // the wrap matches button/link semantics exactly.
+            $link_url = ''; $link_rel = ''; $link_target = '';
+            if ( preg_match( '/\\sdata-wpb-heading-link="([A-Za-z0-9_]+)"/', $rest_attrs, $lm ) ) {
+                $lkey = $lm[1];
+                if ( isset( $attrs[ $lkey ] ) ) $link_url = (string) $attrs[ $lkey ];
+                if ( isset( $attrs[ '__rel:'    . $lkey ] ) ) $link_rel    = (string) $attrs[ '__rel:'    . $lkey ];
+                if ( isset( $attrs[ '__target:' . $lkey ] ) ) $link_target = (string) $attrs[ '__target:' . $lkey ];
+                $rest_attrs = preg_replace( '/\\sdata-wpb-heading-link="[^"]*"/', '', $rest_attrs );
+            }
             $rest_attrs = trim( $rest_attrs );
             $open_attrs = $rest_attrs === '' ? '' : ' ' . $rest_attrs;
-            return '<' . $next . $open_attrs . '>' . $m[5] . '</' . $next . '>';
+            $inner = $m[5];
+            if ( $link_url !== '' ) {
+                $extra = '';
+                if ( $link_rel    !== '' ) $extra .= ' rel="'    . esc_attr( $link_rel )    . '"';
+                if ( $link_target !== '' ) $extra .= ' target="' . esc_attr( $link_target ) . '"';
+                $inner = '<a href="' . esc_url( $link_url ) . '"' . $extra . '>' . $inner . '</a>';
+            }
+            return '<' . $next . $open_attrs . '>' . $inner . '</' . $next . '>';
         },
         $rendered
     ) ?? $rendered;
+    // Final cleanup pass: strip any leftover data-wpb-leaf-class
+    // markers from non-icon leaves (text, headings, lists, buttons,
+    // images). Style controls bind via the matching wpb-leaf-{gid}
+    // class which the extractor already added to the live class
+    // attribute, so the marker is just a safety net for elements whose
+    // class can be edited at runtime.
+    $rendered = preg_replace( '/\\sdata-wpb-leaf-class="[^"]*"/', '', $rendered ) ?? $rendered;
     return $rendered;
 }
 

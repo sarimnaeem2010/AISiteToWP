@@ -417,12 +417,21 @@ function buildSectionTemplate(section: Element, opts: { injectLeafClass: boolean
   // hook scoped to that leaf. In other modes the template stays byte-
   // identical to the source HTML — we record `leafClass` on the group
   // for shape stability but skip the DOM mutation.
+  //
+  // We ALSO stamp a static `data-wpb-leaf-class` attribute carrying the
+  // same value. That attribute survives every {{ATTR:k}} substitution
+  // (which only rewrites the class attribute), so the PHP swap passes
+  // can re-merge the leaf class back into `class` after a user edits a
+  // control whose value is the class itself (the icon ICONS control is
+  // the prime example — picking a new font icon would otherwise wipe
+  // the leaf hook and break every scoped style control on that group).
   const tagLeaf = (el: Element, gid: string): string => {
     const cls = `wpb-leaf-${gid}`;
     if (opts.injectLeafClass) {
       const existing = el.getAttribute("class") ?? "";
       const next = existing ? `${existing} ${cls}` : cls;
       el.setAttribute("class", next);
+      el.setAttribute("data-wpb-leaf-class", cls);
     }
     return cls;
   };
@@ -473,6 +482,7 @@ function buildSectionTemplate(section: Element, opts: { injectLeafClass: boolean
       const leafClass = tagLeaf(el, gid);
       const textKey = `${gid}_text`;
       const tagKey = `${gid}_tag`;
+      const linkKey = `${gid}_link`;
       const text = takeText(el, textKey);
       if (!text) continue;
       addField(textKey, "text", text, "heading text");
@@ -480,6 +490,17 @@ function buildSectionTemplate(section: Element, opts: { injectLeafClass: boolean
       // the PHP renderer recognises and rewrites to the saved tag value.
       el.setAttribute("data-wpb-tag", tagKey);
       addField(tagKey, "tag", tag.toLowerCase(), "heading tag");
+      // Heading Link parity with the native Heading widget. The default
+      // value is hoisted from a wrapping <a> when one exists in the
+      // source markup (common pattern: <a><h2>Card title</h2></a>); the
+      // PHP renderer then wraps the heading text in an <a> at output
+      // time when the saved value is non-empty. We mark the heading
+      // itself with `data-wpb-heading-link="key"` so the swap pass can
+      // find every heading regardless of tag substitution.
+      const parentAnchor = el.parentElement && el.parentElement.tagName === "A" ? el.parentElement : null;
+      const headingLinkDefault = parentAnchor ? (parentAnchor.getAttribute("href") ?? "") : "";
+      addField(linkKey, "url", headingLinkDefault, "heading link");
+      el.setAttribute("data-wpb-heading-link", linkKey);
       const isLong = text.length > 80;
       groups.push({
         id: gid,
@@ -487,6 +508,13 @@ function buildSectionTemplate(section: Element, opts: { injectLeafClass: boolean
         label: `Heading — ${text.length > 32 ? text.slice(0, 32) + "…" : text}`,
         controls: [
           { key: textKey, fieldKey: textKey, type: isLong ? "textarea" : "text", label: "Text", default: text },
+          {
+            key: linkKey,
+            fieldKey: linkKey,
+            type: "url",
+            label: "Link",
+            default: headingLinkDefault,
+          },
           {
             key: tagKey,
             fieldKey: tagKey,
