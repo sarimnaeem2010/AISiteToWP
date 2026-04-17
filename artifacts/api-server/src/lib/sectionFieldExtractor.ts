@@ -218,7 +218,16 @@ function collectGroupTargets(section: Element): Element[] {
     const tag = el.tagName;
     if (tag === "BUTTON" || tag === "A") {
       out.push(el);
-      return; // do not descend; inner text is the button/link's text control
+      // Linked-image case: <a href><img></a>. The link itself is captured
+      // above (its href becomes the URL control), but the inner <img>
+      // also deserves its own MEDIA + Alt Text controls — otherwise a
+      // common pattern (logo / hero image wrapped in a link) would lose
+      // image editing entirely. Descend only into IMG descendants so we
+      // still don't double-emit text controls for nested <span>s.
+      for (const child of Array.from(el.children)) {
+        if (child.tagName === "IMG") out.push(child);
+      }
+      return;
     }
     if (tag === "IMG") {
       out.push(el);

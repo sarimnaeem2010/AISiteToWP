@@ -45,7 +45,7 @@ export function generateWordPressPlugin(
 /**
  * Plugin Name: WP Bridge AI Importer
  * Plugin URI: https://wpbridgeai.com
- * Description: Receives structured JSON from WP Bridge AI. Imports pages as Gutenberg blocks or Elementor data, registers Custom Post Types, and writes ACF fields.
+ * Description: Receives structured JSON from WP Bridge AI. Imports pages as Elementor data backed by an auto-generated child theme, registers Custom Post Types, and writes ACF fields.
  * Version: ${EXPECTED_PLUGIN_VERSION}
  * Author: WP Bridge AI
  * License: MIT

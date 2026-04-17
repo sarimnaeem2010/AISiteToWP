@@ -253,7 +253,7 @@ export default function ProjectWorkspace() {
       fd.append("file", file);
       const res = await fetch(`${apiBase}api/projects/${id}/upload-zip`, { method: "POST", body: fd });
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
-      toast({ title: "Source re-uploaded", description: "Project re-parsed from ZIP. Raw HTML mode is now available." });
+      toast({ title: "Source re-uploaded", description: "Project re-parsed from ZIP. Elementor widgets regenerated." });
       refetch();
     } catch (err) {
       toast({ title: "Re-upload failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
@@ -271,7 +271,7 @@ export default function ProjectWorkspace() {
         body: JSON.stringify({ htmlContent: html }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
-      toast({ title: "HTML re-parsed", description: "Raw HTML mode is now available." });
+      toast({ title: "HTML re-parsed", description: "Elementor widgets regenerated from the new source." });
       setPastedHtml("");
       refetch();
     } catch (err) {
@@ -590,17 +590,17 @@ export default function ProjectWorkspace() {
                   Source Files
                 </CardTitle>
                 <CardDescription>
-                  Re-upload a ZIP or paste raw HTML to refresh the parsed structure and regenerate the per-section Elementor widgets.
+                  Re-upload a ZIP or paste source HTML to refresh the parsed structure and regenerate the per-section Elementor widgets.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex items-center gap-3 text-xs font-mono">
                   <Badge variant={proj.sourceHtml || proj.uploadedFiles ? "default" : "outline"}>
-                    {proj.sourceHtml ? "Raw HTML stored" : proj.uploadedFiles ? "ZIP files stored" : "No source on file"}
+                    {proj.sourceHtml ? "Source HTML stored" : proj.uploadedFiles ? "ZIP files stored" : "No source on file"}
                   </Badge>
                   {!proj.sourceHtml && (
                     <span className="text-amber-600 dark:text-amber-400">
-                      Re-upload required to use the Raw HTML renderer.
+                      Re-upload required to regenerate the Elementor widgets.
                     </span>
                   )}
                 </div>

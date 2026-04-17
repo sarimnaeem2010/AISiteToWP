@@ -59,6 +59,36 @@ test("extractSectionsFromPage finds the expected top-level sections", () => {
   assert.equal(listGroup!.controls[0].default, "Fast\nReliable\nAffordable");
 });
 
+test("linked images yield BOTH a link/button group and an image group", () => {
+  // Common real-world pattern: a logo or hero image wrapped in a link.
+  // Both surfaces must be editable in the Elementor sidebar — the link
+  // exposes URL (with rel/target), the image exposes MEDIA + Alt Text.
+  const html = `<!doctype html><html><body><section class="hero">
+    <a href="https://example.com/landing">
+      <img src="/img/logo.png" alt="Acme logo">
+    </a>
+  </section></body></html>`;
+  const sections = extractSectionsFromPage(html, "home", "fixture-link-img");
+  assert.ok(sections.length > 0, "extractor must find the hero section");
+  const allGroups = sections.flatMap((s) => s.groups);
+  const linkGroup = allGroups.find((g) => g.kind === "link" || g.kind === "button");
+  const imageGroup = allGroups.find((g) => g.kind === "image");
+  assert.ok(linkGroup, "linked image must produce a link/button group");
+  assert.ok(imageGroup, "linked image must produce a separate image group");
+  assert.ok(
+    linkGroup!.controls.some((c) => c.type === "url" && c.default === "https://example.com/landing"),
+    "link group must expose the URL control with the original href as its default",
+  );
+  assert.ok(
+    imageGroup!.controls.some((c) => c.type === "media" && c.default.endsWith("logo.png")),
+    "image group must expose the MEDIA control with the original src as its default",
+  );
+  assert.ok(
+    imageGroup!.controls.some((c) => c.type === "text" && c.default === "Acme logo"),
+    "image group must expose the Alt Text control with the original alt as its default",
+  );
+});
+
 test("section block names and ids are stable across repeated extractions", () => {
   const a = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG);
   const b = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG);

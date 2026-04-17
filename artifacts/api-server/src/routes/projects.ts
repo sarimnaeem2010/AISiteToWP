@@ -946,13 +946,13 @@ router.get("/projects/:id/plugin-zip", async (req, res): Promise<void> => {
   const slug = filename.replace(/\.php$/, "");
   const readme = `=== WP Bridge AI Importer ===
 Contributors: wpbridgeai
-Tags: rest-api, importer, acf, gutenberg
+Tags: rest-api, importer, acf, elementor
 Requires at least: 6.0
 Tested up to: 6.5
 Stable tag: 1.0.0
 License: MIT
 
-Receives structured JSON from WP Bridge AI and converts it to WordPress pages with Gutenberg blocks and ACF fields.
+Receives structured JSON from WP Bridge AI and converts it to WordPress pages rendered by an auto-generated Elementor child theme, with ACF field support.
 
 == Installation ==
 
