@@ -8,7 +8,8 @@
     "build": "node ./build.mjs",
     "start": "node --enable-source-maps ./dist/index.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test test/**/*.test.ts"
+    "test": "tsx --test 'test/**/*.test.ts'",
+    "test:e2e": "RUN_WP_E2E=1 tsx --test test/e2e/themeRender.e2e.test.ts"
   },
   "dependencies": {
     "@types/adm-zip": "^0.5.8",
