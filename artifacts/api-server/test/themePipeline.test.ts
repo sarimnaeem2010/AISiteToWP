@@ -461,6 +461,211 @@ for (const fx of ALL_FIXTURES) {
   });
 }
 
+/**
+ * Run the generated `assets/editor.js` against a strict `wp` global stub
+ * and return the result. Each `wp.<namespace>` is a Proxy that throws on
+ * any property access that isn't in the per-namespace allow-list, so a
+ * typo in a Gutenberg API name (e.g. `useBlockProsp` instead of
+ * `useBlockProps`, or `wp.blokcs` instead of `wp.blocks`) — which would
+ * be valid JavaScript and pass syntax checks but blow up inside the WP
+ * editor at runtime — fails fast here instead of in production. Returns
+ * `{ ok: true }` if the script and the captured `wp.domReady(callback)`
+ * both run without throwing, or `{ ok: false, error }` otherwise.
+ */
+function runEditorJsAgainstWpStub(
+  src: string,
+  projectSlug: string,
+): { ok: boolean; error?: string } {
+  // Allowed members per Gutenberg namespace, derived from the wp.* APIs
+  // that EDITOR_JS in themeGenerator.ts actually touches. Keep this list
+  // tight: the whole point is that adding a new wp.* reference to
+  // EDITOR_JS without updating this allow-list fails the test, forcing
+  // the author to verify the real Gutenberg API spelling exists.
+  const stubFn = (...args: unknown[]) => ({ __stubCallArgs: args });
+  const sentinel = (label: string) => ({ __stubSentinel: label });
+
+  const namespace = (label: string, allowed: Record<string, unknown>): unknown =>
+    new Proxy(allowed, {
+      get(target, key) {
+        // Symbol-keyed lookups (Symbol.toPrimitive, Symbol.iterator, …)
+        // can be triggered by `||`, template literals, etc. — return
+        // undefined rather than throwing so falsy fallbacks still work.
+        if (typeof key === "symbol") return undefined;
+        // Same for engine-internal accessors that vm/Node may probe.
+        if (key === "then" || key === "constructor" || key === "toJSON") return undefined;
+        if (!(key in target)) {
+          throw new Error(
+            `wp.${label}.${String(key)} is not in the stub allow-list — ` +
+              `if Gutenberg actually exposes this API, add it to the test stub; ` +
+              `if it doesn't, you have a typo in EDITOR_JS.`,
+          );
+        }
+        return (target as Record<string, unknown>)[key as string];
+      },
+    });
+
+  // The Edit factory inside EDITOR_JS calls `wp.blocks.registerBlockType`
+  // for every block returned by `getBlockTypes()` whose name starts with
+  // `wpb-${slug}/`. Pre-register one matching block so the inner loop
+  // actually runs and we exercise makeEdit() + the Edit() function it
+  // produces.
+  const fakeBlock = {
+    name: `wpb-${projectSlug}/sec-1`,
+    attributes: {
+      txt_0: { type: "string", default: "Short headline" },
+      // Long string -> exercises the TextareaControl branch.
+      txt_1: { type: "string", default: "x".repeat(120) },
+      url_0: { type: "string", default: "{{THEME_URI}}/assets/img/logo.png" },
+    },
+  };
+  const editsExercised: number[] = [];
+  let domReadyCb: (() => void) | null = null;
+
+  const wp = {
+    element: namespace("element", {
+      createElement: stubFn,
+      Fragment: sentinel("Fragment"),
+    }),
+    serverSideRender: sentinel("ServerSideRender"),
+    blockEditor: namespace("blockEditor", {
+      InspectorControls: sentinel("InspectorControls"),
+      useBlockProps: () => ({ className: "stub-block-props" }),
+    }),
+    components: namespace("components", {
+      PanelBody: sentinel("PanelBody"),
+      TextControl: sentinel("TextControl"),
+      TextareaControl: sentinel("TextareaControl"),
+    }),
+    domReady: (fn: () => void) => {
+      if (typeof fn !== "function") {
+        throw new Error("wp.domReady was called with a non-function");
+      }
+      domReadyCb = fn;
+    },
+    blocks: namespace("blocks", {
+      getBlockTypes: () => [fakeBlock],
+      unregisterBlockType: (_n: string) => {
+        /* noop — registry is fake */
+      },
+      registerBlockType: (_n: string, def: { edit?: (props: unknown) => unknown; save?: () => unknown }) => {
+        // Actually invoke the Edit() function so any wp.* typo inside
+        // makeEdit (TextControl, TextareaControl, InspectorControls,
+        // PanelBody, useBlockProps, createElement, Fragment) surfaces
+        // here, not just at the top of the IIFE.
+        if (typeof def.edit !== "function") {
+          throw new Error("registerBlockType received a non-function edit");
+        }
+        const setAttributes = (_u: Record<string, unknown>) => {
+          /* noop */
+        };
+        def.edit({ attributes: { ...fakeBlock.attributes }, setAttributes });
+        if (typeof def.save === "function") def.save();
+        editsExercised.push(1);
+      },
+    }),
+  } as Record<string, unknown>;
+
+  const wpProxy = new Proxy(wp, {
+    get(target, key) {
+      if (typeof key === "symbol") return undefined;
+      if (key === "then" || key === "constructor") return undefined;
+      if (!(key in target)) {
+        throw new Error(
+          `wp.${String(key)} is not in the stub allow-list — typo or missing namespace.`,
+        );
+      }
+      return target[key as string];
+    },
+  });
+
+  try {
+    const ctx = vm.createContext({ wp: wpProxy, console });
+    vm.runInContext(src, ctx, { filename: "assets/editor.js" });
+    if (!domReadyCb) {
+      return { ok: false, error: "editor.js never registered a wp.domReady callback" };
+    }
+    (domReadyCb as () => void)();
+    if (editsExercised.length === 0) {
+      return { ok: false, error: "editor.js did not call wp.blocks.registerBlockType for any matching block" };
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+test("editor.js runs cleanly against a strict wp.* stub", () => {
+  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG);
+  const zipBuf = generateThemeZip({
+    projectName: "Fixture Site",
+    projectSlug: PROJECT_SLUG,
+    combinedCss: "",
+    combinedJs: "",
+    pages: [{ slug: PAGE_SLUG, title: "Home", sections }],
+    sourceZip: null,
+  });
+  const zip = new AdmZip(zipBuf);
+  const entry = zip.getEntries().find((e) => e.entryName.endsWith("/assets/editor.js"));
+  assert.ok(entry, "editor.js missing from generated theme");
+  const src = entry!.getData().toString("utf8");
+
+  const result = runEditorJsAgainstWpStub(src, PROJECT_SLUG);
+  assert.ok(
+    result.ok,
+    `editor.js threw against the wp.* stub — every reference must use a real Gutenberg API.\n` +
+      `Error: ${result.error}`,
+  );
+});
+
+test("editor.js stub catches a typo in a wp.blockEditor.* API name", () => {
+  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG);
+  const zipBuf = generateThemeZip({
+    projectName: "Fixture Site",
+    projectSlug: PROJECT_SLUG,
+    combinedCss: "",
+    combinedJs: "",
+    pages: [{ slug: PAGE_SLUG, title: "Home", sections }],
+    sourceZip: null,
+  });
+  const zip = new AdmZip(zipBuf);
+  const original = zip.getEntries().find((e) => e.entryName.endsWith("/assets/editor.js"))!.getData().toString("utf8");
+  // Swap useBlockProps -> useBlockProsp everywhere — the kind of typo
+  // that's still valid JS and would only blow up inside Gutenberg.
+  const broken = original.replace(/useBlockProps/g, "useBlockProsp");
+  assert.notEqual(broken, original, "test scaffolding failed to introduce typo");
+  const result = runEditorJsAgainstWpStub(broken, PROJECT_SLUG);
+  assert.equal(result.ok, false, "stub must reject a typo'd wp.blockEditor.* reference");
+  assert.match(
+    result.error ?? "",
+    /useBlockProsp/,
+    `expected error to mention the typo'd identifier, got: ${result.error}`,
+  );
+});
+
+test("editor.js stub catches a typo in a wp.* namespace name", () => {
+  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG);
+  const zipBuf = generateThemeZip({
+    projectName: "Fixture Site",
+    projectSlug: PROJECT_SLUG,
+    combinedCss: "",
+    combinedJs: "",
+    pages: [{ slug: PAGE_SLUG, title: "Home", sections }],
+    sourceZip: null,
+  });
+  const zip = new AdmZip(zipBuf);
+  const original = zip.getEntries().find((e) => e.entryName.endsWith("/assets/editor.js"))!.getData().toString("utf8");
+  // Mistype the top-level `wp.blocks` namespace -> `wp.blokcs`.
+  const broken = original.replace(/wp\.blocks\b/g, "wp.blokcs");
+  assert.notEqual(broken, original, "test scaffolding failed to introduce typo");
+  const result = runEditorJsAgainstWpStub(broken, PROJECT_SLUG);
+  assert.equal(result.ok, false, "stub must reject a typo'd top-level wp.* namespace");
+  assert.match(
+    result.error ?? "",
+    /blokcs/,
+    `expected error to mention the typo'd namespace, got: ${result.error}`,
+  );
+});
+
 test("[complex-page.html] image-heavy hero rebases inline background-image to {{THEME_URI}}", () => {
   const html = readFileSync(path.join(__dirname, "fixtures/complex-page.html"), "utf8");
   const sections = extractSectionsFromPage(html, "complex-home", "complex-fixture-site");
