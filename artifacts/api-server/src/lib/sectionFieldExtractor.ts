@@ -620,7 +620,7 @@ export function extractSectionsFromPage(
    * `NATIVE_ELEMENTOR_MODE` env var is consulted (defaulting to
    * `"shell"`). Tests use this to opt into per-widget translation.
    */
-  decomposerModeOverride?: "shell" | "deep",
+  decomposerModeOverride?: "shell" | "deep" | "legacy",
 ): ExtractedSection[] {
   const dom = new JSDOM(html);
   const body = dom.window.document.body;
@@ -673,10 +673,21 @@ export function extractSectionsFromPage(
     // NATIVE_ELEMENTOR_DECOMPOSER=0 (falls back to the legacy
     // custom-widget PHP path).
     const nativeFlag = process.env.NATIVE_ELEMENTOR_DECOMPOSER ?? "1";
-    const nativeEnabled = nativeFlag !== "0" && nativeFlag !== "false";
+    const envNativeEnabled = nativeFlag !== "0" && nativeFlag !== "false";
+    // The override wins over the env var: a per-project setting of
+    // "legacy" disables native decomposition for that project even when
+    // the env says it's enabled, and any non-"legacy" override forces
+    // native decomposition on.
+    const nativeEnabled =
+      decomposerModeOverride === "legacy"
+        ? false
+        : decomposerModeOverride
+          ? true
+          : envNativeEnabled;
     const mode: "shell" | "deep" =
-      decomposerModeOverride ??
-      (process.env.NATIVE_ELEMENTOR_MODE === "deep" ? "deep" : "shell");
+      decomposerModeOverride && decomposerModeOverride !== "legacy"
+        ? decomposerModeOverride
+        : (process.env.NATIVE_ELEMENTOR_MODE === "deep" ? "deep" : "shell");
     const cleanClone = el.cloneNode(true) as Element;
     let nativeElementor: unknown | undefined;
     if (nativeEnabled) {

@@ -35,6 +35,120 @@ const wpConfigSchema = z
     { message: "API key is required", path: ["wpApiKey"] }
   );
 
+type ConversionMode = "shell" | "deep" | "legacy";
+
+const CONVERSION_MODE_OPTIONS: { value: ConversionMode; title: string; description: string }[] = [
+  {
+    value: "shell",
+    title: "Shell (Recommended)",
+    description: "Native Section + Column shells; original markup preserved verbatim. 100% visual fidelity, sidebar-clickable structure.",
+  },
+  {
+    value: "deep",
+    title: "Deep",
+    description: "Every leaf becomes a native Elementor widget. Best for clean modern pages; risky for canvas, forms, custom SVG widgets.",
+  },
+  {
+    value: "legacy",
+    title: "Legacy",
+    description: "Disable native decomposition; fall back to the custom-widget PHP path. Use only if Shell or Deep break the import.",
+  },
+];
+
+function isConversionMode(v: unknown): v is ConversionMode {
+  return v === "shell" || v === "deep" || v === "legacy";
+}
+
+function ConversionModeCard({
+  projectId,
+  project,
+  onSaved,
+}: {
+  projectId: string;
+  project: { conversionMode?: ConversionMode | null };
+  onSaved: () => void;
+}) {
+  const { toast } = useToast();
+  const apiBase = import.meta.env.BASE_URL;
+  const serverMode: ConversionMode = isConversionMode(project.conversionMode)
+    ? project.conversionMode
+    : "shell";
+  // `mode` is the optimistic display value; `lastSavedMode` always
+  // reflects the most recently confirmed (200 OK) value from the
+  // server, so a failed request rolls back to the correct state even
+  // after several quick changes.
+  const [mode, setMode] = useState<ConversionMode>(serverMode);
+  const [lastSavedMode, setLastSavedMode] = useState<ConversionMode>(serverMode);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setMode(serverMode);
+    setLastSavedMode(serverMode);
+  }, [serverMode]);
+
+  const onSelect = async (next: ConversionMode) => {
+    if (next === mode) return;
+    const previous = lastSavedMode;
+    setMode(next);
+    setSaving(true);
+    try {
+      const res = await fetch(`${apiBase}api/projects/${projectId}/conversion-mode`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversionMode: next }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json().catch(() => ({}))) as { conversionMode?: unknown };
+      const confirmed: ConversionMode = isConversionMode(body.conversionMode)
+        ? body.conversionMode
+        : next;
+      setLastSavedMode(confirmed);
+      setMode(confirmed);
+      toast({ title: "Conversion mode updated", description: `Re-import the source to apply "${confirmed}".` });
+      onSaved();
+    } catch (err) {
+      setMode(previous);
+      toast({
+        title: "Error updating conversion mode",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="font-mono flex items-center gap-2">
+          <Layers className="h-5 w-5" />
+          Conversion Mode
+        </CardTitle>
+        <CardDescription>
+          Controls how imported HTML is decomposed into Elementor. Changes take effect on the next re-import.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+          {CONVERSION_MODE_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              disabled={saving}
+              onClick={() => onSelect(opt.value)}
+              className={`text-left rounded-md border p-3 text-xs font-mono ${mode === opt.value ? "border-primary bg-primary/10" : "border-border bg-muted/20"} ${saving ? "opacity-60" : ""}`}
+            >
+              <div className="font-semibold uppercase tracking-wider">{opt.title}</div>
+              <div className="text-muted-foreground mt-1">{opt.description}</div>
+            </button>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function ProjectWorkspace() {
   const { id } = useParams<{ id: string }>();
   const { toast } = useToast();
@@ -675,6 +789,19 @@ export default function ProjectWorkspace() {
                 </div>
               </CardContent>
             </Card>
+          )}
+
+          {currentStep >= 2 && (
+            <ConversionModeCard
+              projectId={id!}
+              project={{
+                conversionMode: (() => {
+                  const v = (project as unknown as { conversionMode?: unknown }).conversionMode;
+                  return isConversionMode(v) ? v : undefined;
+                })(),
+              }}
+              onSaved={() => refetch()}
+            />
           )}
 
           {currentStep >= 2 && (

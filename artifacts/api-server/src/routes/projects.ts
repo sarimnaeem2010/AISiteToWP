@@ -70,6 +70,8 @@ function buildExtractedPages(project: {
   name: string;
   sourcePagesHtml: unknown;
   sourceHtml: string | null;
+  sourceCss?: string | null;
+  conversionMode?: string | null;
 }): { pages: ExtractedPage[]; projectSlug: string } {
   const baseSlug = project.name
     .toLowerCase()
@@ -83,13 +85,19 @@ function buildExtractedPages(project: {
   // translator inside extractSectionsFromPage, so widget settings
   // (typography, color, spacing, border) reflect the original site.
   const sourceCss = (project.sourceCss as string | null) ?? undefined;
+  // Per-project conversion mode chosen by the user in the workspace UI.
+  // Falls back to env defaults inside extractSectionsFromPage when the
+  // value is missing or unrecognized.
+  const rawMode = (project.conversionMode ?? "").toLowerCase();
+  const modeOverride: "shell" | "deep" | "legacy" | undefined =
+    rawMode === "shell" || rawMode === "deep" || rawMode === "legacy" ? rawMode : undefined;
   if (sourcePagesHtml && Object.keys(sourcePagesHtml).length > 0) {
     for (const [slug, src] of Object.entries(sourcePagesHtml)) {
-      const sections = extractSectionsFromPage(src.content, slug, projectSlug, sourceCss);
+      const sections = extractSectionsFromPage(src.content, slug, projectSlug, sourceCss, modeOverride);
       pages.push({ slug, title: slug === "home" ? "Home" : slug.replace(/-/g, " "), sections });
     }
   } else if (project.sourceHtml) {
-    const sections = extractSectionsFromPage(project.sourceHtml, "home", projectSlug, sourceCss);
+    const sections = extractSectionsFromPage(project.sourceHtml, "home", projectSlug, sourceCss, modeOverride);
     pages.push({ slug: "home", title: "Home", sections });
   }
   return { pages, projectSlug };
@@ -218,6 +226,7 @@ router.get("/projects/:id", async (req, res): Promise<void> => {
     aiAnalysis: project.aiAnalysis ?? null,
     customPostTypes: project.customPostTypes ?? [],
     renderer: projectRenderer(project.renderer ?? null),
+    conversionMode: (project.conversionMode === "deep" || project.conversionMode === "legacy" ? project.conversionMode : "shell") as "shell" | "deep" | "legacy",
     wpConfig: project.wpUrl
       ? {
           wpUrl: project.wpUrl,
@@ -570,6 +579,34 @@ router.put("/projects/:id/renderer", async (req, res): Promise<void> => {
     return;
   }
   res.json({ renderer: project.renderer });
+});
+
+const ConversionModeSchema = z.object({
+  conversionMode: z.enum(["shell", "deep", "legacy"]),
+});
+
+router.put("/projects/:id/conversion-mode", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const params = GetProjectParams.safeParse({ id: raw });
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+  const body = ConversionModeSchema.safeParse(req.body);
+  if (!body.success) {
+    res.status(400).json({ error: body.error.message });
+    return;
+  }
+  const [project] = await db
+    .update(projectsTable)
+    .set({ conversionMode: body.data.conversionMode })
+    .where(eq(projectsTable.id, Number(params.data.id)))
+    .returning();
+  if (!project) {
+    res.status(404).json({ error: "Project not found" });
+    return;
+  }
+  res.json({ conversionMode: project.conversionMode });
 });
 
 router.put("/projects/:id/wordpress-config", async (req, res): Promise<void> => {

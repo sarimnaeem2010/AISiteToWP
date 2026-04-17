@@ -22,6 +22,7 @@ export const projectsTable = pgTable("projects", {
   wpStructure: jsonb("wp_structure"),
   pageCount: integer("page_count"),
   renderer: text("renderer").notNull().default("gutenberg"),
+  conversionMode: text("conversion_mode").notNull().default("shell"),
   customPostTypes: jsonb("custom_post_types"),
   aiAnalysis: jsonb("ai_analysis"),
   sourceHtml: text("source_html"),
