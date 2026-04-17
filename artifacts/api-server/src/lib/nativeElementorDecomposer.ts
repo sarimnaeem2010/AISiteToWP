@@ -1,4 +1,13 @@
 import crypto from "node:crypto";
+import {
+  type ParsedSheet,
+  computeStyles,
+  applyHeadingStyles,
+  applyTextEditorStyles,
+  applyImageStyles,
+  applyButtonStyles,
+  applyContainerStyles,
+} from "./cssStyleResolver";
 
 /**
  * Native Elementor decomposition.
@@ -200,11 +209,21 @@ function applyAdvancedFromEl(settings: Record<string, unknown>, el: Element): vo
   if (cls) settings._css_classes = cls;
 }
 
+/**
+ * Resolve cascaded CSS styles for `el` against the parsed stylesheet.
+ * Returns an empty record when no sheet is in scope (Phase 1 callers
+ * who didn't opt into the translator) so existing behavior is preserved.
+ */
+function resolveStylesFor(el: Element, ctx: WalkContext): Record<string, string> {
+  if (!ctx.sheet) return {};
+  return computeStyles(el, ctx.sheet);
+}
+
 function linkSettingsFrom(href: string): { url: string; is_external: string; nofollow: string } {
   return { url: href, is_external: "", nofollow: "" };
 }
 
-function emitHeadingWidget(seed: string, el: Element): ElementorNode {
+function emitHeadingWidget(seed: string, el: Element, ctx: WalkContext): ElementorNode {
   const tag = el.tagName.toLowerCase();
   const settings: Record<string, unknown> = {
     title: (el.textContent ?? "").trim(),
@@ -212,10 +231,11 @@ function emitHeadingWidget(seed: string, el: Element): ElementorNode {
     align: "",
   };
   applyAdvancedFromEl(settings, el);
+  applyHeadingStyles(settings, resolveStylesFor(el, ctx));
   return widget(seed, "heading", settings);
 }
 
-function emitTextEditorWidget(seed: string, el: Element): ElementorNode {
+function emitTextEditorWidget(seed: string, el: Element, ctx: WalkContext): ElementorNode {
   // Rebase image / link URLs inside the inner HTML before we hand it to the
   // text-editor widget. Elementor's editor widget passes the value through
   // wpautop on render so plain HTML is preserved.
@@ -226,10 +246,11 @@ function emitTextEditorWidget(seed: string, el: Element): ElementorNode {
     editor: `<${el.tagName.toLowerCase()}>${inner}</${el.tagName.toLowerCase()}>`,
   };
   applyAdvancedFromEl(settings, el);
+  applyTextEditorStyles(settings, resolveStylesFor(el, ctx));
   return widget(seed, "text-editor", settings);
 }
 
-function emitImageWidget(seed: string, el: Element, parentLink?: Element): ElementorNode {
+function emitImageWidget(seed: string, el: Element, ctx: WalkContext, parentLink?: Element): ElementorNode {
   const src = el.getAttribute("src") ?? "";
   const alt = el.getAttribute("alt") ?? "";
   const settings: Record<string, unknown> = {
@@ -245,10 +266,11 @@ function emitImageWidget(seed: string, el: Element, parentLink?: Element): Eleme
     }
   }
   applyAdvancedFromEl(settings, el);
+  applyImageStyles(settings, resolveStylesFor(el, ctx));
   return widget(seed, "image", settings);
 }
 
-function emitButtonWidget(seed: string, el: Element): ElementorNode {
+function emitButtonWidget(seed: string, el: Element, ctx: WalkContext): ElementorNode {
   const text = (el.textContent ?? "").trim();
   const href = el.getAttribute("href") ?? "";
   const usable = href && !href.startsWith("#") && !href.startsWith("javascript:") ? href : "";
@@ -258,6 +280,7 @@ function emitButtonWidget(seed: string, el: Element): ElementorNode {
     align: "",
   };
   applyAdvancedFromEl(settings, el);
+  applyButtonStyles(settings, resolveStylesFor(el, ctx));
   return widget(seed, "button", settings);
 }
 
@@ -319,6 +342,14 @@ function emitHtmlFallbackWidget(seed: string, html: string): ElementorNode {
 interface WalkContext {
   seedPrefix: string;
   counter: { n: number };
+  /**
+   * Optional parsed stylesheet. When present, each emit* function looks
+   * up the cascaded CSS for the source element and translates relevant
+   * properties (typography, color, spacing, border) into Elementor
+   * widget settings so the sidebar shows real values instead of
+   * Elementor defaults.
+   */
+  sheet?: ParsedSheet;
 }
 
 function nextSeed(ctx: WalkContext, kind: string): string {
@@ -403,19 +434,19 @@ function walkColumnContents(
 
     if (HEADING_TAGS.has(tag)) {
       flushHtml();
-      push(emitHeadingWidget(nextSeed(ctx, "heading"), el));
+      push(emitHeadingWidget(nextSeed(ctx, "heading"), el, ctx));
       continue;
     }
 
     if (tag === "IMG") {
       flushHtml();
-      push(emitImageWidget(nextSeed(ctx, "image"), el));
+      push(emitImageWidget(nextSeed(ctx, "image"), el, ctx));
       continue;
     }
 
     if (tag === "BUTTON" || (tag === "A" && looksLikeButton(el))) {
       flushHtml();
-      push(emitButtonWidget(nextSeed(ctx, "button"), el));
+      push(emitButtonWidget(nextSeed(ctx, "button"), el, ctx));
       continue;
     }
 
@@ -426,7 +457,7 @@ function walkColumnContents(
         !isMeaningfulText(el.textContent ?? "");
       if (onlyImg) {
         flushHtml();
-        push(emitImageWidget(nextSeed(ctx, "image"), el.children[0], el));
+        push(emitImageWidget(nextSeed(ctx, "image"), el.children[0], ctx, el));
         continue;
       }
       const onlyIcon =
@@ -441,7 +472,7 @@ function walkColumnContents(
       const linkText = (el.textContent ?? "").trim();
       if (isMeaningfulText(linkText)) {
         flushHtml();
-        push(emitButtonWidget(nextSeed(ctx, "button"), el));
+        push(emitButtonWidget(nextSeed(ctx, "button"), el, ctx));
         continue;
       }
       htmlBuffer.push(el.outerHTML);
@@ -472,7 +503,7 @@ function walkColumnContents(
       const t = (el.textContent ?? "").trim();
       if (isMeaningfulText(t)) {
         flushHtml();
-        push(emitTextEditorWidget(nextSeed(ctx, "text"), el));
+        push(emitTextEditorWidget(nextSeed(ctx, "text"), el, ctx));
       }
       continue;
     }
@@ -485,7 +516,7 @@ function walkColumnContents(
       );
       if (ownText) {
         flushHtml();
-        push(emitTextEditorWidget(nextSeed(ctx, "text"), el));
+        push(emitTextEditorWidget(nextSeed(ctx, "text"), el, ctx));
         continue;
       }
       flushHtml();
@@ -581,6 +612,7 @@ function buildColumn(
   const colCtx: WalkContext = {
     seedPrefix: `${ctx.seedPrefix}:col-${idx}`,
     counter: { n: 0 },
+    sheet: ctx.sheet,
   };
   // The column's own DOM wrapper class (e.g. `col copy`) lives on the
   // Elementor column's `_css_classes` setting so selectors like
@@ -631,13 +663,14 @@ export function decomposeSectionToNative(
   projectSlug: string,
   sectionIndex: number,
   pageSlug = "",
+  sheet?: ParsedSheet,
 ): ElementorNode | null {
   // Page slug enters the seed so two pages in the same project don't
   // collide on `${projectSlug}:sec-1:section` — Elementor requires
   // every node id within a single page's `_elementor_data` to be unique
   // and IDs are derived deterministically from this seed.
   const seedPrefix = `${projectSlug}:${pageSlug}:sec-${sectionIndex}`;
-  const ctx: WalkContext = { seedPrefix, counter: { n: 0 } };
+  const ctx: WalkContext = { seedPrefix, counter: { n: 0 }, sheet };
 
   const { plans, droppedAncestorClasses } = planColumns(rootEl);
   const columns = plans.map((p, i) => buildColumn(p, ctx, i, droppedAncestorClasses));
@@ -647,6 +680,10 @@ export function decomposeSectionToNative(
 
   const sectionSettings: Record<string, unknown> = {};
   applyAdvancedFromEl(sectionSettings, rootEl);
+  // Translate the section root's cascaded CSS (background, padding,
+  // margin, border) into Elementor section settings so the sidebar's
+  // Style tab reflects the original look.
+  if (sheet) applyContainerStyles(sectionSettings, computeStyles(rootEl, sheet));
 
   // Promote inline `background-image: url(...)` on the section root to
   // an Elementor section background so the user can edit it from the

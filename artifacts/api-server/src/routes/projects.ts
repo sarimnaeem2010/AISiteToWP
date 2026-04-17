@@ -79,13 +79,17 @@ function buildExtractedPages(project: {
   const projectSlug = `${baseSlug}-${project.id}`;
   const sourcePagesHtml = (project.sourcePagesHtml ?? null) as Record<string, { path: string; content: string }> | null;
   const pages: ExtractedPage[] = [];
+  // The combined source CSS feeds the CSS-to-Elementor controls
+  // translator inside extractSectionsFromPage, so widget settings
+  // (typography, color, spacing, border) reflect the original site.
+  const sourceCss = (project.sourceCss as string | null) ?? undefined;
   if (sourcePagesHtml && Object.keys(sourcePagesHtml).length > 0) {
     for (const [slug, src] of Object.entries(sourcePagesHtml)) {
-      const sections = extractSectionsFromPage(src.content, slug, projectSlug);
+      const sections = extractSectionsFromPage(src.content, slug, projectSlug, sourceCss);
       pages.push({ slug, title: slug === "home" ? "Home" : slug.replace(/-/g, " "), sections });
     }
   } else if (project.sourceHtml) {
-    const sections = extractSectionsFromPage(project.sourceHtml, "home", projectSlug);
+    const sections = extractSectionsFromPage(project.sourceHtml, "home", projectSlug, sourceCss);
     pages.push({ slug: "home", title: "Home", sections });
   }
   return { pages, projectSlug };

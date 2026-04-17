@@ -1,6 +1,7 @@
 import { JSDOM } from "jsdom";
 import crypto from "node:crypto";
 import { decomposeSectionToNative } from "./nativeElementorDecomposer";
+import { parseStylesheet } from "./cssStyleResolver";
 
 export type FieldType = "text" | "url" | "attr" | "tag";
 
@@ -613,10 +614,23 @@ export function extractSectionsFromPage(
   html: string,
   pageSlug: string,
   projectSlug: string,
+  sourceCss?: string,
 ): ExtractedSection[] {
   const dom = new JSDOM(html);
   const body = dom.window.document.body;
   if (!body) return [];
+
+  // Parse the original site CSS once per page. The decomposer uses it
+  // to compute cascaded styles per element and translate them into
+  // Elementor widget settings (typography/color/spacing/border) so the
+  // sidebar shows real values, not Elementor defaults. Inline <style>
+  // tags from the page itself are concatenated with any external CSS
+  // the caller passed in (the project's combined stylesheet).
+  const inlineStyles = Array.from(dom.window.document.querySelectorAll("style"))
+    .map((s) => s.textContent ?? "")
+    .join("\n");
+  const combinedCss = `${sourceCss ?? ""}\n${inlineStyles}`;
+  const sheet = parseStylesheet(combinedCss);
 
   let candidates: Element[] = Array.from(body.children).filter((c) => SECTION_TAGS.has(c.tagName));
   if (candidates.length === 0) {
@@ -644,7 +658,7 @@ export function extractSectionsFromPage(
     const cleanClone = el.cloneNode(true) as Element;
     let nativeElementor: unknown | undefined;
     try {
-      const decomposed = decomposeSectionToNative(cleanClone, projectSlug, idx, pageSlug);
+      const decomposed = decomposeSectionToNative(cleanClone, projectSlug, idx, pageSlug, sheet);
       if (decomposed) nativeElementor = decomposed;
     } catch {
       // Decomposition is best-effort — never block the import.

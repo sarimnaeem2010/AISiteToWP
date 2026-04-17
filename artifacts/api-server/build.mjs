@@ -102,6 +102,7 @@ async function buildAll() {
       "electron",
       "jsdom",
       "canvas",
+      "css-tree",
     ],
     sourcemap: "linked",
     plugins: [

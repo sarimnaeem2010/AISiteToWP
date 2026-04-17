@@ -746,3 +746,152 @@ test("native decomposer propagates ancestor wrapper classes onto widget _css_cla
   assert.ok(headingClasses.includes("grid"), "heading must inherit .grid ancestor class");
   assert.ok(!headingClasses.includes("cta-row"), "heading must NOT inherit .cta-row (not an ancestor of it)");
 });
+
+test("css-to-Elementor controls translator: heading typography & color flow into widget settings", () => {
+  // The decomposer should consult the original CSS, compute cascaded
+  // styles per element, and write the matching values into Elementor
+  // widget controls so the sidebar reflects the real visual design.
+  const html = `<!doctype html><html><head><style>
+    .hero h1 { color: #ff0000; font-size: 48px; font-weight: 700; line-height: 1.2; text-transform: uppercase; }
+    .hero p { color: #333; font-size: 18px; }
+    .hero .btn { background-color: #00ff00; color: #fff; padding: 12px 24px; border-radius: 4px; }
+    .hero { padding: 80px 20px; background-color: #f5f5f5; }
+  </style></head><body>
+    <section class="hero">
+      <h1>Title</h1>
+      <p>Body</p>
+      <a href="/x" class="btn">Go</a>
+    </section>
+  </body></html>`;
+  const sections = extractSectionsFromPage(html, "home", "css-translator-fixture");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sec = sections[0].nativeElementor as any;
+  assert.ok(sec, "section must be decomposed natively");
+
+  // Section background + padding picked up from CSS.
+  assert.equal(sec.settings.background_color, "#f5f5f5", "section background_color from CSS");
+  assert.ok(sec.settings._padding, "section padding shape present");
+  assert.equal(sec.settings._padding.top, "80");
+  assert.equal(sec.settings._padding.right, "20");
+
+  const widgets = sec.elements[0].elements;
+  const heading = widgets.find((w: { widgetType: string }) => w.widgetType === "heading");
+  assert.equal(heading.settings.title_color, "#ff0000", "heading color");
+  assert.equal(heading.settings.typography_typography, "custom", "typography unlocked");
+  assert.equal(heading.settings.typography_font_size.size, 48);
+  assert.equal(heading.settings.typography_font_size.unit, "px");
+  assert.equal(heading.settings.typography_font_weight, "700");
+  assert.equal(heading.settings.typography_text_transform, "uppercase");
+  assert.equal(heading.settings.typography_line_height.size, 1.2);
+  assert.equal(heading.settings.typography_line_height.unit, "em", "unitless line-height stored as em");
+
+  const text = widgets.find((w: { widgetType: string }) => w.widgetType === "text-editor");
+  assert.equal(text.settings.text_color, "#333");
+  assert.equal(text.settings.typography_font_size.size, 18);
+
+  const button = widgets.find((w: { widgetType: string }) => w.widgetType === "button");
+  assert.equal(button.settings.background_color, "#00ff00", "button background from CSS");
+  assert.equal(button.settings.button_text_color, "#fff", "button text color from CSS");
+  assert.equal(button.settings._padding.top, "12");
+  assert.equal(button.settings._padding.right, "24");
+  assert.ok(button.settings._border_radius, "border-radius shape present");
+  assert.equal(button.settings._border_radius.top, "4");
+});
+
+test("css translator: inline style overrides stylesheet for the same element", () => {
+  const html = `<!doctype html><html><head><style>
+    .hero h1 { color: #ff0000; }
+  </style></head><body>
+    <section class="hero">
+      <h1 style="color: #0000ff">Title</h1>
+    </section>
+  </body></html>`;
+  const sections = extractSectionsFromPage(html, "home", "css-inline-fixture");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sec = sections[0].nativeElementor as any;
+  const heading = sec.elements[0].elements.find((w: { widgetType: string }) => w.widgetType === "heading");
+  assert.equal(heading.settings.title_color, "#0000ff", "inline style must beat the stylesheet");
+});
+
+test("css translator: malformed CSS does not crash the pipeline", () => {
+  const html = `<!doctype html><html><head><style>
+    this is not valid css { broken
+    .hero h1 { color: red; }
+  </style></head><body>
+    <section class="hero"><h1>OK</h1></section>
+  </body></html>`;
+  // Should not throw; partial parsing recovery is acceptable.
+  const sections = extractSectionsFromPage(html, "home", "css-broken-fixture");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sec = sections[0].nativeElementor as any;
+  assert.ok(sec, "section must still decompose despite bad CSS");
+});
+
+test("css translator: tolerant parsing keeps valid rules around a broken one", () => {
+  // The broken middle rule must not wipe out the trailing valid rule.
+  // .broken has an invalid declaration (color value missing), but the
+  // braces balance so the parser can recover and continue.
+  const html = `<!doctype html><html><head><style>
+    .hero h1 { color: rgb(10, 20, 30); }
+    .broken { color: ; %%%%; }
+    .hero p { color: rgb(40, 50, 60); }
+  </style></head><body>
+    <section class="hero"><h1>Title</h1><p>Body</p></section>
+  </body></html>`;
+  const sections = extractSectionsFromPage(html, "home", "css-tolerant-fixture");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sec = sections[0].nativeElementor as any;
+  const widgets = sec.elements[0].elements as Array<{ widgetType: string; settings: Record<string, unknown> }>;
+  const h1 = widgets.find((w) => w.widgetType === "heading");
+  const p = widgets.find((w) => w.widgetType === "text-editor");
+  assert.equal(h1?.settings.title_color, "rgb(10, 20, 30)", "h1 rule must survive");
+  // The text-editor color rule sits *after* the broken block; if the
+  // sheet was discarded wholesale, this would be undefined.
+  assert.equal(p?.settings.text_color, "rgb(40, 50, 60)", "rule after broken block must still apply");
+});
+
+test("css translator: stylesheet !important beats inline normal", () => {
+  const html = `<!doctype html><html><head><style>
+    .hero h1 { color: red !important; }
+  </style></head><body>
+    <section class="hero"><h1 style="color: blue">Hi</h1></section>
+  </body></html>`;
+  const sections = extractSectionsFromPage(html, "home", "important-fixture");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sec = sections[0].nativeElementor as any;
+  const heading = sec.elements[0].elements.find((w: { widgetType: string }) => w.widgetType === "heading");
+  assert.equal(heading.settings.title_color, "red", "stylesheet !important must beat inline normal");
+});
+
+test("css translator: inline !important beats stylesheet !important", () => {
+  const html = `<!doctype html><html><head><style>
+    .hero h1 { color: red !important; }
+  </style></head><body>
+    <section class="hero"><h1 style="color: green !important">Hi</h1></section>
+  </body></html>`;
+  const sections = extractSectionsFromPage(html, "home", "inline-imp-fixture");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sec = sections[0].nativeElementor as any;
+  const heading = sec.elements[0].elements.find((w: { widgetType: string }) => w.widgetType === "heading");
+  assert.equal(heading.settings.title_color, "green", "inline !important wins overall");
+});
+
+test("css translator: inheritable color/typography flow from ancestor to widget", () => {
+  // `.hero` only sets color/font-size on the SECTION; the H1 inherits.
+  const html = `<!doctype html><html><head><style>
+    .hero { color: rgb(11, 22, 33); font-size: 40px; font-family: Inter, sans-serif; }
+  </style></head><body>
+    <section class="hero"><h1>Inherits</h1></section>
+  </body></html>`;
+  const sections = extractSectionsFromPage(html, "home", "inherit-fixture");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sec = sections[0].nativeElementor as any;
+  const heading = sec.elements[0].elements.find((w: { widgetType: string }) => w.widgetType === "heading");
+  assert.equal(heading.settings.title_color, "rgb(11, 22, 33)", "color must be inherited from .hero");
+  assert.equal(
+    (heading.settings.typography_font_size as { size: number; unit: string }).size,
+    40,
+    "font-size must be inherited from .hero",
+  );
+  assert.equal(heading.settings.typography_font_family, "Inter", "font-family must be inherited");
+});
