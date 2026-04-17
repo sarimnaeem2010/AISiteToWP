@@ -237,7 +237,7 @@ export default function NewProject() {
               </TabsContent>
               <TabsContent value="html" className="mt-4">
                 <div className="space-y-2">
-                  <Label htmlFor="html-content" className="font-mono text-xs uppercase tracking-wider text-muted-foreground">Raw HTML Output</Label>
+                  <Label htmlFor="html-content" className="font-mono text-xs uppercase tracking-wider text-muted-foreground">HTML Source</Label>
                   <Textarea
                     id="html-content"
                     placeholder="<!DOCTYPE html>&#10;<html>&#10;..."

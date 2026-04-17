@@ -833,7 +833,7 @@ export default function ProjectWorkspace() {
                           <div className="space-y-0.5">
                             <FormLabel className="font-mono">Advanced Custom Fields</FormLabel>
                             <FormDescription>
-                              Map parsed data to ACF fields instead of raw block content.
+                              Map parsed data to ACF fields backing the Elementor widgets in the generated child theme.
                             </FormDescription>
                           </div>
                           <FormControl>

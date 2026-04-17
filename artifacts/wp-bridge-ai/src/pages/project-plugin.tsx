@@ -90,7 +90,7 @@ export default function ProjectPlugin() {
               </CardTitle>
               <CardDescription className="mt-2">
                 This plugin creates the REST API endpoints necessary to receive the parsed structure.
-                It includes authentication and Block/ACF generation logic specifically tailored for <strong>{project?.name || "this project"}</strong>.
+                It includes authentication and Elementor widget/ACF import logic specifically tailored for <strong>{project?.name || "this project"}</strong>.
               </CardDescription>
             </div>
             <div className="flex gap-2">
