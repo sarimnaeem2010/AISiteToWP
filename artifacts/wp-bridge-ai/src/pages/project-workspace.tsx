@@ -160,11 +160,12 @@ export default function ProjectWorkspace() {
 
   const apiBase = import.meta.env.BASE_URL;
   const proj = project as any;
-  const renderer: "gutenberg" | "elementor" = proj.renderer === "elementor" ? "elementor" : "gutenberg";
+  const renderer: "gutenberg" | "elementor" | "raw_html" =
+    proj.renderer === "elementor" ? "elementor" : proj.renderer === "raw_html" ? "raw_html" : "gutenberg";
   const cpts: Array<{ slug: string; label: string; pluralLabel: string; sourceSemanticType: string; fields: string[]; enabled: boolean }> =
     Array.isArray(proj.customPostTypes) ? proj.customPostTypes : [];
 
-  const setRenderer = async (value: "gutenberg" | "elementor") => {
+  const setRenderer = async (value: "gutenberg" | "elementor" | "raw_html") => {
     try {
       const res = await fetch(`${apiBase}api/projects/${id}/renderer`, {
         method: "PUT",
@@ -428,11 +429,12 @@ export default function ProjectWorkspace() {
                     )}
                     <div className="space-y-2">
                       <Label className="font-mono">Page Renderer</Label>
-                      <div className="grid grid-cols-2 gap-2">
+                      <div className="grid grid-cols-3 gap-2">
                         <button
                           type="button"
                           onClick={() => setRenderer("gutenberg")}
                           className={`text-left rounded-md border p-3 text-xs font-mono ${renderer === "gutenberg" ? "border-primary bg-primary/10" : "border-border bg-muted/20"}`}
+                          data-testid="renderer-gutenberg"
                         >
                           <div className="font-semibold uppercase tracking-wider flex items-center gap-1.5">
                             <Layers className="h-3.5 w-3.5" /> Gutenberg
@@ -443,14 +445,30 @@ export default function ProjectWorkspace() {
                           type="button"
                           onClick={() => setRenderer("elementor")}
                           className={`text-left rounded-md border p-3 text-xs font-mono ${renderer === "elementor" ? "border-primary bg-primary/10" : "border-border bg-muted/20"}`}
+                          data-testid="renderer-elementor"
                         >
                           <div className="font-semibold uppercase tracking-wider flex items-center gap-1.5">
                             <Sparkles className="h-3.5 w-3.5" /> Elementor
                           </div>
                           <div className="text-muted-foreground mt-1">Editable in Elementor builder</div>
                         </button>
+                        <button
+                          type="button"
+                          onClick={() => setRenderer("raw_html")}
+                          className={`text-left rounded-md border p-3 text-xs font-mono ${renderer === "raw_html" ? "border-primary bg-primary/10" : "border-border bg-muted/20"}`}
+                          data-testid="renderer-raw-html"
+                        >
+                          <div className="font-semibold uppercase tracking-wider flex items-center gap-1.5">
+                            <FileCode2 className="h-3.5 w-3.5" /> Raw HTML
+                          </div>
+                          <div className="text-muted-foreground mt-1">Preserve original design 1:1</div>
+                        </button>
                       </div>
-                      <p className="text-[10px] text-muted-foreground">Requires Elementor plugin installed on target WordPress site.</p>
+                      <p className="text-[10px] text-muted-foreground">
+                        {renderer === "elementor" && "Requires Elementor plugin installed on target WordPress site."}
+                        {renderer === "raw_html" && "Pushes your uploaded HTML + inline CSS as-is. Use a blank/minimal theme on WordPress for best results."}
+                        {renderer === "gutenberg" && "Default. Maps parsed sections to native WordPress blocks."}
+                      </p>
                     </div>
                     <FormField
                       control={form.control}

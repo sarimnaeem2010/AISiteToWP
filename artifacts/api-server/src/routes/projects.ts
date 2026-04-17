@@ -24,6 +24,30 @@ import { pageToElementorData } from "../lib/elementorGenerator";
 import type { SuggestedCpt } from "../lib/aiAnalyzer";
 import AdmZip from "adm-zip";
 import { z } from "zod";
+import { JSDOM } from "jsdom";
+
+/**
+ * Extract a self-contained HTML fragment that can be embedded inside a
+ * WordPress page (core/html block). Pulls inline <style> tags from <head>
+ * plus the inner contents of <body>. External CSS/JS via <link>/<script src>
+ * is preserved as-is so absolute URLs continue to work.
+ */
+function extractRenderableHtml(rawHtml: string): string {
+  try {
+    const dom = new JSDOM(rawHtml);
+    const doc = dom.window.document;
+    const styleTags = Array.from(doc.querySelectorAll("head style"))
+      .map((el) => `<style>${el.textContent ?? ""}</style>`)
+      .join("\n");
+    const linkTags = Array.from(doc.querySelectorAll('head link[rel="stylesheet"]'))
+      .map((el) => el.outerHTML)
+      .join("\n");
+    const bodyInner = doc.body ? doc.body.innerHTML : rawHtml;
+    return `${linkTags}\n${styleTags}\n<div class="wp-bridge-raw-html">${bodyInner}</div>`;
+  } catch {
+    return rawHtml;
+  }
+}
 
 function suggestedToCpts(suggested: SuggestedCpt[] | undefined): CustomPostTypeDef[] {
   if (!Array.isArray(suggested)) return [];
@@ -37,7 +61,7 @@ function suggestedToCpts(suggested: SuggestedCpt[] | undefined): CustomPostTypeD
   }));
 }
 
-const RendererSchema = z.object({ renderer: z.enum(["gutenberg", "elementor"]) });
+const RendererSchema = z.object({ renderer: z.enum(["gutenberg", "elementor", "raw_html"]) });
 const CustomPostTypesSchema = z.object({
   customPostTypes: z.array(
     z.object({
@@ -248,6 +272,7 @@ router.post("/projects/:id/parse", async (req, res): Promise<void> => {
       wpStructure: wpStructure as never,
       aiAnalysis: (aiAnalysis ?? null) as never,
       customPostTypes: mergedCpts as never,
+      sourceHtml: body.data.htmlContent,
       pageCount: parsedSite.pages.length,
     })
     .where(eq(projectsTable.id, project.id));
@@ -462,9 +487,11 @@ router.post("/projects/:id/push", async (req, res): Promise<void> => {
     pages: Array<{ title: string; slug: string; blocks: unknown[] }>;
     cptItems?: Array<{ cptSlug: string; title: string; fields: Record<string, unknown> }>;
   };
-  const renderer = (project.renderer === "elementor" ? "elementor" : "gutenberg") as
-    | "elementor"
-    | "gutenberg";
+  const renderer = (project.renderer === "elementor"
+    ? "elementor"
+    : project.renderer === "raw_html"
+      ? "raw_html"
+      : "gutenberg") as "elementor" | "gutenberg" | "raw_html";
 
   // Build elementor data per page when elementor renderer is selected
   const elementorPages =
@@ -474,6 +501,25 @@ router.post("/projects/:id/push", async (req, res): Promise<void> => {
           data: pageToElementorData(p as never),
         }))
       : undefined;
+
+  // Raw HTML mode: replace each page's blocks with a single core/html block
+  // containing the original source HTML (styles inlined). This preserves
+  // the original design pixel-for-pixel.
+  let pagesPayload = wpStructure.pages;
+  if (renderer === "raw_html") {
+    const sourceHtml = project.sourceHtml ?? "";
+    if (!sourceHtml) {
+      res.status(400).json({
+        error: "No source HTML stored for this project. Re-upload and re-parse the site to use Raw HTML mode.",
+      });
+      return;
+    }
+    const inlineHtml = extractRenderableHtml(sourceHtml);
+    pagesPayload = wpStructure.pages.map((p) => ({
+      ...p,
+      blocks: [{ blockType: "core/html", fields: { content: inlineHtml } }] as unknown[],
+    }));
+  }
 
   const result = await pushToWordPress(
     {
@@ -485,7 +531,7 @@ router.post("/projects/:id/push", async (req, res): Promise<void> => {
       useAcf: project.useAcf === "true",
     },
     {
-      pages: wpStructure.pages,
+      pages: pagesPayload,
       cptItems: wpStructure.cptItems ?? [],
       renderer,
       elementorPages,
@@ -659,6 +705,7 @@ router.post("/projects/:id/upload-zip", upload.single("file"), async (req, res):
       aiAnalysis: (aiAnalysis ?? null) as never,
       customPostTypes: mergedCpts as never,
       uploadedFiles: { files: extracted.files, indexPath: extracted.indexPath } as never,
+      sourceHtml: extracted.indexHtml,
       pageCount: parsedSite.pages.length,
     })
     .where(eq(projectsTable.id, project.id));
