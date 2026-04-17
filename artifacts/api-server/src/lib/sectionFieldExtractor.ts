@@ -655,14 +655,24 @@ export function extractSectionsFromPage(
     // When decomposition succeeds we ship the native Elementor tree and
     // skip the custom widget entirely — fields/groups/template stay
     // empty and the theme generator omits the PHP widget class.
+    // Native decomposition is opt-in via env flag. The legacy
+    // custom-widget pipeline preserves the original markup + CSS
+    // verbatim and is the safe default; the native path is still
+    // experimental — for sites with interactive components (canvas,
+    // SVG widgets, custom data-* hooks) it can break visual fidelity
+    // because Elementor's default widget styles override the site CSS.
+    // Set NATIVE_ELEMENTOR_DECOMPOSER=1 to enable it.
+    const nativeEnabled = process.env.NATIVE_ELEMENTOR_DECOMPOSER === "1";
     const cleanClone = el.cloneNode(true) as Element;
     let nativeElementor: unknown | undefined;
-    try {
-      const decomposed = decomposeSectionToNative(cleanClone, projectSlug, idx, pageSlug, sheet);
-      if (decomposed) nativeElementor = decomposed;
-    } catch {
-      // Decomposition is best-effort — never block the import.
-      nativeElementor = undefined;
+    if (nativeEnabled) {
+      try {
+        const decomposed = decomposeSectionToNative(cleanClone, projectSlug, idx, pageSlug, sheet);
+        if (decomposed) nativeElementor = decomposed;
+      } catch {
+        // Decomposition is best-effort — never block the import.
+        nativeElementor = undefined;
+      }
     }
 
     if (nativeElementor) {
