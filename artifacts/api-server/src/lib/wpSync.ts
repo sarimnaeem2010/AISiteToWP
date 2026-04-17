@@ -133,19 +133,34 @@ function blocksToGutenbergContent(blocks: WpBlock[]): string {
     }
 
     if (blockType === "core/cover") {
-      lines.push(`<!-- wp:cover {"dimRatio":50} -->`);
-      lines.push(`<div class="wp-block-cover"><div class="wp-block-cover__inner-container">`);
-      if (fields.headline) {
-        lines.push(`<!-- wp:heading --><h2 class="wp-block-heading">${String(fields.headline)}</h2><!-- /wp:heading -->`);
+      const headline = fields.headline ? String(fields.headline) : "";
+      const subheadline = fields.subheadline ? String(fields.subheadline) : "";
+      const ctaText = fields.cta_text ? String(fields.cta_text) : "";
+      const bgImage = fields.background_image ? String(fields.background_image) : "";
+      // Skip empty covers (would otherwise render as the theme's default placeholder pattern)
+      if (!headline && !subheadline && !ctaText && !bgImage) continue;
+      if (bgImage) {
+        lines.push(`<!-- wp:cover {"url":"${bgImage}","dimRatio":50} -->`);
+        lines.push(`<div class="wp-block-cover"><img class="wp-block-cover__image-background" src="${bgImage}" alt=""/><span aria-hidden="true" class="wp-block-cover__background has-background-dim"></span><div class="wp-block-cover__inner-container">`);
+      } else {
+        lines.push(`<!-- wp:group {"layout":{"type":"constrained"}} -->`);
+        lines.push(`<div class="wp-block-group">`);
       }
-      if (fields.subheadline) {
-        lines.push(`<!-- wp:paragraph --><p>${String(fields.subheadline)}</p><!-- /wp:paragraph -->`);
+      if (headline) {
+        lines.push(`<!-- wp:heading --><h2 class="wp-block-heading">${headline}</h2><!-- /wp:heading -->`);
       }
-      if (fields.cta_text) {
+      if (subheadline) {
+        lines.push(`<!-- wp:paragraph --><p>${subheadline}</p><!-- /wp:paragraph -->`);
+      }
+      if (ctaText) {
         const ctaUrl = String(fields.cta_url || "#");
-        lines.push(`<!-- wp:buttons --><div class="wp-block-buttons"><!-- wp:button --><div class="wp-block-button"><a class="wp-block-button__link" href="${ctaUrl}">${String(fields.cta_text)}</a></div><!-- /wp:button --></div><!-- /wp:buttons -->`);
+        lines.push(`<!-- wp:buttons --><div class="wp-block-buttons"><!-- wp:button --><div class="wp-block-button"><a class="wp-block-button__link" href="${ctaUrl}">${ctaText}</a></div><!-- /wp:button --></div><!-- /wp:buttons -->`);
       }
-      lines.push(`</div></div><!-- /wp:cover -->`);
+      if (bgImage) {
+        lines.push(`</div></div><!-- /wp:cover -->`);
+      } else {
+        lines.push(`</div><!-- /wp:group -->`);
+      }
       continue;
     }
 

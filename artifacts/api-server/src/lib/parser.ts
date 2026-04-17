@@ -222,6 +222,26 @@ export async function parseHtml(html: string): Promise<{
   return { ...heuristic, aiAnalysis: null };
 }
 
+/**
+ * Parse a single HTML file into one ParsedPage with the given name/slug.
+ * Used when extracting multi-page sites from a ZIP so each .html becomes
+ * its own editable WordPress page.
+ */
+export async function parseSingleHtmlPage(
+  html: string,
+  pageName: string,
+  pageSlug: string,
+): Promise<{ page: ParsedPage; designSystem: DesignSystem; aiAnalysis: AiAnalysis | null }> {
+  const { parsedSite, designSystem, aiAnalysis } = await parseHtml(html);
+  const sections = parsedSite.pages[0]?.sections ?? [];
+  const fallbackName = parsedSite.pages[0]?.name || pageName;
+  return {
+    page: { name: fallbackName, slug: pageSlug, sections },
+    designSystem,
+    aiAnalysis,
+  };
+}
+
 function parseHtmlHeuristic(html: string): {
   parsedSite: ParsedSite;
   designSystem: DesignSystem;

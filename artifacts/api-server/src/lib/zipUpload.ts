@@ -6,10 +6,17 @@ export interface ExtractedFile {
   type: "html" | "css" | "js" | "image" | "other";
 }
 
+export interface ExtractedHtmlPage {
+  path: string;
+  content: string;
+  depth: number;
+}
+
 export interface ExtractedProject {
   files: ExtractedFile[];
   indexHtml: string;
   indexPath: string;
+  htmlPages: ExtractedHtmlPage[];
   cssFiles: { path: string; content: string }[];
 }
 
@@ -87,6 +94,7 @@ export function extractZip(buffer: Buffer): ExtractedProject {
     files,
     indexHtml: pick.content,
     indexPath: pick.path,
+    htmlPages: htmlCandidates,
     cssFiles,
   };
 }

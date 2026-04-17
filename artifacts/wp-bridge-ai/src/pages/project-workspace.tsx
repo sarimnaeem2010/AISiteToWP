@@ -533,7 +533,7 @@ export default function ProjectWorkspace() {
                     )}
                     <div className="space-y-2">
                       <Label className="font-mono">Page Renderer</Label>
-                      <div className="grid grid-cols-3 gap-2">
+                      <div className="grid grid-cols-2 gap-2">
                         <button
                           type="button"
                           onClick={() => setRenderer("gutenberg")}
@@ -556,22 +556,11 @@ export default function ProjectWorkspace() {
                           </div>
                           <div className="text-muted-foreground mt-1">Editable in Elementor builder</div>
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => setRenderer("raw_html")}
-                          className={`text-left rounded-md border p-3 text-xs font-mono ${renderer === "raw_html" ? "border-primary bg-primary/10" : "border-border bg-muted/20"}`}
-                          data-testid="renderer-raw-html"
-                        >
-                          <div className="font-semibold uppercase tracking-wider flex items-center gap-1.5">
-                            <FileCode2 className="h-3.5 w-3.5" /> Raw HTML
-                          </div>
-                          <div className="text-muted-foreground mt-1">Preserve original design 1:1</div>
-                        </button>
                       </div>
                       <p className="text-[10px] text-muted-foreground">
-                        {renderer === "elementor" && "Requires Elementor plugin installed on target WordPress site."}
-                        {renderer === "raw_html" && "Pushes your uploaded HTML + inline CSS as-is. Use a blank/minimal theme on WordPress for best results."}
-                        {renderer === "gutenberg" && "Default. Maps parsed sections to native WordPress blocks."}
+                        {renderer === "elementor"
+                          ? "Requires Elementor plugin installed on target WordPress site."
+                          : "Default. Maps every page in your ZIP to native WordPress blocks."}
                       </p>
                     </div>
                     <FormField

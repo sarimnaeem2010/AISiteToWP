@@ -14,7 +14,7 @@ import {
   PushToWordPressParams,
   GeneratePluginParams,
 } from "@workspace/api-zod";
-import { parseHtml } from "../lib/parser";
+import { parseHtml, parseSingleHtmlPage, type ParsedPage, type ParsedSite, type DesignSystem } from "../lib/parser";
 import { mapToWordPress, type CustomPostTypeDef } from "../lib/wpMapper";
 import { testConnection, pushToWordPress } from "../lib/wpSync";
 import { generateApiKey, generateWordPressPlugin } from "../lib/pluginGenerator";
@@ -686,7 +686,49 @@ router.post("/projects/:id/upload-zip", upload.single("file"), async (req, res):
     return;
   }
 
-  const { parsedSite, designSystem, aiAnalysis } = await parseHtml(extracted.indexHtml);
+  // Parse EVERY HTML file in the ZIP into its own ParsedPage so the user
+  // gets a fully editable WordPress page per source page (index.html → home,
+  // templates.html → templates, about.html → about, etc.).
+  const usedSlugs = new Set<string>();
+  const parsedPages: ParsedPage[] = [];
+  let mergedDesignSystem: DesignSystem | null = null;
+  let mergedAiAnalysis: { suggestedCpts?: SuggestedCpt[] } | null = null;
+  for (const htmlPage of extracted.htmlPages) {
+    const baseName = htmlPage.path.split("/").pop()?.replace(/\.html?$/i, "") || "page";
+    const isIndex = /^index$/i.test(baseName);
+    let slug = isIndex ? "home" : baseName.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
+    if (!slug) slug = "page";
+    let unique = slug;
+    let n = 1;
+    while (usedSlugs.has(unique)) {
+      unique = `${slug}-${++n}`;
+    }
+    usedSlugs.add(unique);
+    const niceName = isIndex
+      ? "Home"
+      : baseName.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+    try {
+      const { page, designSystem, aiAnalysis } = await parseSingleHtmlPage(htmlPage.content, niceName, unique);
+      parsedPages.push(page);
+      if (!mergedDesignSystem) mergedDesignSystem = designSystem;
+      if (aiAnalysis && !mergedAiAnalysis) {
+        mergedAiAnalysis = { suggestedCpts: aiAnalysis.suggestedCpts };
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Skip pages that fail to parse but keep going so the rest of the site still imports.
+      // (Parse errors usually mean malformed/empty HTML.)
+      console.warn(`Skipping page ${htmlPage.path}: ${msg}`);
+    }
+  }
+  if (parsedPages.length === 0) {
+    res.status(400).json({ error: "Could not parse any HTML pages from ZIP" });
+    return;
+  }
+  const parsedSite: ParsedSite = { pages: parsedPages };
+  const designSystem = mergedDesignSystem ?? { font: "system-ui", colors: [], buttonStyle: "rounded", headingStyle: "bold" };
+  const aiAnalysis = mergedAiAnalysis;
+
   const existingCpts = (project.customPostTypes as CustomPostTypeDef[] | null) ?? [];
   const suggested = suggestedToCpts(aiAnalysis?.suggestedCpts);
   const mergedCpts: CustomPostTypeDef[] = [
@@ -713,6 +755,8 @@ router.post("/projects/:id/upload-zip", upload.single("file"), async (req, res):
   res.json({
     fileCount: extracted.files.length,
     indexPath: extracted.indexPath,
+    pagesParsed: parsedPages.length,
+    pageSlugs: parsedPages.map((p) => p.slug),
     parsedSite,
     designSystem,
     wpStructure,
