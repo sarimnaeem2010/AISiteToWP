@@ -505,6 +505,13 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
         if ( $native === '' ) return;
         $sel       = $this->wpb_leaf_selector( $g );
         $section_id = 'wpb_grp_style_' . preg_replace( '/[^a-zA-Z0-9_]/', '_', $g['id'] ?? 'g' );
+        // Per-leaf style defaults resolved from the page's cascaded CSS
+        // at extraction time. Keys in this map correspond to the
+        // control id suffixes registered below; missing keys mean
+        // "fall back to Elementor's own default" (i.e. blank).
+        $defaults = ( isset( $g['defaultStyles'] ) && is_array( $g['defaultStyles'] ) )
+            ? $g['defaultStyles']
+            : array();
         $this->start_controls_section( $section_id, array(
             'label' => esc_html( ( $g['label'] ?? 'Style' ) . ' — Style' ),
             'tab'   => \\Elementor\\Controls_Manager::TAB_STYLE,
@@ -512,7 +519,7 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
         // Alignment is universal — every native content widget surfaces
         // it under the Style tab. Map it to text-align so it lands on
         // both inline (heading/text) and block (button/image) leaves.
-        $this->add_responsive_control( $g['id'] . '_native_align', array(
+        $align_args = array(
             'label'     => esc_html__( 'Alignment', 'wpb' ),
             'type'      => \\Elementor\\Controls_Manager::CHOOSE,
             'options'   => array(
@@ -522,7 +529,11 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
                 'justify' => array( 'title' => esc_html__( 'Justified', 'wpb' ), 'icon' => 'eicon-text-align-justify' ),
             ),
             'selectors' => array( $sel => 'text-align: {{VALUE}};' ),
-        ) );
+        );
+        if ( ! empty( $defaults['text_align'] ) && in_array( $defaults['text_align'], array( 'left', 'center', 'right', 'justify' ), true ) ) {
+            $align_args['default'] = $defaults['text_align'];
+        }
+        $this->add_responsive_control( $g['id'] . '_native_align', $align_args );
 
         if ( in_array( $native, array( 'heading', 'text-editor', 'button', 'icon-list' ), true ) ) {
             // Heading-only Size preset: mirrors the native Heading
@@ -553,22 +564,34 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
                     'selectors' => array( $sel => '{{VALUE}};' ),
                 ) );
             }
-            $this->add_control( $g['id'] . '_native_color', array(
+            $color_args = array(
                 'label'     => esc_html__( 'Text Color', 'wpb' ),
                 'type'      => \\Elementor\\Controls_Manager::COLOR,
                 'selectors' => array( $sel => 'color: {{VALUE}};' ),
-            ) );
+            );
+            if ( ! empty( $defaults['color'] ) ) $color_args['default'] = (string) $defaults['color'];
+            $this->add_control( $g['id'] . '_native_color', $color_args );
             // Group_Control_Typography ships with every Elementor build
             // since 1.0, but we still guard with class_exists so a
             // missing symbol can never fatal the editor on legacy
-            // installs.
+            // installs. The defaults branch flips typography_typography
+            // to "custom" (Elementor's "I have my own values" marker)
+            // and seeds each subfield via fields_options.
             if ( class_exists( '\\Elementor\\Group_Control_Typography' ) ) {
+                $typo_args = array(
+                    'name'     => $g['id'] . '_native_typo',
+                    'selector' => $sel,
+                );
+                if ( isset( $defaults['typography'] ) && is_array( $defaults['typography'] ) && count( $defaults['typography'] ) > 0 ) {
+                    $fields_options = array( 'typography' => array( 'default' => 'custom' ) );
+                    foreach ( $defaults['typography'] as $fkey => $fval ) {
+                        $fields_options[ $fkey ] = array( 'default' => $fval );
+                    }
+                    $typo_args['fields_options'] = $fields_options;
+                }
                 $this->add_group_control(
                     \\Elementor\\Group_Control_Typography::get_type(),
-                    array(
-                        'name'     => $g['id'] . '_native_typo',
-                        'selector' => $sel,
-                    )
+                    $typo_args
                 );
             }
             if ( class_exists( '\\Elementor\\Group_Control_Text_Shadow' ) ) {
@@ -623,11 +646,13 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
             // widget's two-state Style tab. We also add Border, Border
             // Radius and Padding which together make a button feel like
             // a real Elementor Button when edited.
-            $this->add_control( $g['id'] . '_native_bg', array(
+            $bg_args = array(
                 'label'     => esc_html__( 'Background Color', 'wpb' ),
                 'type'      => \\Elementor\\Controls_Manager::COLOR,
                 'selectors' => array( $sel => 'background-color: {{VALUE}};' ),
-            ) );
+            );
+            if ( ! empty( $defaults['background_color'] ) ) $bg_args['default'] = (string) $defaults['background_color'];
+            $this->add_control( $g['id'] . '_native_bg', $bg_args );
             $this->add_control( $g['id'] . '_native_bg_hover', array(
                 'label'     => esc_html__( 'Background Color (Hover)', 'wpb' ),
                 'type'      => \\Elementor\\Controls_Manager::COLOR,
@@ -639,30 +664,49 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
                 'selectors' => array( $sel . ':hover' => 'color: {{VALUE}};' ),
             ) );
             if ( class_exists( '\\Elementor\\Group_Control_Border' ) ) {
+                $border_args = array(
+                    'name'     => $g['id'] . '_native_border',
+                    'selector' => $sel,
+                );
+                if ( isset( $defaults['border'] ) && is_array( $defaults['border'] ) ) {
+                    $bf = array( 'border' => array( 'default' => isset( $defaults['border']['border'] ) ? (string) $defaults['border']['border'] : 'solid' ) );
+                    if ( isset( $defaults['border']['width'] ) && is_array( $defaults['border']['width'] ) ) {
+                        $bf['width'] = array( 'default' => $defaults['border']['width'] );
+                    }
+                    if ( ! empty( $defaults['border']['color'] ) ) {
+                        $bf['color'] = array( 'default' => (string) $defaults['border']['color'] );
+                    }
+                    $border_args['fields_options'] = $bf;
+                }
                 $this->add_group_control(
                     \\Elementor\\Group_Control_Border::get_type(),
-                    array(
-                        'name'     => $g['id'] . '_native_border',
-                        'selector' => $sel,
-                    )
+                    $border_args
                 );
             }
-            $this->add_responsive_control( $g['id'] . '_native_radius', array(
+            $radius_args = array(
                 'label'      => esc_html__( 'Border Radius', 'wpb' ),
                 'type'       => \\Elementor\\Controls_Manager::DIMENSIONS,
                 'size_units' => array( 'px', '%', 'em' ),
                 'selectors'  => array( $sel => 'border-radius: {{TOP}}{{UNIT}} {{RIGHT}}{{UNIT}} {{BOTTOM}}{{UNIT}} {{LEFT}}{{UNIT}};' ),
-            ) );
-            $this->add_responsive_control( $g['id'] . '_native_padding', array(
+            );
+            if ( isset( $defaults['border_radius'] ) && is_array( $defaults['border_radius'] ) ) {
+                $radius_args['default'] = $defaults['border_radius'];
+            }
+            $this->add_responsive_control( $g['id'] . '_native_radius', $radius_args );
+            $padding_args = array(
                 'label'      => esc_html__( 'Padding', 'wpb' ),
                 'type'       => \\Elementor\\Controls_Manager::DIMENSIONS,
                 'size_units' => array( 'px', '%', 'em' ),
                 'selectors'  => array( $sel => 'padding: {{TOP}}{{UNIT}} {{RIGHT}}{{UNIT}} {{BOTTOM}}{{UNIT}} {{LEFT}}{{UNIT}};' ),
-            ) );
+            );
+            if ( isset( $defaults['padding'] ) && is_array( $defaults['padding'] ) ) {
+                $padding_args['default'] = $defaults['padding'];
+            }
+            $this->add_responsive_control( $g['id'] . '_native_padding', $padding_args );
         }
 
         if ( $native === 'image' ) {
-            $this->add_responsive_control( $g['id'] . '_native_width', array(
+            $width_args = array(
                 'label'      => esc_html__( 'Width', 'wpb' ),
                 'type'       => \\Elementor\\Controls_Manager::SLIDER,
                 'size_units' => array( 'px', '%', 'vw' ),
@@ -671,14 +715,18 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
                     '%'  => array( 'min' => 0, 'max' => 100 ),
                 ),
                 'selectors'  => array( $sel => 'width: {{SIZE}}{{UNIT}}; height: auto;' ),
-            ) );
-            $this->add_responsive_control( $g['id'] . '_native_max_width', array(
+            );
+            if ( isset( $defaults['width'] ) && is_array( $defaults['width'] ) ) $width_args['default'] = $defaults['width'];
+            $this->add_responsive_control( $g['id'] . '_native_width', $width_args );
+            $maxw_args = array(
                 'label'      => esc_html__( 'Max Width', 'wpb' ),
                 'type'       => \\Elementor\\Controls_Manager::SLIDER,
                 'size_units' => array( 'px', '%' ),
                 'range'      => array( 'px' => array( 'min' => 0, 'max' => 1600 ) ),
                 'selectors'  => array( $sel => 'max-width: {{SIZE}}{{UNIT}};' ),
-            ) );
+            );
+            if ( isset( $defaults['max_width'] ) && is_array( $defaults['max_width'] ) ) $maxw_args['default'] = $defaults['max_width'];
+            $this->add_responsive_control( $g['id'] . '_native_max_width', $maxw_args );
             $this->add_control( $g['id'] . '_native_opacity', array(
                 'label'      => esc_html__( 'Opacity', 'wpb' ),
                 'type'       => \\Elementor\\Controls_Manager::SLIDER,
@@ -686,46 +734,65 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
                 'selectors'  => array( $sel => 'opacity: {{SIZE}};' ),
             ) );
             if ( class_exists( '\\Elementor\\Group_Control_Border' ) ) {
+                $img_border_args = array(
+                    'name'     => $g['id'] . '_native_border',
+                    'selector' => $sel,
+                );
+                if ( isset( $defaults['border'] ) && is_array( $defaults['border'] ) ) {
+                    $bf = array( 'border' => array( 'default' => isset( $defaults['border']['border'] ) ? (string) $defaults['border']['border'] : 'solid' ) );
+                    if ( isset( $defaults['border']['width'] ) && is_array( $defaults['border']['width'] ) ) {
+                        $bf['width'] = array( 'default' => $defaults['border']['width'] );
+                    }
+                    if ( ! empty( $defaults['border']['color'] ) ) {
+                        $bf['color'] = array( 'default' => (string) $defaults['border']['color'] );
+                    }
+                    $img_border_args['fields_options'] = $bf;
+                }
                 $this->add_group_control(
                     \\Elementor\\Group_Control_Border::get_type(),
-                    array(
-                        'name'     => $g['id'] . '_native_border',
-                        'selector' => $sel,
-                    )
+                    $img_border_args
                 );
             }
-            $this->add_responsive_control( $g['id'] . '_native_radius', array(
+            $img_radius_args = array(
                 'label'      => esc_html__( 'Border Radius', 'wpb' ),
                 'type'       => \\Elementor\\Controls_Manager::DIMENSIONS,
                 'size_units' => array( 'px', '%' ),
                 'selectors'  => array( $sel => 'border-radius: {{TOP}}{{UNIT}} {{RIGHT}}{{UNIT}} {{BOTTOM}}{{UNIT}} {{LEFT}}{{UNIT}};' ),
-            ) );
+            );
+            if ( isset( $defaults['border_radius'] ) && is_array( $defaults['border_radius'] ) ) $img_radius_args['default'] = $defaults['border_radius'];
+            $this->add_responsive_control( $g['id'] . '_native_radius', $img_radius_args );
         }
 
         if ( $native === 'icon' ) {
-            $this->add_control( $g['id'] . '_native_icon_color', array(
+            $icon_color_args = array(
                 'label'     => esc_html__( 'Icon Color', 'wpb' ),
                 'type'      => \\Elementor\\Controls_Manager::COLOR,
                 'selectors' => array( $sel => 'color: {{VALUE}}; fill: {{VALUE}};' ),
-            ) );
+            );
+            if ( ! empty( $defaults['color'] ) ) $icon_color_args['default'] = (string) $defaults['color'];
+            $this->add_control( $g['id'] . '_native_icon_color', $icon_color_args );
             $this->add_control( $g['id'] . '_native_icon_color_hover', array(
                 'label'     => esc_html__( 'Icon Color (Hover)', 'wpb' ),
                 'type'      => \\Elementor\\Controls_Manager::COLOR,
                 'selectors' => array( $sel . ':hover' => 'color: {{VALUE}}; fill: {{VALUE}};' ),
             ) );
-            $this->add_responsive_control( $g['id'] . '_native_icon_size', array(
+            $icon_size_args = array(
                 'label'      => esc_html__( 'Size', 'wpb' ),
                 'type'       => \\Elementor\\Controls_Manager::SLIDER,
                 'size_units' => array( 'px', 'em' ),
                 'range'      => array( 'px' => array( 'min' => 6, 'max' => 300 ) ),
                 'selectors'  => array( $sel => 'font-size: {{SIZE}}{{UNIT}};' ),
-            ) );
-            $this->add_responsive_control( $g['id'] . '_native_icon_padding', array(
+            );
+            if ( isset( $defaults['icon_size'] ) && is_array( $defaults['icon_size'] ) ) $icon_size_args['default'] = $defaults['icon_size'];
+            $this->add_responsive_control( $g['id'] . '_native_icon_size', $icon_size_args );
+            $icon_pad_args = array(
                 'label'      => esc_html__( 'Padding', 'wpb' ),
                 'type'       => \\Elementor\\Controls_Manager::DIMENSIONS,
                 'size_units' => array( 'px', '%', 'em' ),
                 'selectors'  => array( $sel => 'padding: {{TOP}}{{UNIT}} {{RIGHT}}{{UNIT}} {{BOTTOM}}{{UNIT}} {{LEFT}}{{UNIT}};' ),
-            ) );
+            );
+            if ( isset( $defaults['padding'] ) && is_array( $defaults['padding'] ) ) $icon_pad_args['default'] = $defaults['padding'];
+            $this->add_responsive_control( $g['id'] . '_native_icon_padding', $icon_pad_args );
         }
 
         $this->end_controls_section();

@@ -1,7 +1,14 @@
 import { JSDOM } from "jsdom";
 import crypto from "node:crypto";
 import { decomposeSectionToNative } from "./nativeElementorDecomposer";
-import { parseStylesheet } from "./cssStyleResolver";
+import {
+  parseStylesheet,
+  computeStyles,
+  buildTypography,
+  parseDimensions,
+  parseLength,
+  type ParsedSheet,
+} from "./cssStyleResolver";
 
 export type FieldType = "text" | "url" | "attr" | "tag";
 
@@ -84,6 +91,62 @@ export interface ExtractedGroup {
    * leave the markup byte-identical to the source HTML.
    */
   leafClass: string;
+  /**
+   * Pre-shaped default values for the native-style sidebar controls,
+   * resolved from the page's cascaded CSS at extraction time. Lets the
+   * Elementor Style tab open with the original site's color, typography,
+   * border, padding etc. already populated instead of Elementor's empty
+   * defaults — so the editor accurately reflects the live page and an
+   * untouched widget round-trips visually identical to the source.
+   *
+   * Only emitted in `legacy_native` mode (the only mode where the
+   * matching native-style controls are registered). Each key is keyed
+   * to a control id suffix the PHP side knows about; missing keys mean
+   * "fall back to Elementor's own default" (i.e. blank, the previous
+   * behavior). Shapes match the Elementor control value contracts
+   * (DIMENSIONS use top/right/bottom/left/unit/isLinked, SLIDER uses
+   * size/unit/sizes, etc.) so the PHP layer can pass them straight
+   * through without re-shaping.
+   */
+  defaultStyles?: NativeDefaultStyles;
+}
+
+/**
+ * Pre-resolved style defaults consumed by the PHP `wpb_register_native_style`
+ * helper. Every field is optional — only properties the source page
+ * actually sets are populated. The shapes mirror Elementor's own
+ * control value contracts so the PHP side can pass them directly.
+ */
+export interface NativeDefaultStyles {
+  color?: string;
+  color_hover?: string;
+  background_color?: string;
+  background_color_hover?: string;
+  text_align?: string;
+  /** Elementor DIMENSIONS shape. */
+  padding?: { top: string; right: string; bottom: string; left: string; unit: string; isLinked: boolean };
+  /** Elementor DIMENSIONS shape. */
+  border_radius?: { top: string; right: string; bottom: string; left: string; unit: string; isLinked: boolean };
+  /** Group_Control_Border defaults (border style/width/color). */
+  border?: {
+    border: string;
+    width?: { top: string; right: string; bottom: string; left: string; unit: string; isLinked: boolean };
+    color?: string;
+  };
+  /** Group_Control_Typography defaults; values mirror Elementor's per-field shape. */
+  typography?: {
+    font_family?: string;
+    font_size?: { unit: string; size: number; sizes: [] };
+    font_weight?: string;
+    font_style?: string;
+    text_transform?: string;
+    line_height?: { unit: string; size: number; sizes: [] };
+    letter_spacing?: { unit: string; size: number; sizes: [] };
+  };
+  /** SLIDER shape used by image width/max-width and icon size. */
+  width?: { size: number; unit: string; sizes: [] };
+  max_width?: { size: number; unit: string; sizes: [] };
+  icon_size?: { size: number; unit: string; sizes: [] };
 }
 
 export interface ExtractedSection {
@@ -393,7 +456,118 @@ interface BuildResult {
   groups: ExtractedGroup[];
 }
 
-function buildSectionTemplate(section: Element, opts: { injectLeafClass: boolean } = { injectLeafClass: false }): BuildResult {
+/**
+ * Resolve the "Style tab" defaults for a single leaf element from the
+ * page's cascaded stylesheet. Returns `undefined` when no relevant
+ * styles are set so groups stay JSON-compact and the PHP side can fall
+ * back to Elementor's own defaults. The output shape mirrors each
+ * Elementor control's value contract; see `NativeDefaultStyles`.
+ */
+function resolveLeafDefaults(
+  el: Element,
+  sheet: ParsedSheet | undefined,
+  kind: NativeWidgetKind,
+): NativeDefaultStyles | undefined {
+  if (!sheet) return undefined;
+  const styles = computeStyles(el, sheet);
+  if (!styles || Object.keys(styles).length === 0) return undefined;
+
+  const out: NativeDefaultStyles = {};
+
+  // ---- text-ish properties (heading, text-editor, button, icon-list) ----
+  if (styles["color"]) out.color = styles["color"].trim();
+  if (styles["text-align"]) out.text_align = styles["text-align"].trim();
+  // Typography: reuse the existing buildTypography helper but rewrite
+  // its `typography_font_*` keys to the bare field names Elementor's
+  // group control's `fields_options` expects (`font_family`, `font_size`
+  // …). The transform is purely a key rename — values keep the same
+  // {unit,size,sizes:[]} / string shape.
+  const typo = buildTypography(styles, "typography");
+  const typoOut: NativeDefaultStyles["typography"] = {};
+  let typoHasAny = false;
+  for (const [k, v] of Object.entries(typo)) {
+    if (k === "typography_typography") continue; // marker, handled in PHP
+    const bare = k.replace(/^typography_/, "") as keyof NonNullable<NativeDefaultStyles["typography"]>;
+    // The cast keeps TS honest while remaining a faithful pass-through.
+    (typoOut as Record<string, unknown>)[bare] = v;
+    typoHasAny = true;
+  }
+  if (typoHasAny) out.typography = typoOut;
+
+  // ---- background (button: normal + hover; image/icon: normal) ----
+  if (styles["background-color"] && styles["background-color"] !== "transparent") {
+    out.background_color = styles["background-color"].trim();
+  }
+
+  // ---- padding (button, image, icon — universal-enough to always emit) ----
+  const pad =
+    parseDimensions(styles["padding"]) ?? assemblePaddingLonghand(styles);
+  if (pad) out.padding = pad;
+
+  // ---- border (button, image) ----
+  const bw = parseDimensions(styles["border-width"]);
+  if (bw) {
+    out.border = {
+      border: (styles["border-style"] ?? "solid").trim(),
+      width: bw,
+    };
+    if (styles["border-color"]) out.border.color = styles["border-color"].trim();
+  } else if (styles["border-color"] && styles["border-style"] && styles["border-style"] !== "none") {
+    // Some pages set color+style but rely on UA default 1px width.
+    out.border = {
+      border: styles["border-style"].trim(),
+      color: styles["border-color"].trim(),
+    };
+  }
+  const br = parseDimensions(styles["border-radius"]);
+  if (br) out.border_radius = br;
+
+  // ---- image-only sliders ----
+  if (kind === "image") {
+    const w = parseLength(styles["width"]);
+    if (w) out.width = { size: w.size, unit: w.unit, sizes: [] };
+    const mw = parseLength(styles["max-width"]);
+    if (mw) out.max_width = { size: mw.size, unit: mw.unit, sizes: [] };
+  }
+
+  // ---- icon-only size ----
+  if (kind === "icon") {
+    const fs = parseLength(styles["font-size"]);
+    if (fs) out.icon_size = { size: fs.size, unit: fs.unit, sizes: [] };
+  }
+
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/**
+ * Mirror of `assembleLonghand` in cssStyleResolver — kept private here
+ * because that helper isn't exported and the only caller is this file.
+ */
+function assemblePaddingLonghand(
+  styles: Record<string, string>,
+): { top: string; right: string; bottom: string; left: string; unit: string; isLinked: boolean } | null {
+  const sides = ["top", "right", "bottom", "left"] as const;
+  const lens = sides.map((s) => parseLength(styles[`padding-${s}`]));
+  if (lens.every((l) => !l)) return null;
+  const unit = lens.find((l) => l)?.unit ?? "px";
+  const t = lens[0]?.size ?? 0;
+  const r = lens[1]?.size ?? 0;
+  const b = lens[2]?.size ?? 0;
+  const l = lens[3]?.size ?? 0;
+  return {
+    unit,
+    top: String(t),
+    right: String(r),
+    bottom: String(b),
+    left: String(l),
+    isLinked: t === r && r === b && b === l,
+  };
+}
+
+function buildSectionTemplate(
+  section: Element,
+  opts: { injectLeafClass: boolean; sheet?: ParsedSheet } = { injectLeafClass: false },
+): BuildResult {
   rebaseAssetUrls(section);
 
   const fields: ExtractedField[] = [];
@@ -472,6 +646,7 @@ function buildSectionTemplate(section: Element, opts: { injectLeafClass: boolean
         controls,
         nativeWidget: "image",
         leafClass,
+        defaultStyles: resolveLeafDefaults(el, opts.sheet, "image"),
       });
       continue;
     }
@@ -526,6 +701,7 @@ function buildSectionTemplate(section: Element, opts: { injectLeafClass: boolean
         ],
         nativeWidget: "heading",
         leafClass,
+        defaultStyles: resolveLeafDefaults(el, opts.sheet, "heading"),
       });
       continue;
     }
@@ -565,6 +741,7 @@ function buildSectionTemplate(section: Element, opts: { injectLeafClass: boolean
         ],
         nativeWidget: "icon-list",
         leafClass,
+        defaultStyles: resolveLeafDefaults(el, opts.sheet, "icon-list"),
       });
       continue;
     }
@@ -609,6 +786,7 @@ function buildSectionTemplate(section: Element, opts: { injectLeafClass: boolean
         ],
         nativeWidget: "icon",
         leafClass,
+        defaultStyles: resolveLeafDefaults(el, opts.sheet, "icon"),
       });
       continue;
     }
@@ -675,6 +853,7 @@ function buildSectionTemplate(section: Element, opts: { injectLeafClass: boolean
         // ship a "link" widget — the closest match is Button.
         nativeWidget: "button",
         leafClass,
+        defaultStyles: resolveLeafDefaults(el, opts.sheet, "button"),
       });
       continue;
     }
@@ -707,6 +886,7 @@ function buildSectionTemplate(section: Element, opts: { injectLeafClass: boolean
         // paragraph or label expects.
         nativeWidget: "text-editor",
         leafClass,
+        defaultStyles: resolveLeafDefaults(el, opts.sheet, "text-editor"),
       });
     }
   }
@@ -830,6 +1010,12 @@ export function extractSectionsFromPage(
       // original markup.
       const { template, fields, groups } = buildSectionTemplate(el, {
         injectLeafClass: decomposerModeOverride === "legacy_native",
+        // The parsed stylesheet only feeds the new defaultStyles
+        // resolver, which runs solely in legacy_native mode. We pass
+        // it unconditionally — `resolveLeafDefaults` early-outs when
+        // its caller wouldn't consume the result, and the work is
+        // already paid for by the native decomposer above.
+        sheet,
       });
       sections.push({ id, blockName, label: `${label} (${category})`, category, template, fields, groups });
     }
