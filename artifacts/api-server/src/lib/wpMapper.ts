@@ -2,6 +2,9 @@ interface ParsedSection {
   type: string;
   content: Record<string, unknown>;
   rawHtml?: string;
+  semanticType?: string;
+  confidence?: number;
+  source?: "ai" | "heuristic";
 }
 
 interface ParsedPage {
@@ -12,6 +15,21 @@ interface ParsedPage {
 
 interface ParsedSite {
   pages: ParsedPage[];
+}
+
+export interface CustomPostTypeDef {
+  slug: string;
+  label: string;
+  pluralLabel: string;
+  sourceSemanticType: string;
+  fields: string[];
+  enabled: boolean;
+}
+
+export interface CptItem {
+  cptSlug: string;
+  title: string;
+  fields: Record<string, unknown>;
 }
 
 interface WpBlock {
@@ -27,42 +45,64 @@ interface WpPage {
   blocks: WpBlock[];
 }
 
-interface WpStructure {
+export interface WpStructure {
   pages: WpPage[];
+  cptItems: CptItem[];
+}
+
+function asArray<T = Record<string, unknown>>(v: unknown): T[] {
+  return Array.isArray(v) ? (v as T[]) : [];
+}
+
+function pickTitle(item: Record<string, unknown>, fallback: string): string {
+  return String(
+    item.title ||
+      item.name ||
+      item.plan_name ||
+      item.author_name ||
+      item.question ||
+      item.headline ||
+      fallback,
+  ).slice(0, 200);
 }
 
 function mapSectionToBlock(section: ParsedSection): WpBlock {
-  const { type, content } = section;
+  const { content } = section;
+  const type = section.semanticType || section.type;
+  const items = asArray(content.items);
 
   switch (type) {
     case "hero":
+    case "header":
       return {
         blockType: "core/cover",
         acfGroup: "hero_section",
         fields: {
-          headline: content.title || "",
-          subheadline: content.subtitle || "",
-          cta_text: content.cta || "",
-          cta_url: "",
-          background_image: "",
+          headline: content.title || content.headline || "",
+          subheadline: content.subtitle || content.subheadline || "",
+          cta_text: content.cta || content.cta_text || "",
+          cta_url: content.cta_url || "",
+          background_image: content.image_url || content.background_image || "",
         },
       };
 
     case "features":
+    case "services":
       return {
         blockType: "core/columns",
-        acfGroup: "features_section",
+        acfGroup: type === "services" ? "services_section" : "features_section",
         fields: {
-          section_title: content.title || "Features",
+          section_title: content.title || (type === "services" ? "Services" : "Features"),
           section_subtitle: content.subtitle || "",
         },
-        innerBlocks: ((content.items as Array<{ title: string; description: string }>) || []).map((item) => ({
+        innerBlocks: items.map((item) => ({
           blockType: "core/column",
-          acfGroup: "feature_item",
+          acfGroup: type === "services" ? "service_item" : "feature_item",
           fields: {
-            title: item.title,
-            description: item.description,
-            icon: "",
+            title: item.title || item.name || "",
+            description: item.description || "",
+            icon: item.icon || "",
+            image: item.image_url || item.image || "",
           },
         })),
       };
@@ -73,8 +113,8 @@ function mapSectionToBlock(section: ParsedSection): WpBlock {
         acfGroup: "about_section",
         fields: {
           heading: content.title || "About Us",
-          body: content.description || content.subtitle || "",
-          image: (content.images as Array<{ src: string }>)?.[0]?.src || "",
+          body: content.description || content.subtitle || content.body || "",
+          image: (asArray<{ src: string }>(content.images))[0]?.src || content.image_url || "",
         },
       };
 
@@ -82,16 +122,32 @@ function mapSectionToBlock(section: ParsedSection): WpBlock {
       return {
         blockType: "core/group",
         acfGroup: "testimonials_section",
-        fields: {
-          section_title: content.title || "What Our Clients Say",
-        },
-        innerBlocks: ((content.items as Array<{ quote: string; author: string }>) || []).map((item) => ({
+        fields: { section_title: content.title || "What Our Clients Say" },
+        innerBlocks: items.map((item) => ({
           blockType: "acf/testimonial-item",
           acfGroup: "testimonial_item",
           fields: {
-            quote: item.quote,
-            author_name: item.author,
-            author_image: "",
+            quote: item.quote || item.content || "",
+            author_name: item.author_name || item.author || item.name || "",
+            author_role: item.author_role || item.role || "",
+            author_image: item.author_image || item.image_url || "",
+          },
+        })),
+      };
+
+    case "team":
+      return {
+        blockType: "core/group",
+        acfGroup: "team_section",
+        fields: { section_title: content.title || "Our Team", section_subtitle: content.subtitle || "" },
+        innerBlocks: items.map((item) => ({
+          blockType: "acf/team-member",
+          acfGroup: "team_member",
+          fields: {
+            name: item.name || item.title || "",
+            role: item.role || item.title_role || "",
+            bio: item.bio || item.description || "",
+            image: item.image_url || item.image || "",
           },
         })),
       };
@@ -104,15 +160,15 @@ function mapSectionToBlock(section: ParsedSection): WpBlock {
           section_title: content.title || "Pricing",
           section_subtitle: content.subtitle || "",
         },
-        innerBlocks: ((content.plans as Array<{ name: string; price: string; features: string[] }>) || []).map((plan) => ({
+        innerBlocks: asArray(content.plans || content.items).map((plan) => ({
           blockType: "acf/pricing-plan",
           acfGroup: "pricing_plan",
           fields: {
-            plan_name: plan.name,
-            plan_price: plan.price,
-            plan_features: plan.features,
-            cta_text: "Get Started",
-            cta_url: "",
+            plan_name: plan.name || plan.plan_name || "",
+            plan_price: plan.price || plan.plan_price || "",
+            plan_features: plan.features || plan.plan_features || [],
+            cta_text: plan.cta_text || "Get Started",
+            cta_url: plan.cta_url || "",
           },
         })),
       };
@@ -121,17 +177,37 @@ function mapSectionToBlock(section: ParsedSection): WpBlock {
       return {
         blockType: "core/group",
         acfGroup: "faq_section",
-        fields: {
-          section_title: content.title || "Frequently Asked Questions",
-        },
-        innerBlocks: ((content.items as Array<{ question: string; answer: string }>) || []).map((item) => ({
+        fields: { section_title: content.title || "Frequently Asked Questions" },
+        innerBlocks: items.map((item) => ({
           blockType: "acf/faq-item",
           acfGroup: "faq_item",
+          fields: { question: item.question || "", answer: item.answer || "" },
+        })),
+      };
+
+    case "stats":
+      return {
+        blockType: "core/group",
+        acfGroup: "stats_section",
+        fields: { section_title: content.title || "" },
+        innerBlocks: items.map((item) => ({
+          blockType: "core/column",
+          acfGroup: "stat_item",
           fields: {
-            question: item.question,
-            answer: item.answer,
+            value: item.value || item.number || "",
+            label: item.label || item.title || "",
           },
         })),
+      };
+
+    case "logos":
+      return {
+        blockType: "core/gallery",
+        acfGroup: "logos_section",
+        fields: {
+          section_title: content.title || "Trusted by",
+          logos: items.length ? items : asArray(content.images),
+        },
       };
 
     case "cta":
@@ -139,11 +215,11 @@ function mapSectionToBlock(section: ParsedSection): WpBlock {
         blockType: "core/group",
         acfGroup: "cta_section",
         fields: {
-          heading: content.title || "",
-          subheading: content.subtitle || "",
-          button_text: content.cta || "Get Started",
-          button_url: "",
-          button_secondary_text: content.ctaSecondary || "",
+          heading: content.title || content.headline || "",
+          subheading: content.subtitle || content.subheadline || "",
+          button_text: content.cta || content.cta_text || "Get Started",
+          button_url: content.cta_url || "",
+          button_secondary_text: content.ctaSecondary || content.cta_secondary || "",
         },
       };
 
@@ -153,7 +229,18 @@ function mapSectionToBlock(section: ParsedSection): WpBlock {
         acfGroup: "gallery_section",
         fields: {
           section_title: content.title || "",
-          images: content.images || [],
+          images: content.images || items,
+        },
+      };
+
+    case "newsletter":
+      return {
+        blockType: "core/group",
+        acfGroup: "newsletter_section",
+        fields: {
+          heading: content.title || "Subscribe",
+          subheading: content.subtitle || "",
+          button_text: content.cta || content.cta_text || "Subscribe",
         },
       };
 
@@ -164,7 +251,10 @@ function mapSectionToBlock(section: ParsedSection): WpBlock {
         fields: {
           heading: content.title || "Contact Us",
           subheading: content.subtitle || "",
-          form_fields: ["name", "email", "message"],
+          email: content.email || "",
+          phone: content.phone || "",
+          address: content.address || "",
+          form_fields: content.form_fields || ["name", "email", "message"],
         },
       };
 
@@ -174,7 +264,7 @@ function mapSectionToBlock(section: ParsedSection): WpBlock {
         acfGroup: "blog_section",
         fields: {
           section_title: content.title || "Latest Posts",
-          posts_per_page: 3,
+          posts_per_page: content.posts_per_page ?? 3,
         },
       };
 
@@ -183,8 +273,8 @@ function mapSectionToBlock(section: ParsedSection): WpBlock {
         blockType: "core/group",
         acfGroup: "footer_section",
         fields: {
-          copyright_text: content.title || "",
-          links: content.cta || "",
+          copyright_text: content.copyright || content.title || "",
+          links: content.links || content.cta || "",
         },
       };
 
@@ -201,12 +291,57 @@ function mapSectionToBlock(section: ParsedSection): WpBlock {
   }
 }
 
-export function mapToWordPress(parsedSite: ParsedSite): WpStructure {
-  const pages: WpPage[] = parsedSite.pages.map((page) => ({
+/**
+ * Extract CPT items from sections whose semanticType matches an enabled CPT.
+ * Returns items and a list of section indices (per page) that were promoted to CPTs
+ * so the caller can omit them from the page block list.
+ */
+function extractCptItems(
+  parsedSite: ParsedSite,
+  cpts: CustomPostTypeDef[],
+): { items: CptItem[]; promotedSections: Set<string> } {
+  const items: CptItem[] = [];
+  const promotedSections = new Set<string>();
+  const enabled = cpts.filter((c) => c.enabled);
+  if (enabled.length === 0) return { items, promotedSections };
+
+  const bySource = new Map(enabled.map((c) => [c.sourceSemanticType, c]));
+
+  parsedSite.pages.forEach((page, pageIdx) => {
+    page.sections.forEach((section, secIdx) => {
+      const semantic = section.semanticType || section.type;
+      const cpt = bySource.get(semantic);
+      if (!cpt) return;
+      const sectionItems = asArray(section.content.items);
+      if (sectionItems.length === 0) return;
+      for (const it of sectionItems) {
+        items.push({
+          cptSlug: cpt.slug,
+          title: pickTitle(it, cpt.label),
+          fields: it,
+        });
+      }
+      promotedSections.add(`${pageIdx}:${secIdx}`);
+    });
+  });
+
+  return { items, promotedSections };
+}
+
+export function mapToWordPress(
+  parsedSite: ParsedSite,
+  customPostTypes: CustomPostTypeDef[] = [],
+): WpStructure {
+  const { items: cptItems, promotedSections } = extractCptItems(parsedSite, customPostTypes);
+
+  const pages: WpPage[] = parsedSite.pages.map((page, pageIdx) => ({
     title: page.name,
     slug: page.slug,
-    blocks: page.sections.map(mapSectionToBlock),
+    blocks: page.sections
+      .map((section, secIdx) => ({ section, key: `${pageIdx}:${secIdx}` }))
+      .filter(({ key }) => !promotedSections.has(key))
+      .map(({ section }) => mapSectionToBlock(section)),
   }));
 
-  return { pages };
+  return { pages, cptItems };
 }

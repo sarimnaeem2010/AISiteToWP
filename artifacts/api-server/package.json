@@ -22,8 +22,10 @@
     "express": "^5",
     "jsdom": "^29.0.2",
     "multer": "^2.1.1",
+    "openai": "^6.34.0",
     "pino": "^9",
-    "pino-http": "^10"
+    "pino-http": "^10",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@types/cookie-parser": "^1.4.10",

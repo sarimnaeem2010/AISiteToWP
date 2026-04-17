@@ -1,22 +1,45 @@
 import { randomBytes } from "crypto";
 
+interface CustomPostTypeDef {
+  slug: string;
+  label: string;
+  pluralLabel: string;
+  sourceSemanticType: string;
+  fields: string[];
+  enabled: boolean;
+}
+
 export function generateApiKey(): string {
   return randomBytes(32).toString("hex");
 }
 
-export function generateWordPressPlugin(projectName: string, apiKey: string): { phpCode: string; filename: string } {
+export function generateWordPressPlugin(
+  projectName: string,
+  apiKey: string,
+  customPostTypes: CustomPostTypeDef[] = [],
+): { phpCode: string; filename: string } {
   const slug = projectName
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 50);
 
+  const cptsJson = JSON.stringify(
+    customPostTypes
+      .filter((c) => c.enabled)
+      .map((c) => ({
+        slug: c.slug.replace(/[^a-z0-9_]/g, "_"),
+        label: c.label,
+        plural: c.pluralLabel,
+      })),
+  ).replace(/'/g, "\\'");
+
   const phpCode = `<?php
 /**
  * Plugin Name: WP Bridge AI Importer
  * Plugin URI: https://wpbridgeai.com
- * Description: Receives structured JSON from WP Bridge AI and converts it to WordPress pages with Gutenberg blocks and ACF fields.
- * Version: 1.0.0
+ * Description: Receives structured JSON from WP Bridge AI. Imports pages as Gutenberg blocks or Elementor data, registers Custom Post Types, and writes ACF fields.
+ * Version: 1.2.0
  * Author: WP Bridge AI
  * License: MIT
  * Text Domain: wp-bridge-ai
@@ -26,13 +49,42 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-// API Key — generated per project
 define( 'WP_BRIDGE_API_KEY', '${apiKey}' );
 define( 'WP_BRIDGE_PROJECT_SLUG', '${slug}' );
+define( 'WP_BRIDGE_CPTS_JSON', '${cptsJson}' );
 
 /**
- * Register the REST API endpoint
+ * Register Custom Post Types from the project configuration on init.
  */
+add_action( 'init', 'wp_bridge_register_cpts' );
+function wp_bridge_register_cpts() {
+    $cpts = json_decode( WP_BRIDGE_CPTS_JSON, true );
+    if ( ! is_array( $cpts ) ) return;
+    foreach ( $cpts as $cpt ) {
+        $cpt_slug = isset( $cpt['slug'] ) ? sanitize_key( $cpt['slug'] ) : '';
+        if ( ! $cpt_slug ) continue;
+        register_post_type( $cpt_slug, array(
+            'labels' => array(
+                'name'          => $cpt['plural'] ?? $cpt['label'] ?? ucfirst( $cpt_slug ),
+                'singular_name' => $cpt['label'] ?? ucfirst( $cpt_slug ),
+            ),
+            'public'        => true,
+            'show_in_rest'  => true,
+            'has_archive'   => true,
+            'menu_icon'     => 'dashicons-screenoptions',
+            'supports'      => array( 'title', 'editor', 'thumbnail', 'custom-fields' ),
+            'rewrite'       => array( 'slug' => $cpt_slug ),
+        ) );
+    }
+}
+
+register_activation_hook( __FILE__, 'wp_bridge_on_activate' );
+function wp_bridge_on_activate() {
+    wp_bridge_register_cpts();
+    flush_rewrite_rules();
+}
+register_deactivation_hook( __FILE__, function() { flush_rewrite_rules(); } );
+
 add_action( 'rest_api_init', function () {
     register_rest_route( 'ai-cms/v1', '/import', array(
         'methods'             => 'POST',
@@ -46,9 +98,6 @@ add_action( 'rest_api_init', function () {
     ) );
 } );
 
-/**
- * Authenticate requests using API key in X-Api-Key header
- */
 function wp_bridge_auth_check( WP_REST_Request $request ) {
     $key = $request->get_header( 'X-Api-Key' );
     if ( $key !== WP_BRIDGE_API_KEY ) {
@@ -57,23 +106,26 @@ function wp_bridge_auth_check( WP_REST_Request $request ) {
     return true;
 }
 
-/**
- * Status endpoint — confirms plugin is active
- */
 function wp_bridge_status_handler( WP_REST_Request $request ) {
     return rest_ensure_response( array(
-        'active'       => true,
-        'version'      => '1.0.0',
-        'project'      => WP_BRIDGE_PROJECT_SLUG,
-        'wp_version'   => get_bloginfo( 'version' ),
-        'site_name'    => get_bloginfo( 'name' ),
-        'acf_active'   => function_exists( 'get_field' ),
+        'active'             => true,
+        'version'            => '1.2.0',
+        'project'            => WP_BRIDGE_PROJECT_SLUG,
+        'wp_version'         => get_bloginfo( 'version' ),
+        'site_name'          => get_bloginfo( 'name' ),
+        'acf_active'         => function_exists( 'get_field' ),
+        'elementor_active'   => did_action( 'elementor/loaded' ) > 0 || class_exists( '\\\\Elementor\\\\Plugin' ),
+        'registered_cpts'    => json_decode( WP_BRIDGE_CPTS_JSON, true ),
     ) );
 }
 
 /**
- * Main import handler
- * Accepts: { pages: [{ title, slug, blocks: [{ blockType, acfGroup, fields }] }] }
+ * Main import handler.
+ * Body: {
+ *   renderer?: "gutenberg" | "elementor",
+ *   pages: [{ title, slug, blocks: [...], elementorData?: [...] }],
+ *   cptItems?: [{ cptSlug, title, fields }]
+ * }
  */
 function wp_bridge_import_handler( WP_REST_Request $request ) {
     $body = $request->get_json_params();
@@ -82,17 +134,22 @@ function wp_bridge_import_handler( WP_REST_Request $request ) {
         return new WP_Error( 'invalid_data', 'Missing pages array', array( 'status' => 400 ) );
     }
 
+    $renderer = isset( $body['renderer'] ) && $body['renderer'] === 'elementor' ? 'elementor' : 'gutenberg';
     $results = array();
+    $cpt_results = array();
 
     foreach ( $body['pages'] as $page_data ) {
         $title  = sanitize_text_field( $page_data['title'] ?? 'Imported Page' );
         $slug   = sanitize_title( $page_data['slug'] ?? $title );
         $blocks = $page_data['blocks'] ?? array();
+        $elementor_data = $page_data['elementorData'] ?? null;
 
-        // Build Gutenberg block content
-        $content = wp_bridge_build_block_content( $blocks );
+        if ( $renderer === 'elementor' && is_array( $elementor_data ) ) {
+            $content = '';
+        } else {
+            $content = wp_bridge_build_block_content( $blocks );
+        }
 
-        // Check if page exists
         $existing = get_page_by_path( $slug, OBJECT, 'page' );
 
         if ( $existing ) {
@@ -124,13 +181,20 @@ function wp_bridge_import_handler( WP_REST_Request $request ) {
             continue;
         }
 
-        // Store ACF fields if ACF is active
+        if ( $renderer === 'elementor' && is_array( $elementor_data ) ) {
+            update_post_meta( $page_id, '_elementor_edit_mode', 'builder' );
+            update_post_meta( $page_id, '_elementor_template_type', 'wp-page' );
+            update_post_meta( $page_id, '_elementor_version', '3.18.0' );
+            update_post_meta( $page_id, '_elementor_data', wp_slash( wp_json_encode( $elementor_data ) ) );
+            update_post_meta( $page_id, '_elementor_page_settings', array() );
+        }
+
         if ( function_exists( 'update_field' ) ) {
             wp_bridge_update_acf_fields( $page_id, $blocks );
         }
 
-        // Store raw mapping metadata
         update_post_meta( $page_id, '_wp_bridge_blocks', wp_json_encode( $blocks ) );
+        update_post_meta( $page_id, '_wp_bridge_renderer', $renderer );
         update_post_meta( $page_id, '_wp_bridge_imported_at', current_time( 'mysql' ) );
         update_post_meta( $page_id, '_wp_bridge_project', WP_BRIDGE_PROJECT_SLUG );
 
@@ -142,18 +206,67 @@ function wp_bridge_import_handler( WP_REST_Request $request ) {
         );
     }
 
+    // Import CPT items
+    if ( ! empty( $body['cptItems'] ) && is_array( $body['cptItems'] ) ) {
+        foreach ( $body['cptItems'] as $item ) {
+            $cpt_slug = isset( $item['cptSlug'] ) ? sanitize_key( $item['cptSlug'] ) : '';
+            $title    = sanitize_text_field( $item['title'] ?? 'Item' );
+            $fields   = $item['fields'] ?? array();
+            if ( ! $cpt_slug || ! post_type_exists( $cpt_slug ) ) {
+                $cpt_results[] = array( 'cpt' => $cpt_slug, 'title' => $title, 'status' => 'error', 'error' => 'CPT not registered' );
+                continue;
+            }
+            $existing_id = wp_bridge_find_cpt_by_title( $cpt_slug, $title );
+            $args = array(
+                'post_title'   => $title,
+                'post_content' => isset( $fields['description'] ) ? $fields['description'] : ( isset( $fields['quote'] ) ? $fields['quote'] : '' ),
+                'post_status'  => 'publish',
+                'post_type'    => $cpt_slug,
+            );
+            if ( $existing_id ) {
+                $args['ID'] = $existing_id;
+                $post_id = wp_update_post( $args );
+                $cpt_action = 'updated';
+            } else {
+                $post_id = wp_insert_post( $args );
+                $cpt_action = 'created';
+            }
+            if ( is_wp_error( $post_id ) ) {
+                $cpt_results[] = array( 'cpt' => $cpt_slug, 'title' => $title, 'status' => 'error', 'error' => $post_id->get_error_message() );
+                continue;
+            }
+            foreach ( $fields as $fk => $fv ) {
+                update_post_meta( $post_id, sanitize_key( $fk ), is_scalar( $fv ) ? $fv : wp_json_encode( $fv ) );
+                if ( function_exists( 'update_field' ) ) {
+                    update_field( sanitize_key( $fk ), $fv, $post_id );
+                }
+            }
+            update_post_meta( $post_id, '_wp_bridge_project', WP_BRIDGE_PROJECT_SLUG );
+            $cpt_results[] = array( 'cpt' => $cpt_slug, 'title' => $title, 'id' => $post_id, 'status' => $cpt_action );
+        }
+    }
+
     return rest_ensure_response( array(
-        'success' => true,
-        'results' => $results,
+        'success'     => true,
+        'results'     => $results,
+        'cpt_results' => $cpt_results,
+        'renderer'    => $renderer,
     ) );
 }
 
-/**
- * Build Gutenberg block HTML from block definitions
- */
+function wp_bridge_find_cpt_by_title( string $cpt, string $title ) {
+    $q = new WP_Query( array(
+        'post_type'      => $cpt,
+        'title'          => $title,
+        'posts_per_page' => 1,
+        'fields'         => 'ids',
+        'no_found_rows'  => true,
+    ) );
+    return $q->have_posts() ? (int) $q->posts[0] : 0;
+}
+
 function wp_bridge_build_block_content( array $blocks ): string {
     $content = '';
-
     foreach ( $blocks as $block ) {
         $type   = $block['blockType'] ?? 'core/html';
         $fields = $block['fields'] ?? array();
@@ -165,7 +278,7 @@ function wp_bridge_build_block_content( array $blocks ): string {
                 $subheadline = esc_html( $fields['subheadline'] ?? '' );
                 $cta_text    = esc_html( $fields['cta_text'] ?? '' );
                 $cta_url     = esc_url( $fields['cta_url'] ?? '#' );
-                $content .= "<!-- wp:cover {\\\"dimRatio\\\":50} -->\\n";
+                $content .= "<!-- wp:cover {\\"dimRatio\\":50} -->\\n";
                 $content .= "<div class=\\"wp-block-cover\\"><div class=\\"wp-block-cover__inner-container\\">";
                 if ( $headline ) $content .= "<!-- wp:heading --><h2 class=\\"wp-block-heading\\">{$headline}</h2><!-- /wp:heading -->";
                 if ( $subheadline ) $content .= "<!-- wp:paragraph --><p>{$subheadline}</p><!-- /wp:paragraph -->";
@@ -183,45 +296,37 @@ function wp_bridge_build_block_content( array $blocks ): string {
             default:
                 $title = esc_html( $fields['section_title'] ?? $fields['heading'] ?? '' );
                 $body  = esc_html( $fields['section_body'] ?? $fields['body'] ?? $fields['description'] ?? '' );
-                $content .= "<!-- wp:group {\\\"layout\\\":{\\\"type\\\":\\\"constrained\\\"}} -->\\n<div class=\\"wp-block-group\\">";
+                $content .= "<!-- wp:group {\\"layout\\":{\\"type\\":\\"constrained\\"}} -->\\n<div class=\\"wp-block-group\\">";
                 if ( $title ) $content .= "<!-- wp:heading --><h2 class=\\"wp-block-heading\\">{$title}</h2><!-- /wp:heading -->";
                 if ( $body ) $content .= "<!-- wp:paragraph --><p>{$body}</p><!-- /wp:paragraph -->";
 
                 foreach ( $inner as $inner_block ) {
                     $inner_fields = $inner_block['fields'] ?? array();
-                    $inner_title  = esc_html( $inner_fields['title'] ?? $inner_fields['question'] ?? '' );
-                    $inner_body   = esc_html( $inner_fields['description'] ?? $inner_fields['answer'] ?? $inner_fields['quote'] ?? '' );
+                    $inner_title  = esc_html( $inner_fields['title'] ?? $inner_fields['question'] ?? $inner_fields['name'] ?? $inner_fields['plan_name'] ?? '' );
+                    $inner_body   = esc_html( $inner_fields['description'] ?? $inner_fields['answer'] ?? $inner_fields['quote'] ?? $inner_fields['bio'] ?? '' );
                     if ( $inner_title || $inner_body ) {
                         $content .= "<!-- wp:group --><div class=\\"wp-block-group\\">";
-                        if ( $inner_title ) $content .= "<!-- wp:heading {\\\"level\\\":3} --><h3>{$inner_title}</h3><!-- /wp:heading -->";
+                        if ( $inner_title ) $content .= "<!-- wp:heading {\\"level\\":3} --><h3>{$inner_title}</h3><!-- /wp:heading -->";
                         if ( $inner_body ) $content .= "<!-- wp:paragraph --><p>{$inner_body}</p><!-- /wp:paragraph -->";
                         $content .= "</div><!-- /wp:group -->";
                     }
                 }
-
                 $content .= "</div><!-- /wp:group -->\\n";
                 break;
         }
     }
-
     return $content;
 }
 
-/**
- * Update ACF fields from block definitions
- */
 function wp_bridge_update_acf_fields( int $post_id, array $blocks ): void {
     foreach ( $blocks as $block ) {
         $acf_group = $block['acfGroup'] ?? null;
         $fields    = $block['fields'] ?? array();
         if ( ! $acf_group || ! $fields ) continue;
-
         foreach ( $fields as $field_key => $field_value ) {
             $full_key = $acf_group . '_' . $field_key;
             update_field( $full_key, $field_value, $post_id );
         }
-
-        // Handle repeater sub-fields
         $inner_blocks = $block['innerBlocks'] ?? array();
         if ( ! empty( $inner_blocks ) && $acf_group ) {
             $repeater_data = array();

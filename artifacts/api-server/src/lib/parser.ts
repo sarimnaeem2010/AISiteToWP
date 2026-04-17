@@ -1,22 +1,30 @@
-interface ParsedSection {
+import type { AiAnalysis } from "./aiAnalyzer";
+import { analyzeWithAi } from "./aiAnalyzer";
+
+export interface ParsedSection {
   type: string;
   content: Record<string, unknown>;
   rawHtml?: string;
+  semanticType?: string;
+  confidence?: number;
+  source?: "ai" | "heuristic";
 }
 
-interface ParsedPage {
+export interface ParsedPage {
   name: string;
   slug: string;
   sections: ParsedSection[];
 }
 
-interface ParsedSite {
+export interface ParsedSite {
   pages: ParsedPage[];
 }
 
-interface DesignSystem {
+export interface DesignSystem {
   font: string;
+  fontHeading?: string;
   colors: string[];
+  primaryColor?: string;
   buttonStyle: string;
   headingStyle: string;
 }
@@ -165,7 +173,56 @@ function slugify(text: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
-export function parseHtml(html: string): {
+function aiAnalysisToParsedSite(analysis: AiAnalysis): { parsedSite: ParsedSite; designSystem: DesignSystem } {
+  const parsedSite: ParsedSite = {
+    pages: analysis.pages.map((p) => ({
+      name: p.name,
+      slug: p.slug,
+      sections: p.sections.map((s) => {
+        const items = s.repeatItems && s.repeatItems.length > 0 ? s.repeatItems : undefined;
+        const content: Record<string, unknown> = { ...s.fields };
+        if (items) content.items = items;
+        // Carry alternate keys mapper expects
+        if (s.fields.headline && !content.title) content.title = s.fields.headline;
+        if (s.fields.subheadline && !content.subtitle) content.subtitle = s.fields.subheadline;
+        if (s.fields.description && !content.description) content.description = s.fields.description;
+        if (s.fields.cta_text && !content.cta) content.cta = s.fields.cta_text;
+        return {
+          type: s.semanticType,
+          semanticType: s.semanticType,
+          confidence: s.confidence,
+          source: "ai" as const,
+          content,
+        };
+      }),
+    })),
+  };
+  const designSystem: DesignSystem = {
+    font: analysis.designSystem.font,
+    fontHeading: analysis.designSystem.fontHeading,
+    colors: analysis.designSystem.colors,
+    primaryColor: analysis.designSystem.primaryColor,
+    buttonStyle: analysis.designSystem.buttonStyle,
+    headingStyle: analysis.designSystem.headingStyle,
+  };
+  return { parsedSite, designSystem };
+}
+
+export async function parseHtml(html: string): Promise<{
+  parsedSite: ParsedSite;
+  designSystem: DesignSystem;
+  aiAnalysis: AiAnalysis | null;
+}> {
+  const ai = await analyzeWithAi(html);
+  if (ai) {
+    const { parsedSite, designSystem } = aiAnalysisToParsedSite(ai);
+    return { parsedSite, designSystem, aiAnalysis: ai };
+  }
+  const heuristic = parseHtmlHeuristic(html);
+  return { ...heuristic, aiAnalysis: null };
+}
+
+function parseHtmlHeuristic(html: string): {
   parsedSite: ParsedSite;
   designSystem: DesignSystem;
 } {

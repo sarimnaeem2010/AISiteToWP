@@ -3,7 +3,7 @@ import { Link, useParams, useLocation } from "wouter";
 import { z } from "zod";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Check, ChevronRight, Download, FileCode2, Globe, LayoutTemplate, Settings2, Trash2, Shield, UploadCloud, Eye, AlertCircle } from "lucide-react";
+import { Check, ChevronRight, Download, FileCode2, Globe, LayoutTemplate, Settings2, Trash2, Shield, UploadCloud, Eye, AlertCircle, Database, Layers, Sparkles } from "lucide-react";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -147,6 +147,42 @@ export default function ProjectWorkspace() {
         toast({ title: "Push Failed", description: err.message, variant: "destructive" });
       }
     });
+  };
+
+  const apiBase = import.meta.env.BASE_URL;
+  const proj = project as any;
+  const renderer: "gutenberg" | "elementor" = proj.renderer === "elementor" ? "elementor" : "gutenberg";
+  const cpts: Array<{ slug: string; label: string; pluralLabel: string; sourceSemanticType: string; fields: string[]; enabled: boolean }> =
+    Array.isArray(proj.customPostTypes) ? proj.customPostTypes : [];
+
+  const setRenderer = async (value: "gutenberg" | "elementor") => {
+    try {
+      const res = await fetch(`${apiBase}api/projects/${id}/renderer`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ renderer: value }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      toast({ title: `Renderer set to ${value}` });
+      refetch();
+    } catch (err) {
+      toast({ title: "Failed to set renderer", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    }
+  };
+
+  const toggleCpt = async (slug: string, enabled: boolean) => {
+    const next = cpts.map((c) => (c.slug === slug ? { ...c, enabled } : c));
+    try {
+      const res = await fetch(`${apiBase}api/projects/${id}/custom-post-types`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customPostTypes: next }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      refetch();
+    } catch (err) {
+      toast({ title: "Failed to update CPTs", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    }
   };
 
   const onDelete = () => {
@@ -381,6 +417,32 @@ export default function ProjectWorkspace() {
                         )}
                       />
                     )}
+                    <div className="space-y-2">
+                      <Label className="font-mono">Page Renderer</Label>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setRenderer("gutenberg")}
+                          className={`text-left rounded-md border p-3 text-xs font-mono ${renderer === "gutenberg" ? "border-primary bg-primary/10" : "border-border bg-muted/20"}`}
+                        >
+                          <div className="font-semibold uppercase tracking-wider flex items-center gap-1.5">
+                            <Layers className="h-3.5 w-3.5" /> Gutenberg
+                          </div>
+                          <div className="text-muted-foreground mt-1">Native WP block editor markup</div>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setRenderer("elementor")}
+                          className={`text-left rounded-md border p-3 text-xs font-mono ${renderer === "elementor" ? "border-primary bg-primary/10" : "border-border bg-muted/20"}`}
+                        >
+                          <div className="font-semibold uppercase tracking-wider flex items-center gap-1.5">
+                            <Sparkles className="h-3.5 w-3.5" /> Elementor
+                          </div>
+                          <div className="text-muted-foreground mt-1">Editable in Elementor builder</div>
+                        </button>
+                      </div>
+                      <p className="text-[10px] text-muted-foreground">Requires Elementor plugin installed on target WordPress site.</p>
+                    </div>
                     <FormField
                       control={form.control}
                       name="useAcf"
@@ -421,6 +483,48 @@ export default function ProjectWorkspace() {
                     )}
                   </form>
                 </Form>
+              </CardContent>
+            </Card>
+          )}
+
+          {currentStep >= 2 && cpts.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="font-mono flex items-center gap-2">
+                  <Database className="h-5 w-5" />
+                  Custom Post Types
+                  <Badge variant="outline" className="font-mono text-[10px] ml-1">AI-detected</Badge>
+                </CardTitle>
+                <CardDescription>
+                  Repeated content patterns detected. Enabled types will be registered by the plugin and pushed as CPT entries instead of inline page sections.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  {cpts.map((cpt) => (
+                    <div key={cpt.slug} className="flex items-center justify-between rounded-md border p-3 bg-muted/20">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-sm font-semibold">{cpt.label}</span>
+                          <Badge variant="outline" className="font-mono text-[10px]">{cpt.slug}</Badge>
+                          {cpt.sourceSemanticType && (
+                            <Badge variant="secondary" className="font-mono text-[10px]">from {cpt.sourceSemanticType}</Badge>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-muted-foreground font-mono">
+                          {(cpt.fields?.length ?? 0)} fields · {cpt.enabled ? "will register & import" : "disabled"}
+                        </p>
+                      </div>
+                      <Switch
+                        checked={cpt.enabled !== false}
+                        onCheckedChange={(checked) => toggleCpt(cpt.slug, checked)}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[10px] text-muted-foreground font-mono mt-4">
+                  Note: After toggling CPTs, re-download the companion plugin from the Get Plugin page so the new CPT registrations take effect on activation.
+                </p>
               </CardContent>
             </Card>
           )}

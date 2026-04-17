@@ -86,8 +86,17 @@ interface WpPage {
   blocks: WpBlock[];
 }
 
+interface CptItem {
+  cptSlug: string;
+  title: string;
+  fields: Record<string, unknown>;
+}
+
 interface WpStructure {
   pages: WpPage[];
+  cptItems?: CptItem[];
+  renderer?: "gutenberg" | "elementor";
+  elementorPages?: Array<{ slug: string; data: unknown[] }>;
 }
 
 interface PushLogEntry {
@@ -273,10 +282,21 @@ export async function pushToWordPress(
   // API-key path: send whole payload to plugin import endpoint in one call
   if (config.authMode === "api_key") {
     try {
+      const elementorBySlug = new Map(
+        (wpStructure.elementorPages ?? []).map((p) => [p.slug, p.data]),
+      );
+      const pagesPayload = wpStructure.pages.map((p) => ({
+        ...p,
+        elementorData: elementorBySlug.get(p.slug) ?? null,
+      }));
       const res = await fetch(`${baseUrl}/wp-json/ai-cms/v1/import`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ pages: wpStructure.pages }),
+        body: JSON.stringify({
+          renderer: wpStructure.renderer ?? "gutenberg",
+          pages: pagesPayload,
+          cptItems: wpStructure.cptItems ?? [],
+        }),
         signal: AbortSignal.timeout(60000),
       });
       if (!res.ok) {

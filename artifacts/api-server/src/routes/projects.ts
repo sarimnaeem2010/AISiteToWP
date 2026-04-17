@@ -15,12 +15,41 @@ import {
   GeneratePluginParams,
 } from "@workspace/api-zod";
 import { parseHtml } from "../lib/parser";
-import { mapToWordPress } from "../lib/wpMapper";
+import { mapToWordPress, type CustomPostTypeDef } from "../lib/wpMapper";
 import { testConnection, pushToWordPress } from "../lib/wpSync";
 import { generateApiKey, generateWordPressPlugin } from "../lib/pluginGenerator";
 import { extractZip } from "../lib/zipUpload";
 import { generateAstroProject } from "../lib/astroGenerator";
+import { pageToElementorData } from "../lib/elementorGenerator";
+import type { SuggestedCpt } from "../lib/aiAnalyzer";
 import AdmZip from "adm-zip";
+import { z } from "zod";
+
+function suggestedToCpts(suggested: SuggestedCpt[] | undefined): CustomPostTypeDef[] {
+  if (!Array.isArray(suggested)) return [];
+  return suggested.map((s) => ({
+    slug: s.slug,
+    label: s.label,
+    pluralLabel: s.pluralLabel,
+    sourceSemanticType: s.sourceSemanticType,
+    fields: s.fields,
+    enabled: false,
+  }));
+}
+
+const RendererSchema = z.object({ renderer: z.enum(["gutenberg", "elementor"]) });
+const CustomPostTypesSchema = z.object({
+  customPostTypes: z.array(
+    z.object({
+      slug: z.string().min(1).max(20),
+      label: z.string().min(1).max(60),
+      pluralLabel: z.string().min(1).max(60),
+      sourceSemanticType: z.string().min(1).max(40),
+      fields: z.array(z.string()),
+      enabled: z.boolean(),
+    }),
+  ),
+});
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -130,6 +159,9 @@ router.get("/projects/:id", async (req, res): Promise<void> => {
     lastPushedAt: project.lastPushedAt?.toISOString() ?? null,
     parsedSite: project.parsedSite ?? null,
     designSystem: project.designSystem ?? null,
+    aiAnalysis: project.aiAnalysis ?? null,
+    customPostTypes: project.customPostTypes ?? [],
+    renderer: project.renderer ?? "gutenberg",
     wpConfig: project.wpUrl
       ? {
           wpUrl: project.wpUrl,
@@ -197,8 +229,15 @@ router.post("/projects/:id/parse", async (req, res): Promise<void> => {
     return;
   }
 
-  const { parsedSite, designSystem } = parseHtml(body.data.htmlContent);
-  const wpStructure = mapToWordPress(parsedSite);
+  const { parsedSite, designSystem, aiAnalysis } = await parseHtml(body.data.htmlContent);
+  const existingCpts = (project.customPostTypes as CustomPostTypeDef[] | null) ?? [];
+  const suggested = suggestedToCpts(aiAnalysis?.suggestedCpts);
+  // Merge: keep existing user choices, add any new suggestions not already present
+  const mergedCpts: CustomPostTypeDef[] = [
+    ...existingCpts,
+    ...suggested.filter((s) => !existingCpts.some((e) => e.slug === s.slug)),
+  ];
+  const wpStructure = mapToWordPress(parsedSite, mergedCpts);
 
   await db
     .update(projectsTable)
@@ -207,11 +246,75 @@ router.post("/projects/:id/parse", async (req, res): Promise<void> => {
       parsedSite: parsedSite as never,
       designSystem: designSystem as never,
       wpStructure: wpStructure as never,
+      aiAnalysis: (aiAnalysis ?? null) as never,
+      customPostTypes: mergedCpts as never,
       pageCount: parsedSite.pages.length,
     })
     .where(eq(projectsTable.id, project.id));
 
-  res.json({ parsedSite, designSystem, wpStructure });
+  res.json({ parsedSite, designSystem, wpStructure, aiAnalysis, customPostTypes: mergedCpts });
+});
+
+router.put("/projects/:id/custom-post-types", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const params = GetProjectParams.safeParse({ id: raw });
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+  const body = CustomPostTypesSchema.safeParse(req.body);
+  if (!body.success) {
+    res.status(400).json({ error: body.error.message });
+    return;
+  }
+  const [project] = await db
+    .select()
+    .from(projectsTable)
+    .where(eq(projectsTable.id, Number(params.data.id)));
+  if (!project) {
+    res.status(404).json({ error: "Project not found" });
+    return;
+  }
+  // Re-map structure with new CPT selection if site is parsed
+  let updatedStructure = project.wpStructure;
+  if (project.parsedSite) {
+    updatedStructure = mapToWordPress(
+      project.parsedSite as never,
+      body.data.customPostTypes,
+    ) as never;
+  }
+  await db
+    .update(projectsTable)
+    .set({
+      customPostTypes: body.data.customPostTypes as never,
+      wpStructure: updatedStructure as never,
+    })
+    .where(eq(projectsTable.id, project.id));
+  res.json({ customPostTypes: body.data.customPostTypes, wpStructure: updatedStructure });
+});
+
+router.put("/projects/:id/renderer", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const params = GetProjectParams.safeParse({ id: raw });
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+  const body = RendererSchema.safeParse(req.body);
+  if (!body.success) {
+    res.status(400).json({ error: body.error.message });
+    return;
+  }
+  const [project] = await db
+    .update(projectsTable)
+    .set({ renderer: body.data.renderer })
+    .where(eq(projectsTable.id, Number(params.data.id)))
+    .returning();
+  if (!project) {
+    res.status(404).json({ error: "Project not found" });
+    return;
+  }
+  res.json({ renderer: project.renderer });
 });
 
 router.put("/projects/:id/wordpress-config", async (req, res): Promise<void> => {
@@ -355,7 +458,22 @@ router.post("/projects/:id/push", async (req, res): Promise<void> => {
     return;
   }
 
-  const wpStructure = project.wpStructure as { pages: Array<{ title: string; slug: string; blocks: unknown[] }> };
+  const wpStructure = project.wpStructure as {
+    pages: Array<{ title: string; slug: string; blocks: unknown[] }>;
+    cptItems?: Array<{ cptSlug: string; title: string; fields: Record<string, unknown> }>;
+  };
+  const renderer = (project.renderer === "elementor" ? "elementor" : "gutenberg") as
+    | "elementor"
+    | "gutenberg";
+
+  // Build elementor data per page when elementor renderer is selected
+  const elementorPages =
+    renderer === "elementor"
+      ? wpStructure.pages.map((p) => ({
+          slug: p.slug,
+          data: pageToElementorData(p as never),
+        }))
+      : undefined;
 
   const result = await pushToWordPress(
     {
@@ -366,7 +484,12 @@ router.post("/projects/:id/push", async (req, res): Promise<void> => {
       authMode,
       useAcf: project.useAcf === "true",
     },
-    wpStructure
+    {
+      pages: wpStructure.pages,
+      cptItems: wpStructure.cptItems ?? [],
+      renderer,
+      elementorPages,
+    },
   );
 
   await db
@@ -421,7 +544,8 @@ router.get("/projects/:id/plugin", async (req, res): Promise<void> => {
     apiKey = generateApiKey();
     await db.update(projectsTable).set({ wpApiKey: apiKey }).where(eq(projectsTable.id, project.id));
   }
-  const { phpCode, filename } = generateWordPressPlugin(project.name, apiKey);
+  const cpts = (project.customPostTypes as CustomPostTypeDef[] | null) ?? [];
+  const { phpCode, filename } = generateWordPressPlugin(project.name, apiKey, cpts);
 
   res.json({ phpCode, filename, apiKey });
 });
@@ -449,7 +573,8 @@ router.get("/projects/:id/plugin-zip", async (req, res): Promise<void> => {
     apiKey = generateApiKey();
     await db.update(projectsTable).set({ wpApiKey: apiKey }).where(eq(projectsTable.id, project.id));
   }
-  const { phpCode, filename } = generateWordPressPlugin(project.name, apiKey);
+  const cpts = (project.customPostTypes as CustomPostTypeDef[] | null) ?? [];
+  const { phpCode, filename } = generateWordPressPlugin(project.name, apiKey, cpts);
 
   // WordPress requires plugin files inside a named folder at the ZIP root
   const slug = filename.replace(/\.php$/, "");
@@ -515,8 +640,14 @@ router.post("/projects/:id/upload-zip", upload.single("file"), async (req, res):
     return;
   }
 
-  const { parsedSite, designSystem } = parseHtml(extracted.indexHtml);
-  const wpStructure = mapToWordPress(parsedSite);
+  const { parsedSite, designSystem, aiAnalysis } = await parseHtml(extracted.indexHtml);
+  const existingCpts = (project.customPostTypes as CustomPostTypeDef[] | null) ?? [];
+  const suggested = suggestedToCpts(aiAnalysis?.suggestedCpts);
+  const mergedCpts: CustomPostTypeDef[] = [
+    ...existingCpts,
+    ...suggested.filter((s) => !existingCpts.some((e) => e.slug === s.slug)),
+  ];
+  const wpStructure = mapToWordPress(parsedSite, mergedCpts);
 
   await db
     .update(projectsTable)
@@ -525,6 +656,8 @@ router.post("/projects/:id/upload-zip", upload.single("file"), async (req, res):
       parsedSite: parsedSite as never,
       designSystem: designSystem as never,
       wpStructure: wpStructure as never,
+      aiAnalysis: (aiAnalysis ?? null) as never,
+      customPostTypes: mergedCpts as never,
       uploadedFiles: { files: extracted.files, indexPath: extracted.indexPath } as never,
       pageCount: parsedSite.pages.length,
     })
@@ -536,6 +669,8 @@ router.post("/projects/:id/upload-zip", upload.single("file"), async (req, res):
     parsedSite,
     designSystem,
     wpStructure,
+    aiAnalysis,
+    customPostTypes: mergedCpts,
   });
 });
 
