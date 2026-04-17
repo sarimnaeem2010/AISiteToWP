@@ -8,6 +8,7 @@ import AdmZip from "adm-zip";
 import { extractSectionsFromPage } from "../src/lib/sectionFieldExtractor";
 import { composeGutenbergContent } from "../src/lib/pixelPerfectComposer";
 import { generateThemeZip } from "../src/lib/themeGenerator";
+import { checkPhpSyntax } from "../src/lib/phpSyntaxCheck";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = readFileSync(path.join(__dirname, "fixtures/simple-page.html"), "utf8");
@@ -108,4 +109,98 @@ test("generateThemeZip produces a valid child theme bundle", () => {
       assert.ok(json.attributes[f.key], `block.json for ${section.blockName} must declare attribute ${f.key}`);
     }
   }
+});
+
+test("every PHP file in the generated theme parses cleanly", () => {
+  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG);
+  const buf = generateThemeZip({
+    projectName: "Fixture Site",
+    projectSlug: PROJECT_SLUG,
+    combinedCss: "body{margin:0}",
+    combinedJs: "",
+    pages: [{ slug: PAGE_SLUG, title: "Home", sections }],
+    sourceZip: null,
+  });
+  const zip = new AdmZip(buf);
+  const phpEntries = zip.getEntries().filter((e) => !e.isDirectory && e.entryName.endsWith(".php"));
+  assert.ok(phpEntries.length > 0, "theme must contain PHP files");
+
+  // Sanity: we expect at least the canonical templates the generator emits.
+  const names = phpEntries.map((e) => e.entryName.replace(/\\/g, "/"));
+  for (const required of ["functions.php", "index.php", "page.php", "header.php", "footer.php", "widgets/_base-widget.php"]) {
+    assert.ok(
+      names.some((n) => n.endsWith("/" + required)),
+      `expected generated theme to include ${required}`,
+    );
+  }
+  assert.ok(names.some((n) => /\/blocks\/[^/]+\/render\.php$/.test(n)), "expected at least one block render.php");
+  assert.ok(names.some((n) => /\/widgets\/widget-[^/]+\.php$/.test(n)), "expected at least one widget-*.php");
+
+  for (const entry of phpEntries) {
+    const src = entry.getData().toString("utf8");
+    const result = checkPhpSyntax(src, entry.entryName);
+    assert.ok(
+      result.ok,
+      `PHP syntax error in ${entry.entryName} at line ${result.line}, col ${result.column}: ${result.error}`,
+    );
+  }
+});
+
+test("checkPhpSyntax accepts the well-formed templates the generator emits", () => {
+  // A minimal but representative PHP snippet covering features used by
+  // the generator: comments, single + double-quoted strings with escapes,
+  // nested arrays/closures, and a conditional class definition.
+  const sample = `<?php
+// line comment
+# hash comment
+/* block
+   comment */
+if ( ! defined( 'ABSPATH' ) ) exit;
+$arr = array( 'a' => "b", 'c' => array( 1, 2, 3 ) );
+$cb = function ( $x ) use ( $arr ) {
+    return "value: {$x} \\\\ \\"end\\"";
+};
+class Foo {
+    public function bar() { return '{not a real brace'; }
+}
+`;
+  const result = checkPhpSyntax(sample, "sample.php");
+  assert.ok(result.ok, `expected sample to pass: ${result.error}`);
+});
+
+test("checkPhpSyntax catches a syntax error introduced into a generated template", () => {
+  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG);
+  const buf = generateThemeZip({
+    projectName: "Fixture Site",
+    projectSlug: PROJECT_SLUG,
+    combinedCss: "body{margin:0}",
+    combinedJs: "",
+    pages: [{ slug: PAGE_SLUG, title: "Home", sections }],
+    sourceZip: null,
+  });
+  const zip = new AdmZip(buf);
+  const fnEntry = zip.getEntries().find((e) => e.entryName.endsWith("/functions.php"))!;
+  const original = fnEntry.getData().toString("utf8");
+
+  // Drop the final closing brace — the kind of regression the previous
+  // structure-only test would have happily shipped.
+  const broken = original.replace(/\}\s*\)\s*;\s*$/m, ");");
+  assert.notEqual(broken, original, "test scaffolding failed to mutate functions.php");
+
+  const result = checkPhpSyntax(broken, "functions.php");
+  assert.equal(result.ok, false, "validator must flag the unbalanced brace");
+});
+
+test("checkPhpSyntax flags an unterminated string", () => {
+  const broken = `<?php\n$x = 'oops;\n`;
+  const result = checkPhpSyntax(broken, "broken.php");
+  assert.equal(result.ok, false);
+  assert.match(result.error ?? "", /unterminated single-quoted string/);
+});
+
+test("checkPhpSyntax flags a mismatched bracket type", () => {
+  const broken = `<?php\nfunction f( $x ] { return $x; }\n`;
+  const result = checkPhpSyntax(broken, "broken.php");
+  assert.equal(result.ok, false);
+  assert.match(result.error ?? "", /mismatched bracket|unmatched closing/);
 });
