@@ -9,6 +9,16 @@ interface ThemeInput {
   combinedJs: string;
   pages: ExtractedPage[];
   sourceZip: Buffer | null;  // original ZIP — we copy images/fonts into the theme
+  /**
+   * Project conversion mode. When set to `"legacy_native"`, the
+   * generated PHP widgets register a native-flavoured Elementor sidebar
+   * (Group_Control_Typography + Text Color + Border + ... per group,
+   * scoped to each leaf's `wpb-leaf-{gid}` CSS class) instead of the
+   * generic flat control list. The render path is unchanged, so visual
+   * fidelity matches plain `legacy` mode. Other values (or omission)
+   * fall back to the generic legacy controls.
+   */
+  conversionMode?: string;
 }
 
 const STYLE_HEADER = (name: string, slug: string) => `/*
@@ -359,6 +369,16 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
     protected $wpb_template_path = '';
     protected $wpb_fields = array();
     protected $wpb_groups = array();
+    /**
+     * When true, register a native-flavoured Elementor sidebar per group
+     * (Group_Control_Typography, Text Color, Background, Border... pulled
+     * from the matching native widget — Heading / Button / Image /
+     * Icon List / Text Editor / Icon) scoped to the leaf's
+     * 'wpb-leaf-{gid}' CSS class. Set by the per-section subclass when
+     * the project's conversion mode is "legacy_native". The render path
+     * stays identical to plain "legacy" mode.
+     */
+    protected $wpb_native_ui = false;
 
     public function get_name() { return 'wpb_' . $this->wpb_id; }
     public function get_title() { return $this->wpb_label; }
@@ -400,6 +420,198 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
             );
         }
         return $out;
+    }
+
+    /**
+     * Resolve the CSS selector for a group's leaf element. The extractor
+     * tags every leaf with a stable 'wpb-leaf-{gid}' class in
+     * 'legacy_native' mode; this helper returns the Elementor-style
+     * selector ({{WRAPPER}} .wpb-leaf-...) the native style controls
+     * bind to. Falls back to {{WRAPPER}} when the leaf class is missing
+     * so the widget never crashes on legacy upgrades.
+     */
+    private function wpb_leaf_selector( $g ) {
+        $cls = isset( $g['leafClass'] ) && is_string( $g['leafClass'] ) && $g['leafClass'] !== ''
+            ? $g['leafClass']
+            : '';
+        return $cls === '' ? '{{WRAPPER}}' : '{{WRAPPER}} .' . $cls;
+    }
+
+    /**
+     * Add a Style-tab section for the group whose controls mirror the
+     * named native Elementor widget. Each branch surfaces the most
+     * visible style controls from that widget — Group_Control_Typography
+     * + Text Color + Text Shadow for headings/text, plus Background /
+     * Border / Border Radius / Padding for buttons, etc. All controls
+     * use Elementor selectors rather than rendering inline styles, so
+     * Elementor injects the CSS via its standard mechanism and the
+     * original markup template stays unchanged.
+     */
+    private function wpb_register_native_style( $g ) {
+        $native = isset( $g['nativeWidget'] ) ? (string) $g['nativeWidget'] : '';
+        if ( $native === '' ) return;
+        $sel       = $this->wpb_leaf_selector( $g );
+        $section_id = 'wpb_grp_style_' . preg_replace( '/[^a-zA-Z0-9_]/', '_', $g['id'] ?? 'g' );
+        $this->start_controls_section( $section_id, array(
+            'label' => esc_html( ( $g['label'] ?? 'Style' ) . ' — Style' ),
+            'tab'   => \\Elementor\\Controls_Manager::TAB_STYLE,
+        ) );
+        // Alignment is universal — every native content widget surfaces
+        // it under the Style tab. Map it to text-align so it lands on
+        // both inline (heading/text) and block (button/image) leaves.
+        $this->add_responsive_control( $g['id'] . '_native_align', array(
+            'label'     => esc_html__( 'Alignment', 'wpb' ),
+            'type'      => \\Elementor\\Controls_Manager::CHOOSE,
+            'options'   => array(
+                'left'    => array( 'title' => esc_html__( 'Left', 'wpb' ),    'icon' => 'eicon-text-align-left' ),
+                'center'  => array( 'title' => esc_html__( 'Center', 'wpb' ),  'icon' => 'eicon-text-align-center' ),
+                'right'   => array( 'title' => esc_html__( 'Right', 'wpb' ),   'icon' => 'eicon-text-align-right' ),
+                'justify' => array( 'title' => esc_html__( 'Justified', 'wpb' ), 'icon' => 'eicon-text-align-justify' ),
+            ),
+            'selectors' => array( $sel => 'text-align: {{VALUE}};' ),
+        ) );
+
+        if ( in_array( $native, array( 'heading', 'text-editor', 'button', 'icon-list' ), true ) ) {
+            $this->add_control( $g['id'] . '_native_color', array(
+                'label'     => esc_html__( 'Text Color', 'wpb' ),
+                'type'      => \\Elementor\\Controls_Manager::COLOR,
+                'selectors' => array( $sel => 'color: {{VALUE}};' ),
+            ) );
+            // Group_Control_Typography ships with every Elementor build
+            // since 1.0, but we still guard with class_exists so a
+            // missing symbol can never fatal the editor on legacy
+            // installs.
+            if ( class_exists( '\\Elementor\\Group_Control_Typography' ) ) {
+                $this->add_group_control(
+                    \\Elementor\\Group_Control_Typography::get_type(),
+                    array(
+                        'name'     => $g['id'] . '_native_typo',
+                        'selector' => $sel,
+                    )
+                );
+            }
+            if ( class_exists( '\\Elementor\\Group_Control_Text_Shadow' ) ) {
+                $this->add_group_control(
+                    \\Elementor\\Group_Control_Text_Shadow::get_type(),
+                    array(
+                        'name'     => $g['id'] . '_native_text_shadow',
+                        'selector' => $sel,
+                    )
+                );
+            }
+        }
+
+        if ( $native === 'button' ) {
+            // Background — normal + hover. Mirrors the native Button
+            // widget's two-state Style tab. We also add Border, Border
+            // Radius and Padding which together make a button feel like
+            // a real Elementor Button when edited.
+            $this->add_control( $g['id'] . '_native_bg', array(
+                'label'     => esc_html__( 'Background Color', 'wpb' ),
+                'type'      => \\Elementor\\Controls_Manager::COLOR,
+                'selectors' => array( $sel => 'background-color: {{VALUE}};' ),
+            ) );
+            $this->add_control( $g['id'] . '_native_bg_hover', array(
+                'label'     => esc_html__( 'Background Color (Hover)', 'wpb' ),
+                'type'      => \\Elementor\\Controls_Manager::COLOR,
+                'selectors' => array( $sel . ':hover' => 'background-color: {{VALUE}};' ),
+            ) );
+            $this->add_control( $g['id'] . '_native_color_hover', array(
+                'label'     => esc_html__( 'Text Color (Hover)', 'wpb' ),
+                'type'      => \\Elementor\\Controls_Manager::COLOR,
+                'selectors' => array( $sel . ':hover' => 'color: {{VALUE}};' ),
+            ) );
+            if ( class_exists( '\\Elementor\\Group_Control_Border' ) ) {
+                $this->add_group_control(
+                    \\Elementor\\Group_Control_Border::get_type(),
+                    array(
+                        'name'     => $g['id'] . '_native_border',
+                        'selector' => $sel,
+                    )
+                );
+            }
+            $this->add_responsive_control( $g['id'] . '_native_radius', array(
+                'label'      => esc_html__( 'Border Radius', 'wpb' ),
+                'type'       => \\Elementor\\Controls_Manager::DIMENSIONS,
+                'size_units' => array( 'px', '%', 'em' ),
+                'selectors'  => array( $sel => 'border-radius: {{TOP}}{{UNIT}} {{RIGHT}}{{UNIT}} {{BOTTOM}}{{UNIT}} {{LEFT}}{{UNIT}};' ),
+            ) );
+            $this->add_responsive_control( $g['id'] . '_native_padding', array(
+                'label'      => esc_html__( 'Padding', 'wpb' ),
+                'type'       => \\Elementor\\Controls_Manager::DIMENSIONS,
+                'size_units' => array( 'px', '%', 'em' ),
+                'selectors'  => array( $sel => 'padding: {{TOP}}{{UNIT}} {{RIGHT}}{{UNIT}} {{BOTTOM}}{{UNIT}} {{LEFT}}{{UNIT}};' ),
+            ) );
+        }
+
+        if ( $native === 'image' ) {
+            $this->add_responsive_control( $g['id'] . '_native_width', array(
+                'label'      => esc_html__( 'Width', 'wpb' ),
+                'type'       => \\Elementor\\Controls_Manager::SLIDER,
+                'size_units' => array( 'px', '%', 'vw' ),
+                'range'      => array(
+                    'px' => array( 'min' => 0, 'max' => 1600 ),
+                    '%'  => array( 'min' => 0, 'max' => 100 ),
+                ),
+                'selectors'  => array( $sel => 'width: {{SIZE}}{{UNIT}}; height: auto;' ),
+            ) );
+            $this->add_responsive_control( $g['id'] . '_native_max_width', array(
+                'label'      => esc_html__( 'Max Width', 'wpb' ),
+                'type'       => \\Elementor\\Controls_Manager::SLIDER,
+                'size_units' => array( 'px', '%' ),
+                'range'      => array( 'px' => array( 'min' => 0, 'max' => 1600 ) ),
+                'selectors'  => array( $sel => 'max-width: {{SIZE}}{{UNIT}};' ),
+            ) );
+            $this->add_control( $g['id'] . '_native_opacity', array(
+                'label'      => esc_html__( 'Opacity', 'wpb' ),
+                'type'       => \\Elementor\\Controls_Manager::SLIDER,
+                'range'      => array( 'px' => array( 'min' => 0, 'max' => 1, 'step' => 0.05 ) ),
+                'selectors'  => array( $sel => 'opacity: {{SIZE}};' ),
+            ) );
+            if ( class_exists( '\\Elementor\\Group_Control_Border' ) ) {
+                $this->add_group_control(
+                    \\Elementor\\Group_Control_Border::get_type(),
+                    array(
+                        'name'     => $g['id'] . '_native_border',
+                        'selector' => $sel,
+                    )
+                );
+            }
+            $this->add_responsive_control( $g['id'] . '_native_radius', array(
+                'label'      => esc_html__( 'Border Radius', 'wpb' ),
+                'type'       => \\Elementor\\Controls_Manager::DIMENSIONS,
+                'size_units' => array( 'px', '%' ),
+                'selectors'  => array( $sel => 'border-radius: {{TOP}}{{UNIT}} {{RIGHT}}{{UNIT}} {{BOTTOM}}{{UNIT}} {{LEFT}}{{UNIT}};' ),
+            ) );
+        }
+
+        if ( $native === 'icon' ) {
+            $this->add_control( $g['id'] . '_native_icon_color', array(
+                'label'     => esc_html__( 'Icon Color', 'wpb' ),
+                'type'      => \\Elementor\\Controls_Manager::COLOR,
+                'selectors' => array( $sel => 'color: {{VALUE}}; fill: {{VALUE}};' ),
+            ) );
+            $this->add_control( $g['id'] . '_native_icon_color_hover', array(
+                'label'     => esc_html__( 'Icon Color (Hover)', 'wpb' ),
+                'type'      => \\Elementor\\Controls_Manager::COLOR,
+                'selectors' => array( $sel . ':hover' => 'color: {{VALUE}}; fill: {{VALUE}};' ),
+            ) );
+            $this->add_responsive_control( $g['id'] . '_native_icon_size', array(
+                'label'      => esc_html__( 'Size', 'wpb' ),
+                'type'       => \\Elementor\\Controls_Manager::SLIDER,
+                'size_units' => array( 'px', 'em' ),
+                'range'      => array( 'px' => array( 'min' => 6, 'max' => 300 ) ),
+                'selectors'  => array( $sel => 'font-size: {{SIZE}}{{UNIT}};' ),
+            ) );
+            $this->add_responsive_control( $g['id'] . '_native_icon_padding', array(
+                'label'      => esc_html__( 'Padding', 'wpb' ),
+                'type'       => \\Elementor\\Controls_Manager::DIMENSIONS,
+                'size_units' => array( 'px', '%', 'em' ),
+                'selectors'  => array( $sel => 'padding: {{TOP}}{{UNIT}} {{RIGHT}}{{UNIT}} {{BOTTOM}}{{UNIT}} {{LEFT}}{{UNIT}};' ),
+            ) );
+        }
+
+        $this->end_controls_section();
     }
 
     protected function register_controls() {
@@ -476,6 +688,16 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
                     $this->add_control( $c['key'], $args );
                 }
                 $this->end_controls_section();
+                // legacy_native: tack a Style-tab section onto every
+                // group whose controls mirror the matching native
+                // Elementor widget (Group_Control_Typography + Text
+                // Color + Border / Background for buttons, etc.). The
+                // controls bind to {{WRAPPER}} .wpb-leaf-{gid} so the
+                // edits land on the original markup wrapper without
+                // changing the render path.
+                if ( $this->wpb_native_ui ) {
+                    $this->wpb_register_native_style( $g );
+                }
             }
             return;
         }
@@ -591,7 +813,7 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
 }
 `;
 
-function widgetPhpFor(section: ExtractedSection, templateRelPath: string): string {
+function widgetPhpFor(section: ExtractedSection, templateRelPath: string, nativeUi: boolean): string {
   const safeId = section.blockName.split("/")[1].replace(/[^a-zA-Z0-9_]/g, "_");
   const fieldsJson = JSON.stringify(section.fields).replace(/'/g, "\\'");
   const groupsJson = JSON.stringify(section.groups ?? []).replace(/'/g, "\\'");
@@ -605,6 +827,7 @@ class WPB_Widget_${safeId} extends WPB_Widget_Base {
         $this->wpb_template_path = ${JSON.stringify(templateRelPath)};
         $this->wpb_fields = json_decode( '${fieldsJson}', true ) ?: array();
         $this->wpb_groups = json_decode( '${groupsJson}', true ) ?: array();
+        $this->wpb_native_ui = ${nativeUi ? "true" : "false"};
         parent::__construct( $data, $args );
     }
 }
@@ -620,6 +843,7 @@ const ASSET_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "avif", "svg", "
  */
 export function generateThemeZip(input: ThemeInput): Buffer {
   const { projectSlug, projectName, combinedCss, combinedJs, pages, sourceZip } = input;
+  const nativeUi = input.conversionMode === "legacy_native";
   const zip = new AdmZip();
   const root = projectSlug;
 
@@ -654,7 +878,7 @@ export function generateThemeZip(input: ThemeInput): Buffer {
       // via wpb_render_section_template().
       const tplRel = `widgets/templates/${safeDir}/template.html`;
       zip.addFile(`${root}/${tplRel}`, Buffer.from(section.template, "utf8"));
-      zip.addFile(`${root}/widgets/widget-${safeDir}.php`, Buffer.from(widgetPhpFor(section, tplRel), "utf8"));
+      zip.addFile(`${root}/widgets/widget-${safeDir}.php`, Buffer.from(widgetPhpFor(section, tplRel, nativeUi), "utf8"));
     }
   }
 

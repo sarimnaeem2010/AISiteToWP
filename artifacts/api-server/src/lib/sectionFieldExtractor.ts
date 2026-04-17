@@ -43,11 +43,47 @@ export interface ExtractedControl {
   options?: string[];
 }
 
+/**
+ * Native Elementor widget that the group's sidebar UI should mirror when
+ * the project is in `legacy_native` conversion mode. The PHP widget reads
+ * this field to decide which native control set (Heading, Button, Image,
+ * Icon List, Text Editor) to clone — including the full Style tab with
+ * Group_Control_Typography, Text Color, Text Shadow, Border, etc. scoped
+ * to the leaf's stable `wpb-leaf-{id}` CSS class. The render path is
+ * unchanged: the original markup template is still substituted server-
+ * side, so visual fidelity matches the plain `legacy` mode byte-for-byte
+ * (modulo the extra leaf class).
+ */
+export type NativeWidgetKind =
+  | "heading"
+  | "button"
+  | "image"
+  | "icon-list"
+  | "text-editor"
+  | "icon";
+
 export interface ExtractedGroup {
   id: string;
   kind: GroupKind;
   label: string;
   controls: ExtractedControl[];
+  /**
+   * The native Elementor widget whose control set this group should
+   * clone in `legacy_native` mode. Always populated so the JSON shape is
+   * stable across modes; the PHP widget only consults it when the
+   * project's mode says to.
+   */
+  nativeWidget: NativeWidgetKind;
+  /**
+   * Stable CSS class added to the original leaf element in the section
+   * template. Used as the `selector` suffix (e.g.
+   * `{{WRAPPER}} .wpb-leaf-g0`) for native style controls in
+   * `legacy_native` mode so the user's typography / color / etc. edits
+   * land on the original wrapper. The class is only injected into the
+   * template when the project is in `legacy_native` mode — other modes
+   * leave the markup byte-identical to the source HTML.
+   */
+  leafClass: string;
 }
 
 export interface ExtractedSection {
@@ -357,7 +393,7 @@ interface BuildResult {
   groups: ExtractedGroup[];
 }
 
-function buildSectionTemplate(section: Element): BuildResult {
+function buildSectionTemplate(section: Element, opts: { injectLeafClass: boolean } = { injectLeafClass: false }): BuildResult {
   rebaseAssetUrls(section);
 
   const fields: ExtractedField[] = [];
@@ -376,6 +412,21 @@ function buildSectionTemplate(section: Element): BuildResult {
     fields.push({ key, type, default: def, label });
   };
 
+  // Tag the original leaf element with a stable `wpb-leaf-{gid}` class
+  // so native style controls in `legacy_native` mode have a CSS selector
+  // hook scoped to that leaf. In other modes the template stays byte-
+  // identical to the source HTML — we record `leafClass` on the group
+  // for shape stability but skip the DOM mutation.
+  const tagLeaf = (el: Element, gid: string): string => {
+    const cls = `wpb-leaf-${gid}`;
+    if (opts.injectLeafClass) {
+      const existing = el.getAttribute("class") ?? "";
+      const next = existing ? `${existing} ${cls}` : cls;
+      el.setAttribute("class", next);
+    }
+    return cls;
+  };
+
   const targets = collectGroupTargets(section);
 
   for (const el of targets) {
@@ -384,6 +435,7 @@ function buildSectionTemplate(section: Element): BuildResult {
     // ---- IMAGE ----
     if (tag === "IMG") {
       const gid = nextGroupId();
+      const leafClass = tagLeaf(el, gid);
       const srcKey = `${gid}_image`;
       const altKey = `${gid}_alt`;
       const src = el.getAttribute("src") ?? "";
@@ -409,6 +461,8 @@ function buildSectionTemplate(section: Element): BuildResult {
         kind: "image",
         label: `Image — ${labelText.length > 32 ? labelText.slice(0, 32) + "…" : labelText}`,
         controls,
+        nativeWidget: "image",
+        leafClass,
       });
       continue;
     }
@@ -416,6 +470,7 @@ function buildSectionTemplate(section: Element): BuildResult {
     // ---- HEADING ----
     if (HEADING_TAGS.has(tag)) {
       const gid = nextGroupId();
+      const leafClass = tagLeaf(el, gid);
       const textKey = `${gid}_text`;
       const tagKey = `${gid}_tag`;
       const text = takeText(el, textKey);
@@ -441,6 +496,8 @@ function buildSectionTemplate(section: Element): BuildResult {
             options: ["h1", "h2", "h3", "h4", "h5", "h6"],
           },
         ],
+        nativeWidget: "heading",
+        leafClass,
       });
       continue;
     }
@@ -448,6 +505,7 @@ function buildSectionTemplate(section: Element): BuildResult {
     // ---- LIST ----
     if (tag === "UL" || tag === "OL") {
       const gid = nextGroupId();
+      const leafClass = tagLeaf(el, gid);
       const itemsKey = `${gid}_items`;
       const items = Array.from(el.children)
         .filter((c) => c.tagName === "LI")
@@ -477,6 +535,8 @@ function buildSectionTemplate(section: Element): BuildResult {
             default: joined,
           },
         ],
+        nativeWidget: "icon-list",
+        leafClass,
       });
       continue;
     }
@@ -484,6 +544,7 @@ function buildSectionTemplate(section: Element): BuildResult {
     // ---- ICON ----
     if (isIconLeaf(el)) {
       const gid = nextGroupId();
+      const leafClass = tagLeaf(el, gid);
       const classKey = `${gid}_icon_class`;
       const altKey = `${gid}_icon_alt`;
       const linkKey = `${gid}_icon_link`;
@@ -518,6 +579,8 @@ function buildSectionTemplate(section: Element): BuildResult {
           { key: altKey, fieldKey: altKey, type: "text", label: "Alt Text", default: "" },
           { key: linkKey, fieldKey: linkKey, type: "url", label: "Icon Link", default: "" },
         ],
+        nativeWidget: "icon",
+        leafClass,
       });
       continue;
     }
@@ -525,6 +588,7 @@ function buildSectionTemplate(section: Element): BuildResult {
     // ---- BUTTON / LINK ----
     if (tag === "BUTTON" || tag === "A") {
       const gid = nextGroupId();
+      const leafClass = tagLeaf(el, gid);
       const textKey = `${gid}_text`;
       const text = takeText(el, textKey);
       if (text) addField(textKey, "text", text, "button text");
@@ -578,6 +642,11 @@ function buildSectionTemplate(section: Element): BuildResult {
         kind,
         label: `${labelPrefix} — ${labelText.length > 32 ? labelText.slice(0, 32) + "…" : labelText}`,
         controls,
+        // Both buttons and plain links mirror the native Button widget's
+        // sidebar (Text + Link + Style group). Native Elementor doesn't
+        // ship a "link" widget — the closest match is Button.
+        nativeWidget: "button",
+        leafClass,
       });
       continue;
     }
@@ -585,6 +654,7 @@ function buildSectionTemplate(section: Element): BuildResult {
     // ---- PLAIN TEXT ----
     if (TEXT_PARENTS.has(tag)) {
       const gid = nextGroupId();
+      const leafClass = tagLeaf(el, gid);
       const textKey = `${gid}_text`;
       const text = takeText(el, textKey);
       if (!text) continue;
@@ -603,6 +673,12 @@ function buildSectionTemplate(section: Element): BuildResult {
             default: text,
           },
         ],
+        // Plain text leaves clone the native Text Editor widget's
+        // sidebar in `legacy_native` mode. Text Editor's Style tab ships
+        // Typography, Text Color, Columns — exactly the controls a
+        // paragraph or label expects.
+        nativeWidget: "text-editor",
+        leafClass,
       });
     }
   }
@@ -620,7 +696,7 @@ export function extractSectionsFromPage(
    * `NATIVE_ELEMENTOR_MODE` env var is consulted (defaulting to
    * `"shell"`). Tests use this to opt into per-widget translation.
    */
-  decomposerModeOverride?: "shell" | "deep" | "legacy",
+  decomposerModeOverride?: "shell" | "deep" | "legacy" | "legacy_native",
 ): ExtractedSection[] {
   const dom = new JSDOM(html);
   const body = dom.window.document.body;
@@ -678,14 +754,21 @@ export function extractSectionsFromPage(
     // "legacy" disables native decomposition for that project even when
     // the env says it's enabled, and any non-"legacy" override forces
     // native decomposition on.
+    // `legacy` and `legacy_native` both opt out of native decomposition
+    // — they share the same render path (one custom PHP widget per
+    // section that re-renders the original markup with placeholder
+    // substitution). `legacy_native` only differs in how the widget's
+    // sidebar UI is registered (mirrors the matching native Elementor
+    // widget's controls), which is handled downstream by the theme
+    // generator.
     const nativeEnabled =
-      decomposerModeOverride === "legacy"
+      decomposerModeOverride === "legacy" || decomposerModeOverride === "legacy_native"
         ? false
         : decomposerModeOverride
           ? true
           : envNativeEnabled;
     const mode: "shell" | "deep" =
-      decomposerModeOverride && decomposerModeOverride !== "legacy"
+      decomposerModeOverride === "shell" || decomposerModeOverride === "deep"
         ? decomposerModeOverride
         : (process.env.NATIVE_ELEMENTOR_MODE === "deep" ? "deep" : "shell");
     const cleanClone = el.cloneNode(true) as Element;
@@ -712,7 +795,14 @@ export function extractSectionsFromPage(
         nativeElementor,
       });
     } else {
-      const { template, fields, groups } = buildSectionTemplate(el);
+      // Only inject the `wpb-leaf-{gid}` CSS hooks into the rendered
+      // template when the project is in `legacy_native` mode — those
+      // classes are the selectors native style controls bind to. Other
+      // legacy projects keep their templates byte-identical to the
+      // original markup.
+      const { template, fields, groups } = buildSectionTemplate(el, {
+        injectLeafClass: decomposerModeOverride === "legacy_native",
+      });
       sections.push({ id, blockName, label: `${label} (${category})`, category, template, fields, groups });
     }
   }

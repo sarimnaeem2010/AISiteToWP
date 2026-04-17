@@ -72,7 +72,7 @@ function buildExtractedPages(project: {
   sourceHtml: string | null;
   sourceCss?: string | null;
   conversionMode?: string | null;
-}): { pages: ExtractedPage[]; projectSlug: string } {
+}): { pages: ExtractedPage[]; projectSlug: string; conversionMode: string } {
   const baseSlug = project.name
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
@@ -89,8 +89,10 @@ function buildExtractedPages(project: {
   // Falls back to env defaults inside extractSectionsFromPage when the
   // value is missing or unrecognized.
   const rawMode = (project.conversionMode ?? "").toLowerCase();
-  const modeOverride: "shell" | "deep" | "legacy" | undefined =
-    rawMode === "shell" || rawMode === "deep" || rawMode === "legacy" ? rawMode : undefined;
+  const modeOverride: "shell" | "deep" | "legacy" | "legacy_native" | undefined =
+    rawMode === "shell" || rawMode === "deep" || rawMode === "legacy" || rawMode === "legacy_native"
+      ? rawMode
+      : undefined;
   if (sourcePagesHtml && Object.keys(sourcePagesHtml).length > 0) {
     for (const [slug, src] of Object.entries(sourcePagesHtml)) {
       const sections = extractSectionsFromPage(src.content, slug, projectSlug, sourceCss, modeOverride);
@@ -100,7 +102,7 @@ function buildExtractedPages(project: {
     const sections = extractSectionsFromPage(project.sourceHtml, "home", projectSlug, sourceCss, modeOverride);
     pages.push({ slug: "home", title: "Home", sections });
   }
-  return { pages, projectSlug };
+  return { pages, projectSlug, conversionMode: modeOverride ?? "shell" };
 }
 const CustomPostTypesSchema = z.object({
   customPostTypes: z.array(
@@ -226,7 +228,7 @@ router.get("/projects/:id", async (req, res): Promise<void> => {
     aiAnalysis: project.aiAnalysis ?? null,
     customPostTypes: project.customPostTypes ?? [],
     renderer: projectRenderer(project.renderer ?? null),
-    conversionMode: (project.conversionMode === "deep" || project.conversionMode === "legacy" ? project.conversionMode : "shell") as "shell" | "deep" | "legacy",
+    conversionMode: (project.conversionMode === "deep" || project.conversionMode === "legacy" || project.conversionMode === "legacy_native" ? project.conversionMode : "shell") as "shell" | "deep" | "legacy" | "legacy_native",
     wpConfig: project.wpUrl
       ? {
           wpUrl: project.wpUrl,
@@ -582,7 +584,7 @@ router.put("/projects/:id/renderer", async (req, res): Promise<void> => {
 });
 
 const ConversionModeSchema = z.object({
-  conversionMode: z.enum(["shell", "deep", "legacy"]),
+  conversionMode: z.enum(["shell", "deep", "legacy", "legacy_native"]),
 });
 
 router.put("/projects/:id/conversion-mode", async (req, res): Promise<void> => {
@@ -1186,7 +1188,7 @@ router.get("/projects/:id/theme-zip", async (req, res): Promise<void> => {
     return;
   }
 
-  const { pages, projectSlug } = buildExtractedPages(project);
+  const { pages, projectSlug, conversionMode } = buildExtractedPages(project);
   const totalSections = pages.reduce((n, p) => n + p.sections.length, 0);
   if (totalSections === 0) {
     res.status(422).json({ error: "Could not extract any sections from source HTML." });
@@ -1210,6 +1212,7 @@ router.get("/projects/:id/theme-zip", async (req, res): Promise<void> => {
     combinedJs,
     pages,
     sourceZip,
+    conversionMode,
   });
   res.setHeader("Content-Type", "application/zip");
   res.setHeader("Content-Disposition", `attachment; filename="${projectSlug}-theme.zip"`);
@@ -1280,7 +1283,7 @@ router.post("/projects/:id/install-theme", async (req, res): Promise<void> => {
     return;
   }
 
-  const { pages, projectSlug } = buildExtractedPages(project);
+  const { pages, projectSlug, conversionMode } = buildExtractedPages(project);
   if (pages.reduce((n, p) => n + p.sections.length, 0) === 0) {
     res.status(422).json({ error: "Could not extract any sections from source HTML." });
     return;
@@ -1301,6 +1304,7 @@ router.post("/projects/:id/install-theme", async (req, res): Promise<void> => {
     combinedJs,
     pages,
     sourceZip,
+    conversionMode,
   });
 
   const cfg = {

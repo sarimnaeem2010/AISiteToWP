@@ -35,7 +35,7 @@ const wpConfigSchema = z
     { message: "API key is required", path: ["wpApiKey"] }
   );
 
-type ConversionMode = "shell" | "deep" | "legacy";
+type ConversionMode = "shell" | "deep" | "legacy" | "legacy_native";
 
 const CONVERSION_MODE_OPTIONS: { value: ConversionMode; title: string; description: string }[] = [
   {
@@ -53,10 +53,15 @@ const CONVERSION_MODE_OPTIONS: { value: ConversionMode; title: string; descripti
     title: "Legacy",
     description: "Disable native decomposition; fall back to the custom-widget PHP path. Use only if Shell or Deep break the import.",
   },
+  {
+    value: "legacy_native",
+    title: "Legacy + Native UI",
+    description: "Same byte-identical render path as Legacy, but each leaf gets a native-Elementor-style sidebar (Typography, Color, Background, Border) scoped to its own CSS hook.",
+  },
 ];
 
 function isConversionMode(v: unknown): v is ConversionMode {
-  return v === "shell" || v === "deep" || v === "legacy";
+  return v === "shell" || v === "deep" || v === "legacy" || v === "legacy_native";
 }
 
 function ConversionModeCard({
@@ -130,7 +135,7 @@ function ConversionModeCard({
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2">
           {CONVERSION_MODE_OPTIONS.map((opt) => (
             <button
               key={opt.value}
