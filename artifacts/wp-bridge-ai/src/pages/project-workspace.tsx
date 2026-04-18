@@ -766,7 +766,7 @@ export default function ProjectWorkspace() {
     deleteProject.mutate({ id }, {
       onSuccess: () => {
         toast({ title: "Project deleted" });
-        window.location.href = "/";
+        window.location.href = "/app";
       }
     });
   };

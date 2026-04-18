@@ -8,14 +8,14 @@ function SidebarContent() {
   const [location] = useLocation();
 
   const navigation = [
-    { name: "Dashboard", href: "/", icon: LayoutDashboard },
+    { name: "Dashboard", href: "/app", icon: LayoutDashboard },
     { name: "New Project", href: "/projects/new", icon: Plus },
   ];
 
   return (
     <div className="flex h-full flex-col bg-sidebar border-r border-sidebar-border">
       <div className="flex h-16 items-center px-5 border-b border-sidebar-border">
-        <Link href="/" className="flex items-center gap-2.5">
+        <Link href="/app" className="flex items-center gap-2.5">
           <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground shadow-sm">
             <Zap className="h-4 w-4 fill-current" />
           </span>
