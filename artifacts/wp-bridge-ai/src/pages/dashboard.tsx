@@ -188,24 +188,26 @@ export default function Dashboard() {
         </Card>
       </section>
 
-      {/* Section: Onboarding nudge (always shown — short feature row) */}
-      <section className="grid gap-4 md:grid-cols-3">
-        {[
-          { icon: FileCode2, title: "Bring any HTML", body: "Paste markup, upload a ZIP, or scrape a public URL." },
-          { icon: LayoutTemplate, title: "Auto-extract structure", body: "Pages, sections, design tokens and CPTs detected automatically." },
-          { icon: CheckCircle2, title: "Push to WordPress", body: "Generates a child theme + Elementor widgets you can edit natively." },
-        ].map((f) => (
-          <Card key={f.title}>
-            <CardContent className="p-5">
-              <div className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary mb-3">
-                <f.icon className="h-4 w-4" />
-              </div>
-              <h4 className="text-sm font-semibold mb-1">{f.title}</h4>
-              <p className="text-sm text-muted-foreground leading-relaxed">{f.body}</p>
-            </CardContent>
-          </Card>
-        ))}
-      </section>
+      {/* Section: Onboarding nudge — only shown when there are no projects yet */}
+      {!projectsLoading && (!projects || projects.length === 0) && (
+        <section className="grid gap-4 md:grid-cols-3">
+          {[
+            { icon: FileCode2, title: "Bring any HTML", body: "Paste markup, upload a ZIP, or scrape a public URL." },
+            { icon: LayoutTemplate, title: "Auto-extract structure", body: "Pages, sections, design tokens and CPTs detected automatically." },
+            { icon: CheckCircle2, title: "Push to WordPress", body: "Generates a child theme + Elementor widgets you can edit natively." },
+          ].map((f) => (
+            <Card key={f.title}>
+              <CardContent className="p-5">
+                <div className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary mb-3">
+                  <f.icon className="h-4 w-4" />
+                </div>
+                <h4 className="text-sm font-semibold mb-1">{f.title}</h4>
+                <p className="text-sm text-muted-foreground leading-relaxed">{f.body}</p>
+              </CardContent>
+            </Card>
+          ))}
+        </section>
+      )}
     </div>
   );
 }

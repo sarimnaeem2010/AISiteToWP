@@ -821,9 +821,9 @@ export default function ProjectWorkspace() {
         </div>
       </div>
 
-      <div className="grid gap-6 md:grid-cols-3">
-        {/* Main Content Area */}
-        <div className="md:col-span-2 space-y-6">
+      <div className="space-y-6">
+        {/* Stacked section cards */}
+        <div className="space-y-6">
           {project.status === "created" && (
             <Card>
               <CardHeader>
@@ -1399,9 +1399,9 @@ export default function ProjectWorkspace() {
           )}
         </div>
 
-        {/* Sidebar / Log Area */}
-        <div className="space-y-6 md:sticky md:top-6 md:self-start">
-          <Card className="h-[600px] flex flex-col overflow-hidden p-0 gap-0">
+        {/* Deployment log — stacked beneath sections */}
+        <div className="space-y-6">
+          <Card className="h-[480px] flex flex-col overflow-hidden p-0 gap-0">
             <CardHeader className="py-3.5 px-4 border-b border-border bg-card">
               <CardTitle className="text-sm flex items-center justify-between">
                 <span className="flex items-center gap-2">

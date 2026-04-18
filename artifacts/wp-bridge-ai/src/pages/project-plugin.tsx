@@ -1,11 +1,12 @@
 import { useParams, Link } from "wouter";
 import { useGetProject, useGeneratePlugin } from "@workspace/api-client-react";
-import { ArrowLeft, Download, FileCode2, Copy, Check, Key } from "lucide-react";
+import { ArrowLeft, Download, FileCode2, Copy, Check, Key, ChevronDown } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 
 export default function ProjectPlugin() {
   const { id } = useParams<{ id: string }>();
@@ -108,24 +109,45 @@ export default function ProjectPlugin() {
         </CardHeader>
         <CardContent className="p-0">
           {isLoading ? (
-            <div className="h-96 flex items-center justify-center text-muted-foreground bg-[#1e1e1e]">
+            <div className="h-32 flex items-center justify-center text-muted-foreground">
               Generating PHP code…
             </div>
           ) : pluginData ? (
-            <div className="relative">
-              <ScrollArea className="h-[600px] w-full bg-[#1e1e1e] text-[#d4d4d4] font-mono text-xs p-4">
-                <pre><code>{pluginData.phpCode}</code></pre>
-              </ScrollArea>
-              <div className="absolute top-3 right-3 bg-amber-500/10 text-amber-300 border border-amber-500/30 px-2.5 py-1 rounded-md text-[11px] font-medium flex items-center gap-2">
-                <span className="relative flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-400"></span>
-                </span>
-                API key embedded
-              </div>
-            </div>
+            <Collapsible>
+              <CollapsibleTrigger className="group flex w-full items-center justify-between px-5 py-3.5 text-left hover:bg-muted/30 transition-colors border-b border-border data-[state=open]:border-b-0">
+                <div className="flex items-center gap-2.5">
+                  <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-primary/10 text-primary">
+                    <FileCode2 className="h-3.5 w-3.5" />
+                  </span>
+                  <div>
+                    <div className="text-sm font-semibold">PHP source preview</div>
+                    <div className="text-xs text-muted-foreground">
+                      Optional — open to inspect generated PHP. Hidden by default.
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 shrink-0">
+                  <span className="text-[11px] text-muted-foreground hidden sm:inline">Show / hide</span>
+                  <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+                </div>
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <div className="relative">
+                  <ScrollArea className="h-[600px] w-full bg-[#1e1e1e] text-[#d4d4d4] font-mono text-xs p-4">
+                    <pre><code>{pluginData.phpCode}</code></pre>
+                  </ScrollArea>
+                  <div className="absolute top-3 right-3 bg-amber-500/10 text-amber-300 border border-amber-500/30 px-2.5 py-1 rounded-md text-[11px] font-medium flex items-center gap-2">
+                    <span className="relative flex h-2 w-2">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-400"></span>
+                    </span>
+                    API key embedded
+                  </div>
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
           ) : (
-            <div className="h-96 flex items-center justify-center text-destructive bg-[#1e1e1e]">
+            <div className="h-32 flex items-center justify-center text-destructive">
               Failed to generate plugin code.
             </div>
           )}

@@ -1,6 +1,6 @@
 import { useParams, Link } from "wouter";
 import { useGetProject } from "@workspace/api-client-react";
-import { ArrowLeft, LayoutTemplate, Type, Palette, Component } from "lucide-react";
+import { ArrowLeft, LayoutTemplate, Type, Palette, Component, Layers } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -41,49 +41,68 @@ export default function ProjectPreview() {
         </div>
       </div>
 
-      <div className="grid gap-6 md:grid-cols-4">
-        {/* Sidebar: Design system */}
-        <div className="md:col-span-1 space-y-6">
-          <Card>
-            <CardHeader className="border-b border-border py-4">
-              <CardTitle className="text-sm flex items-center gap-2">
-                <Palette className="h-4 w-4 text-primary" />
-                Design system
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-5 space-y-5">
-              {design ? (
-                <>
-                  <div>
-                    <div className="text-[11px] text-muted-foreground mb-2 uppercase tracking-wider font-medium">Typography</div>
-                    <div className="flex items-center gap-2 bg-muted/40 border border-border rounded-md p-2.5">
-                      <Type className="h-4 w-4 text-muted-foreground" />
-                      <span className="font-medium text-sm">{design.font || "System default"}</span>
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-[11px] text-muted-foreground mb-2 uppercase tracking-wider font-medium">Colors</div>
-                    <div className="flex flex-wrap gap-2">
-                      {design.colors?.map((color, i) => (
-                        <div
-                          key={i}
-                          className="h-9 w-9 rounded-md border border-border shadow-xs"
-                          style={{ backgroundColor: color }}
-                          title={color}
-                        />
-                      )) || <span className="text-sm text-muted-foreground italic">None extracted</span>}
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <div className="text-sm text-muted-foreground italic">No design system extracted.</div>
-              )}
-            </CardContent>
-          </Card>
+      {/* Hero summary card — at-a-glance overview before per-page detail */}
+      <Card className="overflow-hidden">
+        <div className="bg-hero-accent border-b border-card-border px-6 py-6 md:px-8 md:py-7">
+          <div className="grid gap-6 md:grid-cols-[1fr_auto] items-start">
+            <div className="space-y-3">
+              <div className="inline-flex items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-3 py-1 text-xs font-medium text-primary">
+                <Layers className="h-3 w-3" />
+                Parsed structure summary
+              </div>
+              <h2 className="text-xl md:text-2xl font-bold tracking-tight">
+                {parsedSite.pages.length} {parsedSite.pages.length === 1 ? "page" : "pages"} ready for WordPress
+              </h2>
+              <p className="text-sm text-muted-foreground max-w-xl">
+                {parsedSite.pages.reduce((acc, p) => acc + p.sections.length, 0)} blocks extracted across {parsedSite.pages.length} {parsedSite.pages.length === 1 ? "page" : "pages"}
+                {design?.font ? ` · primary font ${design.font}` : ""}.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2 md:justify-end">
+              <Badge variant="outline" className="text-xs">
+                {parsedSite.pages.reduce((acc, p) => acc + p.sections.length, 0)} blocks
+              </Badge>
+              {design?.colors?.length ? (
+                <Badge variant="outline" className="text-xs">{design.colors.length} colors</Badge>
+              ) : null}
+              {design?.font ? <Badge variant="outline" className="text-xs">{design.font}</Badge> : null}
+            </div>
+          </div>
         </div>
+        <CardContent className="p-5 md:p-6 grid gap-6 md:grid-cols-2">
+          <div>
+            <div className="text-[11px] text-muted-foreground mb-2 uppercase tracking-wider font-medium flex items-center gap-1.5">
+              <Type className="h-3 w-3" /> Typography
+            </div>
+            <div className="flex items-center gap-2 bg-muted/40 border border-border rounded-md p-2.5">
+              <Type className="h-4 w-4 text-muted-foreground" />
+              <span className="font-medium text-sm">{design?.font || "System default"}</span>
+            </div>
+          </div>
+          <div>
+            <div className="text-[11px] text-muted-foreground mb-2 uppercase tracking-wider font-medium flex items-center gap-1.5">
+              <Palette className="h-3 w-3" /> Color palette
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {design?.colors?.length ? (
+                design.colors.map((color, i) => (
+                  <div
+                    key={i}
+                    className="h-9 w-9 rounded-md border border-border shadow-xs"
+                    style={{ backgroundColor: color }}
+                    title={color}
+                  />
+                ))
+              ) : (
+                <span className="text-sm text-muted-foreground italic">None extracted</span>
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
-        {/* Main: Pages */}
-        <div className="md:col-span-3 space-y-6">
+      {/* Per-page cards */}
+      <div className="space-y-6">
           {parsedSite.pages.map((page, pIdx) => (
             <Card key={pIdx} className="overflow-hidden">
               <div className="bg-muted/40 border-b border-border px-5 py-3.5 flex items-center justify-between">
@@ -116,7 +135,6 @@ export default function ProjectPreview() {
               </CardContent>
             </Card>
           ))}
-        </div>
       </div>
     </div>
   );
