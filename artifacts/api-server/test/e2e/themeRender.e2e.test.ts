@@ -283,6 +283,28 @@ test("uploaded themes render end-to-end inside WordPress", { skip: ENABLED ? fal
 
   // Boot php -S in the background once; we'll switch themes per fixture.
   const port = 18000 + Math.floor(Math.random() * 1000);
+
+  // Pin siteurl/home to the actual host:port we'll be serving on. The
+  // installer (install-wp.php) seeds these to "http://localhost" because
+  // it has no idea which port the test will pick; left as-is, WordPress
+  // canonical_redirect bounces every request to http://localhost/...
+  // (port 80), which fails on environments where nothing answers there
+  // and breaks every fetch in this suite. Keeping these in sync with the
+  // test server is also what lets the rewriteToBase helper skip rewriting
+  // its own absolute URLs.
+  const siteUrlSync = run("php", ["-r", `
+    $_SERVER['HTTP_HOST'] = '127.0.0.1:${port}';
+    $_SERVER['REQUEST_URI'] = '/';
+    require '${WP_DIR}/wp-load.php';
+    update_option('siteurl', 'http://127.0.0.1:${port}');
+    update_option('home',    'http://127.0.0.1:${port}');
+  `]);
+  assert.equal(
+    siteUrlSync.status,
+    0,
+    `failed to pin WP siteurl/home to test server:\n${siteUrlSync.stderr}`,
+  );
+
   const router = path.join(__dirname, "router.php");
   const server = spawn("php", ["-S", `127.0.0.1:${port}`, "-t", WP_DIR, router], {
     stdio: ["ignore", "pipe", "pipe"],
@@ -920,6 +942,165 @@ test("uploaded themes render end-to-end inside WordPress", { skip: ENABLED ? fal
       fallbackParent!.tagName,
       "A",
       `swapped <img> must NOT be wrapped by <a> when the Icon Link is blank, got <${fallbackParent!.tagName.toLowerCase()}>`,
+    );
+  });
+
+  // legacy_native sidebar styling round-trip: prove that flipping a
+  // native style control on a legacy widget — text color and text
+  // alignment on a heading group — actually causes the published page
+  // to receive the corresponding CSS, scoped to the per-leaf
+  // `.wpb-leaf-{gid}` hook the extractor stamps on the rendered markup.
+  //
+  // Without this test, the unit-level `legacy_native` regression suite
+  // only asserts that the generated PHP wires the controls up — it
+  // does not catch a regression in the `{{WRAPPER}} .wpb-leaf-{gid}`
+  // selector or in the swap pass that re-merges the leaf class onto
+  // the rendered template, both of which would silently break every
+  // native style control on legacy widgets.
+  await t.test("legacy_native: native sidebar style controls produce CSS on the rendered page", async () => {
+    const projectSlug = "legacy-native-style-fixture";
+    const projectName = "Legacy Native Style Fixture";
+    const pageSlug = "legacy-native-style-home";
+    const fixturePath = path.join(FIXTURE_DIR, "simple-page.html");
+    const fixture = readFileSync(fixturePath, "utf8");
+    const sections = extractSectionsFromPage(
+      fixture,
+      pageSlug,
+      projectSlug,
+      undefined,
+      "legacy_native",
+    );
+    assert.ok(sections.length > 0, "extractor must yield sections in legacy_native mode");
+    for (const s of sections) {
+      assert.ok(
+        !s.nativeElementor,
+        `legacy_native must skip native Elementor decomposition (got one for ${s.blockName})`,
+      );
+    }
+
+    // Build and extract the legacy_native theme into wp-content/themes/.
+    const themeZip = generateThemeZip({
+      projectName,
+      projectSlug,
+      combinedCss: "body{margin:0}",
+      combinedJs: "",
+      pages: [{ slug: pageSlug, title: projectName, sections }],
+      sourceZip: null,
+      conversionMode: "legacy_native",
+    });
+    const themesDir = path.join(WP_DIR, "wp-content/themes", projectSlug);
+    rmSync(themesDir, { recursive: true, force: true });
+    mkdirSync(themesDir, { recursive: true });
+    const ad = new AdmZip(themeZip);
+    for (const e of ad.getEntries()) {
+      if (e.isDirectory) continue;
+      const rel = e.entryName.replace(/^[^/]+\//, "");
+      const dest = path.join(themesDir, rel);
+      mkdirSync(path.dirname(dest), { recursive: true });
+      writeFileSync(dest, e.getData());
+    }
+
+    interface WidgetNode { widgetType: string; settings: Record<string, unknown> }
+    interface ColumnNode { elements: WidgetNode[] }
+    interface SectionNode { elements: ColumnNode[] }
+    const elementorData = composeElementorData({
+      slug: pageSlug,
+      title: projectName,
+      sections,
+    }) as SectionNode[];
+
+    // Pick the first heading group across all sections — heading is the
+    // densest leaf for native style controls (color + typography + size +
+    // alignment all bind to it), so it's the surface most likely to
+    // surface a regression in the leaf-class selector wiring.
+    let chosen: { gid: string; leafClass: string; settings: Record<string, unknown> } | null = null;
+    outer: for (let si = 0; si < sections.length; si++) {
+      const widget = elementorData[si].elements[0].elements[0];
+      for (const g of sections[si].groups) {
+        if (g.nativeWidget === "heading") {
+          assert.match(
+            g.leafClass,
+            /^wpb-leaf-/,
+            "legacy_native heading group must record a wpb-leaf-* class on the group",
+          );
+          chosen = { gid: g.id, leafClass: g.leafClass, settings: widget.settings };
+          break outer;
+        }
+      }
+    }
+    assert.ok(
+      chosen,
+      "simple-page fixture must contain at least one heading group in legacy_native mode",
+    );
+
+    // Mutate the native style controls registered by
+    // wpb_register_native_style for this leaf:
+    //   <gid>_native_color  → text color (Controls_Manager::COLOR)
+    //   <gid>_native_align  → text-align  (Controls_Manager::CHOOSE, responsive)
+    // Both are wired with Elementor `selectors` against
+    // `{{WRAPPER}} .wpb-leaf-<gid>`, so flipping them must cause
+    // Elementor to inject scoped CSS into the rendered page.
+    const mutatedColor = "#ff00aa";
+    const mutatedAlign = "center";
+    chosen!.settings[`${chosen!.gid}_native_color`] = mutatedColor;
+    chosen!.settings[`${chosen!.gid}_native_align`] = mutatedAlign;
+
+    const apply = run(
+      "php",
+      [path.join(__dirname, "apply-elementor.php"), WP_DIR, projectSlug, pageSlug, projectName],
+      { input: JSON.stringify(elementorData) },
+    );
+    assert.equal(apply.status, 0, `apply-elementor.php failed:\n${apply.stderr}`);
+    const pageId = parseInt(apply.stdout.trim(), 10);
+    assert.ok(Number.isFinite(pageId) && pageId > 0, `unexpected page id: ${apply.stdout}`);
+
+    const res = await fetch(`${base}/?page_id=${pageId}`);
+    assert.equal(res.status, 200, `WP responded ${res.status}\nserver stderr:\n${serverErr}`);
+    const html = await res.text();
+    const dom = new JSDOM(html);
+
+    // The rendered DOM must still carry .{leafClass} on the heading
+    // — this proves the swap pass that re-merges the leaf class onto
+    // the rendered template is intact.
+    const leafEl = dom.window.document.querySelector(`.${chosen!.leafClass}`);
+    assert.ok(
+      leafEl,
+      `rendered DOM must carry .${chosen!.leafClass} so the native style controls have a CSS hook`,
+    );
+
+    // And Elementor must have emitted a CSS rule that targets that leaf
+    // with the mutated declarations. With elementor_css_print_method =
+    // 'internal' (set by apply-elementor.php) the rule lives inline in
+    // the page <style> tags. Collect every rule that mentions the leaf
+    // selector and concat the declaration bodies so the assertion is
+    // robust to whichever {{WRAPPER}}-prefixed full selector Elementor
+    // chose to emit.
+    const styles = Array.from(dom.window.document.querySelectorAll("style"))
+      .map((s) => s.textContent ?? "")
+      .join("\n");
+    const leafSelector = `.${chosen!.leafClass}`;
+    const leafBlockRegex = new RegExp(
+      `[^{}]*\\${leafSelector}\\b[^{}]*\\{([^{}]*)\\}`,
+      "g",
+    );
+    const blocks: string[] = [];
+    for (const m of styles.matchAll(leafBlockRegex)) blocks.push(m[1]);
+    assert.ok(
+      blocks.length > 0,
+      `expected at least one Elementor CSS rule targeting ${leafSelector}, ` +
+        `but found none in inlined <style> tags. styles head:\n${styles.slice(0, 800)}`,
+    );
+    const declBody = blocks.join("\n").toLowerCase();
+    assert.ok(
+      declBody.includes(`color:${mutatedColor}`) || declBody.includes(`color: ${mutatedColor}`),
+      `Elementor must inject color:${mutatedColor} into a rule targeting ${leafSelector}; ` +
+        `got declarations:\n${declBody}`,
+    );
+    assert.ok(
+      declBody.includes(`text-align:${mutatedAlign}`) ||
+        declBody.includes(`text-align: ${mutatedAlign}`),
+      `Elementor must inject text-align:${mutatedAlign} into a rule targeting ${leafSelector}; ` +
+        `got declarations:\n${declBody}`,
     );
   });
 
