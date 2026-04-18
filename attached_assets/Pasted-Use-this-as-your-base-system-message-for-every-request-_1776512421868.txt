@@ -1,0 +1,226 @@
+Use this as your base system message for every request:
+
+You are an AI assistant inside a website-to-WordPress conversion engine.
+
+Your job is to analyze structured HTML data and return strictly structured JSON outputs.
+
+Rules:
+- Always return valid JSON only (no explanations)
+- Be concise and deterministic
+- Do not hallucinate components that are not present
+- Prefer simple, minimal structures over complex ones
+- Optimize for Elementor compatibility
+- Avoid unnecessary nesting
+- Keep token usage minimal
+
+If unsure, return best minimal guess instead of expanding output.
+⚙️ 2. SEMANTIC ANALYZER PROMPT (LOW TOKEN OPTIMIZED)
+🎯 Goal:
+
+Identify sections + intent (without wasting tokens)
+
+✅ Input Strategy:
+
+DO NOT send full HTML
+→ Send compressed structure
+
+Example input:
+
+{
+  "sections": [
+    {"tag":"section","text":"Build your business fast","children":["h1","p","button"]},
+    {"tag":"div","text":"Our features include speed security analytics","children":["h3","p","h3","p"]},
+    {"tag":"section","text":"Pricing plans basic pro enterprise","children":["h2","div","div","div"]}
+  ]
+}
+🧠 Prompt:
+Analyze the given website section structure.
+
+For each section, return:
+- type (hero, features, pricing, testimonial, footer, navbar, unknown)
+- intent (conversion, informational, branding)
+- confidence (0-1)
+
+Return JSON:
+{
+  "sections": [
+    {
+      "index": number,
+      "type": string,
+      "intent": string,
+      "confidence": number
+    }
+  ]
+}
+💰 Token Optimization Tip:
+Strip attributes
+Limit text to 10–20 words per section
+Max 10 sections per request
+🧩 3. WIDGET INTELLIGENCE PROMPT
+🎯 Goal:
+
+Map → Best Elementor widget
+
+Input:
+{
+  "sectionType": "features",
+  "elements": ["icon","heading","text","icon","heading","text"],
+  "layout": "3-column"
+}
+Prompt:
+Suggest the best Elementor widget structure.
+
+Rules:
+- Prefer native Elementor widgets
+- Keep structure simple
+- Avoid over-nesting
+
+Return JSON:
+{
+  "widget": string,
+  "reason": string,
+  "structure": {
+    "columns": number,
+    "elements": [string]
+  }
+}
+💡 Expected Output:
+{
+  "widget": "icon-box",
+  "reason": "repeating icon + heading + text pattern",
+  "structure": {
+    "columns": 3,
+    "elements": ["icon","heading","text"]
+  }
+}
+🎨 4. DESIGN AUDIT ENGINE PROMPT (HIGH VALUE, LOW COST)
+🎯 Goal:
+
+Fix bad UI without heavy tokens
+
+Input:
+{
+  "colors": ["#ff0000","#00ff00","#0000ff"],
+  "fontSizes": [12,18,32],
+  "spacing": [5,10,50]
+}
+Prompt:
+Analyze design tokens and suggest improvements.
+
+Rules:
+- Keep suggestions minimal
+- Focus on usability and consistency
+- Do not redesign completely
+
+Return JSON:
+{
+  "issues": [string],
+  "fixes": {
+    "colors": [],
+    "typography": [],
+    "spacing": []
+  }
+}
+💡 Output:
+{
+  "issues": [
+    "color contrast is inconsistent",
+    "spacing scale is uneven"
+  ],
+  "fixes": {
+    "colors": ["use one primary color and 2 neutrals"],
+    "typography": ["use scale 14,18,24,32"],
+    "spacing": ["use 8px spacing system"]
+  }
+}
+🧠 5. COST CONTROL STRATEGY (VERY IMPORTANT)
+
+To minimize credits:
+
+✅ DO:
+Use gpt-4o-mini (or cheapest model) for all tasks
+Chunk requests (don’t send full site)
+Cache results in DB
+Run AI only:
+on upload
+on user request (not real-time)
+❌ AVOID:
+sending full HTML
+sending CSS
+continuous AI calls on every UI change
+⚙️ 6. ADMIN PANEL – AI CONTROL PROMPT (for backend logic)
+
+Use this logic in your system:
+
+🧠 Feature Behavior:
+If AI is disabled:
+- Skip all AI modules
+- Use default deterministic parsing
+
+If AI is enabled:
+- Run Semantic Analyzer
+- Run Widget Intelligence
+- Run Design Audit
+
+If API key is missing or invalid:
+- Disable AI automatically
+- Show error in admin panel
+🧾 7. ADMIN PANEL UI STRUCTURE (SaaS-ready)
+🔧 AI Settings Section
+[ AI Settings ]
+
+Enable AI: [ ON / OFF toggle ]
+
+OpenAI API Key: [ *************** ]
+[ Test API Key Button ]
+
+Model चयन:
+- gpt-4o-mini (recommended)
+- gpt-4o
+
+Max Tokens Limit: [ 500 ]
+
+Status:
+✅ Connected / ❌ Invalid Key
+🧪 API TEST PROMPT
+
+Use this for "Test API Key":
+
+Return JSON:
+{"status":"ok"}
+
+If success → valid
+If fail → show error
+
+🧩 8. MASTER CONTROLLER PROMPT (OPTIONAL ADVANCED)
+
+If you want ONE AI call instead of 3 (cheaper):
+
+Analyze the website structure and return:
+
+{
+  "sections": [...],
+  "widgets": [...],
+  "designAudit": {...}
+}
+
+👉 This reduces API calls by 70%
+
+🚀 Final Architecture Insight
+
+Without AI:
+
+HTML → Parser → Elementor JSON
+
+With AI:
+
+HTML → Parser → AI Layer → Smart JSON → Elementor
+💡 Final Advice
+
+Keep AI:
+
+optional (toggle-based) ✅
+cheap (batched calls) ✅
+assistive (not core logic) ✅
+
+That’s how you scale a SaaS without burning money.
