@@ -443,11 +443,23 @@ export function expandBorderShorthand(styles: Record<string, string>): Record<st
     "inset",
     "outset",
   ]);
+  // CSS line-width keywords — translate to approximate pixel values so
+  // downstream parsers (which expect a length) can consume them. The
+  // mapping mirrors the typical UA defaults.
+  const widthKeywords: Record<string, string> = {
+    thin: "1px",
+    medium: "3px",
+    thick: "5px",
+  };
   for (const t of tokens) {
     const lower = t.toLowerCase();
     if (parseLength(t)) {
       // Width — only fill if the longhand isn't already authored.
       if (!out["border-width"]) out["border-width"] = t;
+      continue;
+    }
+    if (widthKeywords[lower]) {
+      if (!out["border-width"]) out["border-width"] = widthKeywords[lower];
       continue;
     }
     if (styleKeywords.has(lower)) {
