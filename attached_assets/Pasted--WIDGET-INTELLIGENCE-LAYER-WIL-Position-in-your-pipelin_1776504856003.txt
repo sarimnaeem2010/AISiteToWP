@@ -1,0 +1,188 @@
+🧠 WIDGET INTELLIGENCE LAYER (WIL)
+🔷 Position in your pipeline
+HTML Upload
+   ↓
+DOM Parser
+   ↓
+Block Detection
+   ↓
+Base Widget Mapping
+   ↓
+🧠 WIDGET INTELLIGENCE LAYER  ← (NEW)
+   ↓
+Clean Elementor-like JSON
+   ↓
+WP / Elementor Output
+⚙️ 1. AUTO-DETECT BEST WIDGET TYPE (Semantic Classifier)
+
+Instead of relying only on rules, you introduce a scoring-based classifier.
+
+🔹 How it works:
+
+Each block is evaluated against widget templates:
+
+Example input:
+h1 + p + button + hero image
+Scoring system:
+Hero Widget: 0.92
+CTA Block: 0.71
+Feature Block: 0.38
+Banner: 0.55
+
+👉 Highest score wins → hero
+
+🔹 Scoring rules:
+Signal	Weight
+Large heading (h1)	+0.3
+CTA button present	+0.25
+Full-width layout	+0.2
+Background image	+0.15
+Single focal message	+0.1
+Output:
+{
+  "widget_type": "hero",
+  "confidence": 0.92
+}
+🧠 2. DESIGN CONSISTENCY ENGINE (VERY IMPORTANT)
+
+This is what makes your system feel “Elementor native”.
+
+🔷 RULE: Global Design Tokens
+
+You define a system-wide design language:
+
+{
+  "spacing": {
+    "xs": "8px",
+    "sm": "16px",
+    "md": "32px",
+    "lg": "64px",
+    "xl": "96px"
+  },
+  "font_scale": {
+    "h1": "48px",
+    "h2": "36px",
+    "h3": "28px",
+    "body": "16px"
+  },
+  "colors": {
+    "primary": "#4F46E5",
+    "text": "#111827",
+    "muted": "#6B7280"
+  }
+}
+🔹 Normalization Rules:
+1. Font normalization
+if font-size > 60px → h1
+if 30–60px → h2/h3
+if < 18px → body text
+2. Spacing normalization
+margin-top: 37px → md (32px)
+padding: 103px → xl (96px)
+3. Color normalization
+#4F46E5 → primary
+#111111 → text
+#999999 → muted
+Output:
+
+Before:
+
+"padding": "103px"
+
+After:
+
+"padding": "xl"
+🧠 3. SUGGESTION ENGINE (UX IMPROVEMENT LAYER)
+
+This layer doesn’t change structure — it improves it.
+
+🔹 Example suggestions:
+If hero has no CTA:
+{
+  "type": "suggestion",
+  "message": "Add a CTA button to improve conversion"
+}
+If too many fonts:
+{
+  "type": "suggestion",
+  "message": "Reduce typography variation for better visual hierarchy"
+}
+If spacing inconsistent:
+{
+  "type": "suggestion",
+  "message": "Standardize spacing using design tokens (md/lg)"
+}
+You can also auto-fix (optional mode):
+mode: auto_fix | suggest_only
+🧠 4. STRUCTURE REFINEMENT ENGINE
+
+This layer cleans messy HTML-derived widgets.
+
+RULES:
+Rule 1: Merge fragmented text nodes
+<h1>Learn</h1>
+<h1>Guitar</h1>
+→ "Learn Guitar"
+Rule 2: Remove decorative noise
+empty divs
+redundant wrappers
+inline styling duplication
+Rule 3: Normalize hierarchy
+multiple h1 → downgrade to h2/h3
+🧠 5. FINAL INTELLIGENT OUTPUT FORMAT
+
+Your final widget becomes:
+
+{
+  "widget_type": "hero",
+  "confidence": 0.92,
+
+  "content": {
+    "title": "Learn Guitar Fast",
+    "subtitle": "Join 50,000 students",
+    "cta": "Start Free Trial"
+  },
+
+  "style": {
+    "alignment": "center",
+    "padding": "xl",
+    "text_color": "primary"
+  },
+
+  "design_validation": {
+    "score": 0.87,
+    "issues": [],
+    "suggestions": [
+      "Add secondary CTA for higher engagement"
+    ]
+  }
+}
+🧠 6. SYSTEM LOGIC SUMMARY
+
+Your intelligence layer should do 4 things:
+
+1. CLASSIFY
+detect best widget type (probabilistic)
+2. NORMALIZE
+spacing → design tokens
+fonts → type scale
+colors → palette mapping
+3. IMPROVE
+suggest UX fixes
+detect missing elements
+highlight weak structure
+4. ENFORCE DESIGN SYSTEM
+everything must conform to:
+spacing scale
+typography scale
+color system
+widget schema
+🚀 WHY THIS MAKES YOUR SYSTEM POWERFUL
+
+Without this layer:
+
+your system = HTML converter
+
+With this layer:
+
+your system = AI-powered page builder like Elementor/Webflow
