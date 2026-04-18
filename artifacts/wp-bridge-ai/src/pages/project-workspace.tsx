@@ -17,7 +17,7 @@ import { useGetProject, useUpdateWordPressConfig, useTestWordPressConnection, us
 import { useToast } from "@/hooks/use-toast";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
 
 // Map common section type strings to a representative lucide icon for the
 // left-rail "Detected sections" list. Falls back to Component for unknown types.
@@ -1095,13 +1095,26 @@ export default function ProjectWorkspace() {
                 </span>
               </div>
               <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground mt-0.5 min-w-0">
-                <FileCode2 className="h-3 w-3 shrink-0 text-primary/70" />
-                <span className="font-mono truncate" data-testid="header-source-file">{sourceFileName}</span>
+                {(proj as { sourceUrl?: string }).sourceUrl ? (
+                  <>
+                    <LinkIcon className="h-3 w-3 shrink-0 text-primary/70" />
+                    <span className="truncate" data-testid="header-source-url" title={(proj as { sourceUrl?: string }).sourceUrl}>
+                      {(proj as { sourceUrl?: string }).sourceUrl}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <FileCode2 className="h-3 w-3 shrink-0 text-primary/70" />
+                    <span className="font-mono truncate" data-testid="header-source-file">{sourceFileName}</span>
+                  </>
+                )}
                 {project.wpConfig?.wpUrl && (
                   <>
                     <span className="text-border">·</span>
                     <Globe className="h-3 w-3 shrink-0" />
-                    <span className="truncate">{project.wpConfig.wpUrl}</span>
+                    <span className="truncate" title={`WP target: ${project.wpConfig.wpUrl}`}>
+                      WP: {project.wpConfig.wpUrl.replace(/^https?:\/\//, "")}
+                    </span>
                   </>
                 )}
               </div>
@@ -1298,7 +1311,23 @@ export default function ProjectWorkspace() {
                   {railSections.length === 0 ? (
                     <p className="text-xs text-muted-foreground">No sections detected on the first page.</p>
                   ) : (
-                    <nav className="space-y-0.5" aria-label="Detected sections">
+                    <>
+                      {/* Mobile: compact dropdown */}
+                      <select
+                        className="lg:hidden w-full h-9 rounded-md border border-input bg-background px-2 text-sm"
+                        value={activeSection ?? 0}
+                        onChange={(e) => jumpToSection(Number(e.target.value))}
+                        aria-label="Jump to section"
+                        data-testid="section-nav-mobile"
+                      >
+                        {railSections.map((s, i) => (
+                          <option key={i} value={i}>
+                            {String(i + 1).padStart(2, "0")} · {prettyType(s.type)}
+                          </option>
+                        ))}
+                      </select>
+                      {/* Desktop: full button list */}
+                      <nav className="hidden lg:block space-y-0.5" aria-label="Detected sections">
                       {railSections.map((s, i) => {
                         const Icon = sectionIconFor(s.type);
                         const active = activeSection === i;
@@ -1320,7 +1349,8 @@ export default function ProjectWorkspace() {
                           </button>
                         );
                       })}
-                    </nav>
+                      </nav>
+                    </>
                   )}
                 </aside>
 
