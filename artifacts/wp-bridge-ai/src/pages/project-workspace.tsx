@@ -934,9 +934,13 @@ export default function ProjectWorkspace() {
   const isApiKeyMismatch = (status: number, body: unknown): boolean => {
     const b = (body ?? {}) as { error?: string; code?: string; message?: string };
     if (status === 409 && b.error === "api_key_mismatch") return true;
-    if (status === 403) return true;
-    if (b.code === "forbidden") return true;
-    if (typeof b.message === "string" && /invalid api key/i.test(b.message)) return true;
+    // Only treat a 403 as a key mismatch when the upstream body looks
+    // like the plugin's own "Invalid API key" / forbidden response.
+    // A bare 403 with no body could be a different auth failure (e.g.
+    // basic auth, hosting-level WAF) and should surface its own error.
+    if (status === 403 && (b.code === "forbidden" || (typeof b.message === "string" && /invalid api key/i.test(b.message)))) {
+      return true;
+    }
     return false;
   };
 
