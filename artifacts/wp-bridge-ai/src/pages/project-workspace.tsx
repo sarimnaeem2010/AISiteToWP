@@ -100,6 +100,9 @@ function ProjectAiStatusPill({ projectId }: { projectId: string }) {
   const [status, setStatus] = useState<AiPublicStatus | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [reanalyzing, setReanalyzing] = useState(false);
+  // `nowTick` increments every 30s so the "X ago" label re-renders even
+  // when the underlying `lastRunAt` value hasn't changed.
+  const [, setNowTick] = useState(0);
 
   const loadStatus = async (signal?: { cancelled: boolean }) => {
     try {
@@ -126,6 +129,48 @@ function ProjectAiStatusPill({ projectId }: { projectId: string }) {
       } catch { /* not signed in — fine */ }
     })();
     return () => { signal.cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiBase, projectId]);
+
+  // Periodically refresh status (every 30s) while the tab is visible, and
+  // also tick the clock so relative timestamps stay current. Pauses when
+  // the tab is hidden to avoid background polling, and re-fetches
+  // immediately when the tab becomes visible again so the user sees fresh
+  // data on return.
+  useEffect(() => {
+    const signal = { cancelled: false };
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+
+    const start = () => {
+      if (intervalId !== null) return;
+      intervalId = setInterval(() => {
+        setNowTick((n) => n + 1);
+        void loadStatus(signal);
+      }, 30_000);
+    };
+    const stop = () => {
+      if (intervalId !== null) {
+        clearInterval(intervalId);
+        intervalId = null;
+      }
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void loadStatus(signal);
+        setNowTick((n) => n + 1);
+        start();
+      } else {
+        stop();
+      }
+    };
+
+    if (document.visibilityState === "visible") start();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      signal.cancelled = true;
+      stop();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiBase, projectId]);
 
