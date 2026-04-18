@@ -42,64 +42,65 @@ export default function ProjectPlugin() {
 
   return (
     <div className="max-w-4xl mx-auto space-y-6 pb-20 animate-in fade-in duration-500">
-      <div className="flex items-center gap-4 mb-8">
+      <div className="flex items-center gap-4">
         <Link href={`/projects/${id}`}>
           <Button variant="ghost" size="icon" className="rounded-full">
             <ArrowLeft className="h-5 w-5" />
           </Button>
         </Link>
         <div>
-          <h1 className="text-2xl font-bold tracking-tight font-mono">Companion Plugin</h1>
+          <h1 className="text-2xl">Companion plugin</h1>
           <p className="text-muted-foreground text-sm">Install this on your target WordPress instance.</p>
         </div>
       </div>
 
       {pluginData?.apiKey && (
-        <Card className="border-primary/40 shadow-md">
+        <Card>
           <CardHeader className="pb-3">
-            <CardTitle className="font-mono flex items-center gap-2 text-base">
+            <CardTitle className="flex items-center gap-2 text-base">
               <Key className="h-4 w-4 text-primary" />
-              Plugin API Key
+              Plugin API key
             </CardTitle>
             <CardDescription>
-              Copy this value (only this value) into the <strong>Plugin API Key</strong> field in WordPress Config.
+              Copy this value into the <strong>Plugin API Key</strong> field in WordPress Config.
               It's already baked into the plugin ZIP you installed.
             </CardDescription>
           </CardHeader>
           <CardContent>
             <div className="flex items-center gap-2">
-              <code className="flex-1 bg-muted px-3 py-2 rounded border font-mono text-xs break-all select-all">
+              <code className="flex-1 bg-muted px-3 py-2.5 rounded-lg border border-border font-mono text-xs break-all select-all">
                 {pluginData.apiKey}
               </code>
-              <Button variant="outline" onClick={handleCopyKey} className="font-mono shrink-0">
-                {keyCopied ? <Check className="mr-2 h-4 w-4" /> : <Copy className="mr-2 h-4 w-4" />}
-                Copy Key
+              <Button variant="outline" onClick={handleCopyKey} className="shrink-0">
+                {keyCopied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                Copy key
               </Button>
             </div>
           </CardContent>
         </Card>
       )}
 
-      <Card className="border-primary/20 shadow-md">
-        <CardHeader className="bg-primary/5 border-b pb-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="font-mono flex items-center gap-2">
+      <Card className="overflow-hidden">
+        <CardHeader className="bg-muted/40 border-b border-border pb-4">
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div className="min-w-0">
+              <CardTitle className="flex items-center gap-2">
                 <FileCode2 className="h-5 w-5 text-primary" />
-                {pluginData?.filename || "wp-bridge-companion.php"}
+                <span className="font-mono">{pluginData?.filename || "wp-bridge-companion.php"}</span>
               </CardTitle>
-              <CardDescription className="mt-2">
-                This plugin creates the REST API endpoints necessary to receive the parsed structure.
-                It includes authentication and Elementor widget/ACF import logic specifically tailored for <strong>{project?.name || "this project"}</strong>.
+              <CardDescription className="mt-2 max-w-2xl">
+                This plugin creates the REST endpoints needed to receive your parsed structure.
+                It includes authentication and Elementor widget / ACF import logic specifically tailored
+                for <strong>{project?.name || "this project"}</strong>.
               </CardDescription>
             </div>
-            <div className="flex gap-2">
-              <Button variant="outline" onClick={handleCopy} className="font-mono" disabled={!pluginData}>
-                {copied ? <Check className="mr-2 h-4 w-4" /> : <Copy className="mr-2 h-4 w-4" />}
+            <div className="flex gap-2 shrink-0">
+              <Button variant="outline" onClick={handleCopy} disabled={!pluginData}>
+                {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                 Copy
               </Button>
-              <Button onClick={handleDownload} className="font-mono" disabled={!pluginData}>
-                <Download className="mr-2 h-4 w-4" />
+              <Button onClick={handleDownload} disabled={!pluginData}>
+                <Download className="h-4 w-4" />
                 Download .zip
               </Button>
             </div>
@@ -107,24 +108,24 @@ export default function ProjectPlugin() {
         </CardHeader>
         <CardContent className="p-0">
           {isLoading ? (
-            <div className="h-96 flex items-center justify-center font-mono text-muted-foreground bg-black/95">
-              Generating PHP code...
+            <div className="h-96 flex items-center justify-center text-muted-foreground bg-[#1e1e1e]">
+              Generating PHP code…
             </div>
           ) : pluginData ? (
             <div className="relative">
-              <ScrollArea className="h-[600px] w-full bg-[#1e1e1e] text-[#d4d4d4] font-mono text-sm p-4">
+              <ScrollArea className="h-[600px] w-full bg-[#1e1e1e] text-[#d4d4d4] font-mono text-xs p-4">
                 <pre><code>{pluginData.phpCode}</code></pre>
               </ScrollArea>
-              <div className="absolute top-4 right-4 bg-yellow-500/10 text-yellow-500 border border-yellow-500/20 px-3 py-1.5 rounded text-xs font-mono flex items-center gap-2">
+              <div className="absolute top-3 right-3 bg-amber-500/10 text-amber-300 border border-amber-500/30 px-2.5 py-1 rounded-md text-[11px] font-medium flex items-center gap-2">
                 <span className="relative flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-yellow-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-yellow-500"></span>
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-400"></span>
                 </span>
-                API Key Embedded
+                API key embedded
               </div>
             </div>
           ) : (
-            <div className="h-96 flex items-center justify-center font-mono text-destructive bg-black/95">
+            <div className="h-96 flex items-center justify-center text-destructive bg-[#1e1e1e]">
               Failed to generate plugin code.
             </div>
           )}
