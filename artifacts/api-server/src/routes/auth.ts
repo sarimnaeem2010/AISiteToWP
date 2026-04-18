@@ -105,7 +105,98 @@ router.get("/auth/me", async (req, res) => {
     res.status(401).json({ error: "Not authenticated" });
     return;
   }
-  res.json({ id: user.id, username: user.username, isAdmin: user.isAdmin });
+  res.json({
+    id: user.id,
+    username: user.username,
+    isAdmin: user.isAdmin,
+    displayName: user.displayName ?? null,
+    email: user.email ?? null,
+  });
+});
+
+/**
+ * PATCH /api/auth/me
+ * Body: { displayName?, email? }
+ * Updates the current user's display name and/or email.
+ */
+router.patch("/auth/me", async (req, res) => {
+  const user = await loadUserFromUserCookie(req);
+  if (!user) {
+    res.status(401).json({ error: "Not authenticated" });
+    return;
+  }
+  const body = (req.body ?? {}) as { displayName?: unknown; email?: unknown };
+  const updates: { displayName?: string | null; email?: string | null } = {};
+  if (body.displayName !== undefined) {
+    const v = String(body.displayName ?? "").trim();
+    updates.displayName = v.length === 0 ? null : v.slice(0, 80);
+  }
+  if (body.email !== undefined) {
+    const v = String(body.email ?? "").trim();
+    if (v.length === 0) {
+      updates.email = null;
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) {
+      res.status(400).json({ error: "Please enter a valid email address." });
+      return;
+    } else {
+      updates.email = v.slice(0, 254);
+    }
+  }
+  if (Object.keys(updates).length === 0) {
+    res.status(400).json({ error: "Nothing to update." });
+    return;
+  }
+  try {
+    const [updated] = await db
+      .update(usersTable)
+      .set(updates)
+      .where(eq(usersTable.id, user.id))
+      .returning();
+    res.json({
+      id: updated.id,
+      username: updated.username,
+      isAdmin: updated.isAdmin,
+      displayName: updated.displayName ?? null,
+      email: updated.email ?? null,
+    });
+  } catch (err) {
+    logger.error({ err: String(err) }, "update profile failed");
+    res.status(500).json({ error: "Could not update profile." });
+  }
+});
+
+/**
+ * POST /api/auth/change-password
+ * Body: { currentPassword, newPassword }
+ * Verifies the current password before rotating the hash.
+ */
+router.post("/auth/change-password", async (req, res) => {
+  const user = await loadUserFromUserCookie(req);
+  if (!user) {
+    res.status(401).json({ error: "Not authenticated" });
+    return;
+  }
+  const currentPassword = String(req.body?.currentPassword ?? "");
+  const newPassword = String(req.body?.newPassword ?? "");
+  if (!newPassword || newPassword.length < 8) {
+    res.status(400).json({ error: "New password must be at least 8 characters." });
+    return;
+  }
+  const [row] = await db.select().from(usersTable).where(eq(usersTable.id, user.id));
+  if (!row || !verifyPassword(currentPassword, row.passwordHash)) {
+    res.status(401).json({ error: "Current password is incorrect." });
+    return;
+  }
+  try {
+    await db
+      .update(usersTable)
+      .set({ passwordHash: hashPassword(newPassword) })
+      .where(eq(usersTable.id, user.id));
+    res.json({ ok: true });
+  } catch (err) {
+    logger.error({ err: String(err) }, "change password failed");
+    res.status(500).json({ error: "Could not change password." });
+  }
 });
 
 export default router;
