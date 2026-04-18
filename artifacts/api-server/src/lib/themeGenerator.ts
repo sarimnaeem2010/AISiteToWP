@@ -1,6 +1,7 @@
 import AdmZip from "adm-zip";
 import path from "node:path";
 import type { ExtractedSection, ExtractedPage } from "./sectionFieldExtractor";
+import { renderTokensCss, type DesignTokens } from "./tokenExtractor";
 
 interface ThemeInput {
   projectName: string;
@@ -19,6 +20,14 @@ interface ThemeInput {
    * fall back to the generic legacy controls.
    */
   conversionMode?: string;
+  /**
+   * Project-wide design tokens. When provided, the theme ZIP includes
+   * `assets/tokens.css` (a `:root { --wpb-… }` block) enqueued before
+   * `template.css` so generated leaf styles can resolve `var(--wpb-…)`
+   * references. Omitted projects ship without the file and behave
+   * exactly as they did before this feature landed.
+   */
+  designTokens?: DesignTokens;
 }
 
 const STYLE_HEADER = (name: string, slug: string) => `/*
@@ -101,7 +110,16 @@ define( 'WPB_THEME_URI', get_stylesheet_directory_uri() );
 
 add_action( 'wp_enqueue_scripts', function () {
     wp_enqueue_style( 'wpb-theme-style', WPB_THEME_URI . '/style.css', array(), '1.0.0' );
-    wp_enqueue_style( 'wpb-template-css', WPB_THEME_URI . '/assets/template.css', array(), '1.0.0' );
+    // tokens.css is only present when the project has design tokens. We
+    // make wpb-template-css depend on it only when the file exists,
+    // otherwise WordPress would silently drop template.css due to an
+    // unmet dependency handle on token-less projects.
+    $wpb_template_deps = array();
+    if ( file_exists( WPB_THEME_DIR . '/assets/tokens.css' ) ) {
+        wp_enqueue_style( 'wpb-tokens-css', WPB_THEME_URI . '/assets/tokens.css', array(), '1.0.0' );
+        $wpb_template_deps[] = 'wpb-tokens-css';
+    }
+    wp_enqueue_style( 'wpb-template-css', WPB_THEME_URI . '/assets/template.css', $wpb_template_deps, '1.0.0' );
     if ( file_exists( WPB_THEME_DIR . '/assets/template.js' ) ) {
         wp_enqueue_script( 'wpb-template-js', WPB_THEME_URI . '/assets/template.js', array( 'jquery' ), '1.0.0', true );
     }
@@ -1108,6 +1126,9 @@ export function generateThemeZip(input: ThemeInput): Buffer {
   zip.addFile(`${root}/footer.php`, Buffer.from(FOOTER_PHP, "utf8"));
   zip.addFile(`${root}/inc/elementor-widgets.php`, Buffer.from(ELEMENTOR_WIDGETS_INC, "utf8"));
   zip.addFile(`${root}/assets/template.css`, Buffer.from(combinedCss, "utf8"));
+  if (input.designTokens) {
+    zip.addFile(`${root}/assets/tokens.css`, Buffer.from(renderTokensCss(input.designTokens), "utf8"));
+  }
   if (combinedJs.trim().length > 0) {
     zip.addFile(`${root}/assets/template.js`, Buffer.from(combinedJs, "utf8"));
   }

@@ -64,6 +64,153 @@ function isConversionMode(v: unknown): v is ConversionMode {
   return v === "shell" || v === "deep" || v === "legacy" || v === "legacy_native";
 }
 
+interface DesignTokens {
+  spacing: Record<string, string>;
+  fontSize: Record<string, string>;
+  color: Record<string, string>;
+  radius: Record<string, string>;
+}
+
+function DesignTokensCard({ projectId }: { projectId: string }) {
+  const { toast } = useToast();
+  const apiBase = import.meta.env.BASE_URL;
+  const [tokens, setTokens] = useState<DesignTokens | null>(null);
+  const [source, setSource] = useState<"persisted" | "extracted" | "default">("default");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await fetch(`${apiBase}api/projects/${projectId}/tokens`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const body = (await res.json()) as { tokens: DesignTokens; source: typeof source };
+        if (!cancelled) {
+          setTokens(body.tokens);
+          setSource(body.source);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          toast({
+            title: "Could not load design tokens",
+            description: err instanceof Error ? err.message : String(err),
+            variant: "destructive",
+          });
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [apiBase, projectId, toast]);
+
+  const updateValue = (group: keyof DesignTokens, key: string, value: string) => {
+    setTokens((cur) => (cur ? { ...cur, [group]: { ...cur[group], [key]: value } } : cur));
+  };
+
+  const onSave = async () => {
+    if (!tokens) return;
+    setSaving(true);
+    try {
+      const res = await fetch(`${apiBase}api/projects/${projectId}/tokens`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(tokens),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json()) as { tokens: DesignTokens; source: typeof source };
+      setTokens(body.tokens);
+      setSource(body.source);
+      toast({ title: "Design tokens saved", description: "Re-export the theme to apply them." });
+    } catch (err) {
+      toast({
+        title: "Could not save design tokens",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const renderGroup = (group: keyof DesignTokens, label: string, isColor = false) => {
+    if (!tokens) return null;
+    const entries = Object.entries(tokens[group]);
+    return (
+      <div className="space-y-2">
+        <div className="text-xs font-mono uppercase tracking-wider text-muted-foreground">{label}</div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {entries.map(([k, v]) => (
+            <div key={k} className="flex items-center gap-2">
+              <label className="text-xs font-mono w-16 text-muted-foreground">{k}</label>
+              {isColor && (
+                <input
+                  type="color"
+                  value={/^#[0-9a-fA-F]{6}$/.test(v) ? v : "#000000"}
+                  onChange={(e) => updateValue(group, k, e.target.value.toUpperCase())}
+                  className="h-7 w-10 rounded border border-border bg-transparent"
+                  disabled={saving}
+                />
+              )}
+              <input
+                type="text"
+                value={v}
+                onChange={(e) => updateValue(group, k, e.target.value)}
+                className="flex-1 h-7 rounded border border-border bg-background px-2 text-xs font-mono"
+                disabled={saving}
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  const sourceLabel: Record<typeof source, string> = {
+    persisted: "Saved (your edits)",
+    extracted: "Auto-extracted from source CSS",
+    default:   "Built-in defaults",
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="font-mono flex items-center gap-2">
+          <Layers className="h-5 w-5" />
+          Design Tokens
+        </CardTitle>
+        <CardDescription>
+          Project-wide spacing, type scale, palette and radii. Emitted as <code>:root</code> CSS variables in the generated theme so site-wide style changes are one edit away. Source: {sourceLabel[source]}.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {loading || !tokens ? (
+          <div className="text-xs text-muted-foreground font-mono">Loading…</div>
+        ) : (
+          <div className="space-y-4">
+            {renderGroup("color", "Color", true)}
+            {renderGroup("spacing", "Spacing")}
+            {renderGroup("fontSize", "Font Size")}
+            {renderGroup("radius", "Radius")}
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={onSave}
+                disabled={saving}
+                className="rounded-md border border-primary bg-primary/10 px-3 py-1.5 text-xs font-mono uppercase tracking-wider hover:bg-primary/20 disabled:opacity-60"
+              >
+                {saving ? "Saving…" : "Save tokens"}
+              </button>
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function ConversionModeCard({
   projectId,
   project,
@@ -808,6 +955,8 @@ export default function ProjectWorkspace() {
               onSaved={() => refetch()}
             />
           )}
+
+          {currentStep >= 2 && <DesignTokensCard projectId={id!} />}
 
           {currentStep >= 2 && (
             <Card>

@@ -11,6 +11,7 @@ import {
   expandBorderShorthand,
   type ParsedSheet,
 } from "./cssStyleResolver";
+import { snapToToken, type DesignTokens } from "./tokenExtractor";
 
 export type FieldType = "text" | "url" | "attr" | "tag";
 
@@ -489,7 +490,16 @@ function resolveLeafDefaults(
   el: Element,
   sheet: ParsedSheet | undefined,
   kind: NativeWidgetKind,
+  tokens?: DesignTokens,
 ): NativeDefaultStyles | undefined {
+  // Snap helper: when a project has design tokens, replace common
+  // string-shaped CSS values with `var(--wpb-…)` references so the
+  // generated theme participates in the project-wide design system.
+  // Numeric Elementor controls (DIMENSIONS / SLIDER) keep their raw
+  // values — those structured shapes don't accept var() — but the
+  // tokens.css emitted alongside still drives the actual visual
+  // rendering once the CSS variable cascade is in place.
+  const snapColor = (v: string | undefined) => snapToToken(v, tokens, "color") ?? v;
   if (!sheet) return undefined;
   const raw = computeStyles(el, sheet);
   if (!raw || Object.keys(raw).length === 0) return undefined;
@@ -503,7 +513,7 @@ function resolveLeafDefaults(
   const out: NativeDefaultStyles = {};
 
   // ---- text-ish properties (heading, text-editor, button, icon-list) ----
-  if (styles["color"]) out.color = styles["color"].trim();
+  if (styles["color"]) out.color = snapColor(styles["color"].trim());
   if (styles["text-align"]) out.text_align = styles["text-align"].trim();
   // Typography: reuse the existing buildTypography helper but rewrite
   // its `typography_font_*` keys to the bare field names Elementor's
@@ -524,7 +534,7 @@ function resolveLeafDefaults(
 
   // ---- background (button: normal + hover; image/icon: normal) ----
   if (styles["background-color"] && styles["background-color"] !== "transparent") {
-    out.background_color = styles["background-color"].trim();
+    out.background_color = snapColor(styles["background-color"].trim());
   }
 
   // ---- :hover-state defaults ----
@@ -534,14 +544,14 @@ function resolveLeafDefaults(
   // button doesn't get its hover swatch pre-filled with a value the
   // user can't visually distinguish from "unset".
   const hover = computeHoverStyles(el, sheet);
-  if (hover["color"]) out.color_hover = hover["color"].trim();
+  if (hover["color"]) out.color_hover = snapColor(hover["color"].trim());
   if (hover["background-color"] && hover["background-color"] !== "transparent") {
-    out.background_color_hover = hover["background-color"].trim();
+    out.background_color_hover = snapColor(hover["background-color"].trim());
   }
   // Icon glyphs use `fill` (SVG) more often than `color`; fall back to
   // it so the icon hover swatch matches the live page.
   if (kind === "icon" && !out.color_hover && hover["fill"]) {
-    out.color_hover = hover["fill"].trim();
+    out.color_hover = snapColor(hover["fill"].trim());
   }
   // Expand hover border shorthand for the same reason as the normal
   // state: pages routinely author `:hover { border: 1px solid #fff }`
@@ -575,7 +585,7 @@ function resolveLeafDefaults(
         border: (hoverStyles["border-style"] ?? "solid").trim(),
         width: hbw,
       };
-      if (hoverStyles["border-color"]) out.border_hover.color = hoverStyles["border-color"].trim();
+      if (hoverStyles["border-color"]) out.border_hover.color = snapColor(hoverStyles["border-color"].trim());
     } else if (
       hoverStyles["border-color"] &&
       hoverStyles["border-style"] &&
@@ -583,7 +593,7 @@ function resolveLeafDefaults(
     ) {
       out.border_hover = {
         border: hoverStyles["border-style"].trim(),
-        color: hoverStyles["border-color"].trim(),
+        color: snapColor(hoverStyles["border-color"].trim()),
       };
     } else if (hoverStyles["border-color"]) {
       // Common pattern: `.cta:hover { border-color: #fff }` re-uses
@@ -592,7 +602,7 @@ function resolveLeafDefaults(
       // survives any subsequent edit.
       out.border_hover = {
         border: (styles["border-style"] ?? "solid").trim(),
-        color: hoverStyles["border-color"].trim(),
+        color: snapColor(hoverStyles["border-color"].trim()),
       };
     }
     const hbr = parseDimensions(hoverStyles["border-radius"]);
@@ -611,12 +621,12 @@ function resolveLeafDefaults(
       border: (styles["border-style"] ?? "solid").trim(),
       width: bw,
     };
-    if (styles["border-color"]) out.border.color = styles["border-color"].trim();
+    if (styles["border-color"]) out.border.color = snapColor(styles["border-color"].trim());
   } else if (styles["border-color"] && styles["border-style"] && styles["border-style"] !== "none") {
     // Some pages set color+style but rely on UA default 1px width.
     out.border = {
       border: styles["border-style"].trim(),
-      color: styles["border-color"].trim(),
+      color: snapColor(styles["border-color"].trim()),
     };
   }
   const br = parseDimensions(styles["border-radius"]);
@@ -666,7 +676,7 @@ function assemblePaddingLonghand(
 
 export function buildSectionTemplate(
   section: Element,
-  opts: { injectLeafClass: boolean; sheet?: ParsedSheet } = { injectLeafClass: false },
+  opts: { injectLeafClass: boolean; sheet?: ParsedSheet; tokens?: DesignTokens } = { injectLeafClass: false },
 ): BuildResult {
   rebaseAssetUrls(section);
 
@@ -723,7 +733,7 @@ export function buildSectionTemplate(
       // authored it. Class injection (tagLeaf) and placeholder text
       // substitution would otherwise risk skewing edge-case attribute
       // selectors like `[class="foo"]` (exact match).
-      const defaultStyles = resolveLeafDefaults(el, opts.sheet, "image");
+      const defaultStyles = resolveLeafDefaults(el, opts.sheet, "image", opts.tokens);
       const leafClass = tagLeaf(el, gid);
       const srcKey = `${gid}_image`;
       const altKey = `${gid}_alt`;
@@ -760,7 +770,7 @@ export function buildSectionTemplate(
     // ---- HEADING ----
     if (HEADING_TAGS.has(tag)) {
       const gid = nextGroupId();
-      const defaultStyles = resolveLeafDefaults(el, opts.sheet, "heading");
+      const defaultStyles = resolveLeafDefaults(el, opts.sheet, "heading", opts.tokens);
       const leafClass = tagLeaf(el, gid);
       const textKey = `${gid}_text`;
       const tagKey = `${gid}_tag`;
@@ -816,7 +826,7 @@ export function buildSectionTemplate(
     // ---- LIST ----
     if (tag === "UL" || tag === "OL") {
       const gid = nextGroupId();
-      const defaultStyles = resolveLeafDefaults(el, opts.sheet, "icon-list");
+      const defaultStyles = resolveLeafDefaults(el, opts.sheet, "icon-list", opts.tokens);
       const leafClass = tagLeaf(el, gid);
       const itemsKey = `${gid}_items`;
       const items = Array.from(el.children)
@@ -857,7 +867,7 @@ export function buildSectionTemplate(
     // ---- ICON ----
     if (isIconLeaf(el)) {
       const gid = nextGroupId();
-      const defaultStyles = resolveLeafDefaults(el, opts.sheet, "icon");
+      const defaultStyles = resolveLeafDefaults(el, opts.sheet, "icon", opts.tokens);
       const leafClass = tagLeaf(el, gid);
       const classKey = `${gid}_icon_class`;
       const altKey = `${gid}_icon_alt`;
@@ -903,7 +913,7 @@ export function buildSectionTemplate(
     // ---- BUTTON / LINK ----
     if (tag === "BUTTON" || tag === "A") {
       const gid = nextGroupId();
-      const defaultStyles = resolveLeafDefaults(el, opts.sheet, "button");
+      const defaultStyles = resolveLeafDefaults(el, opts.sheet, "button", opts.tokens);
       const leafClass = tagLeaf(el, gid);
       const textKey = `${gid}_text`;
       const text = takeText(el, textKey);
@@ -971,7 +981,7 @@ export function buildSectionTemplate(
     // ---- PLAIN TEXT ----
     if (TEXT_PARENTS.has(tag)) {
       const gid = nextGroupId();
-      const defaultStyles = resolveLeafDefaults(el, opts.sheet, "text-editor");
+      const defaultStyles = resolveLeafDefaults(el, opts.sheet, "text-editor", opts.tokens);
       const leafClass = tagLeaf(el, gid);
       const textKey = `${gid}_text`;
       const text = takeText(el, textKey);
@@ -1016,6 +1026,7 @@ export function extractSectionsFromPage(
    * `"shell"`). Tests use this to opt into per-widget translation.
    */
   decomposerModeOverride?: "shell" | "deep" | "legacy" | "legacy_native",
+  tokens?: DesignTokens,
 ): ExtractedSection[] {
   const dom = new JSDOM(html);
   const body = dom.window.document.body;
@@ -1127,6 +1138,7 @@ export function extractSectionsFromPage(
         // its caller wouldn't consume the result, and the work is
         // already paid for by the native decomposer above.
         sheet,
+        tokens,
       });
       sections.push({ id, blockName, label: `${label} (${category})`, category, template, fields, groups });
     }

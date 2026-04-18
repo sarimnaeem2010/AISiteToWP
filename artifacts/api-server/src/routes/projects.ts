@@ -19,6 +19,7 @@ import { mapToWordPress, type CustomPostTypeDef } from "../lib/wpMapper";
 import { testConnection, pushToWordPress, setAsHomepage, installTheme, activateTheme, getActiveTheme } from "../lib/wpSync";
 import { extractSectionsFromPage, type ExtractedPage } from "../lib/sectionFieldExtractor";
 import { generateThemeZip } from "../lib/themeGenerator";
+import { extractDesignTokens, coerceTokens, DEFAULT_TOKENS, type DesignTokens } from "../lib/tokenExtractor";
 import { composeElementorData } from "../lib/pixelPerfectComposer";
 import { scrapeUrl } from "../lib/urlScraper";
 import { applyChatRefinement } from "../lib/chatRefiner";
@@ -72,7 +73,8 @@ function buildExtractedPages(project: {
   sourceHtml: string | null;
   sourceCss?: string | null;
   conversionMode?: string | null;
-}): { pages: ExtractedPage[]; projectSlug: string; conversionMode: string } {
+  designTokens?: unknown;
+}): { pages: ExtractedPage[]; projectSlug: string; conversionMode: string; designTokens: DesignTokens | undefined } {
   const baseSlug = project.name
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
@@ -93,16 +95,27 @@ function buildExtractedPages(project: {
     rawMode === "shell" || rawMode === "deep" || rawMode === "legacy" || rawMode === "legacy_native"
       ? rawMode
       : undefined;
+  // Resolve effective tokens: prefer the persisted user-edited value
+  // (stored in `designTokens` jsonb), fall back to extracting from the
+  // source CSS, fall back to undefined for projects with neither (in
+  // which case the snap helper short-circuits to raw values and the
+  // theme ZIP omits tokens.css entirely — preserves backward compat).
+  let designTokens: DesignTokens | undefined;
+  if (project.designTokens && typeof project.designTokens === "object") {
+    designTokens = coerceTokens(project.designTokens);
+  } else if (sourceCss && sourceCss.trim().length > 0) {
+    designTokens = extractDesignTokens(sourceCss);
+  }
   if (sourcePagesHtml && Object.keys(sourcePagesHtml).length > 0) {
     for (const [slug, src] of Object.entries(sourcePagesHtml)) {
-      const sections = extractSectionsFromPage(src.content, slug, projectSlug, sourceCss, modeOverride);
+      const sections = extractSectionsFromPage(src.content, slug, projectSlug, sourceCss, modeOverride, designTokens);
       pages.push({ slug, title: slug === "home" ? "Home" : slug.replace(/-/g, " "), sections });
     }
   } else if (project.sourceHtml) {
-    const sections = extractSectionsFromPage(project.sourceHtml, "home", projectSlug, sourceCss, modeOverride);
+    const sections = extractSectionsFromPage(project.sourceHtml, "home", projectSlug, sourceCss, modeOverride, designTokens);
     pages.push({ slug: "home", title: "Home", sections });
   }
-  return { pages, projectSlug, conversionMode: modeOverride ?? "shell" };
+  return { pages, projectSlug, conversionMode: modeOverride ?? "shell", designTokens };
 }
 const CustomPostTypesSchema = z.object({
   customPostTypes: z.array(
@@ -1188,7 +1201,7 @@ router.get("/projects/:id/theme-zip", async (req, res): Promise<void> => {
     return;
   }
 
-  const { pages, projectSlug, conversionMode } = buildExtractedPages(project);
+  const { pages, projectSlug, conversionMode, designTokens } = buildExtractedPages(project);
   const totalSections = pages.reduce((n, p) => n + p.sections.length, 0);
   if (totalSections === 0) {
     res.status(422).json({ error: "Could not extract any sections from source HTML." });
@@ -1213,6 +1226,7 @@ router.get("/projects/:id/theme-zip", async (req, res): Promise<void> => {
     pages,
     sourceZip,
     conversionMode,
+    designTokens,
   });
   res.setHeader("Content-Type", "application/zip");
   res.setHeader("Content-Disposition", `attachment; filename="${projectSlug}-theme.zip"`);
@@ -1283,7 +1297,7 @@ router.post("/projects/:id/install-theme", async (req, res): Promise<void> => {
     return;
   }
 
-  const { pages, projectSlug, conversionMode } = buildExtractedPages(project);
+  const { pages, projectSlug, conversionMode, designTokens } = buildExtractedPages(project);
   if (pages.reduce((n, p) => n + p.sections.length, 0) === 0) {
     res.status(422).json({ error: "Could not extract any sections from source HTML." });
     return;
@@ -1305,6 +1319,7 @@ router.post("/projects/:id/install-theme", async (req, res): Promise<void> => {
     pages,
     sourceZip,
     conversionMode,
+    designTokens,
   });
 
   const cfg = {
@@ -1326,6 +1341,92 @@ router.post("/projects/:id/install-theme", async (req, res): Promise<void> => {
     themeSlug: projectSlug,
     blocksRegistered: pages.reduce((n, p) => n + p.sections.length, 0),
   });
+});
+
+// Design tokens — GET returns the effective token map for a project
+// (persisted user-edits if present, otherwise the auto-extracted scale,
+// otherwise the agent-wide DEFAULT_TOKENS so the UI panel always has
+// something to render). PATCH replaces the persisted map; subsequent
+// theme/install builds re-emit `assets/tokens.css` from the new values.
+const TokenScaleSchema = z.record(z.string(), z.string().min(1).max(64));
+const DesignTokensSchema = z.object({
+  spacing: TokenScaleSchema.optional(),
+  fontSize: TokenScaleSchema.optional(),
+  color: TokenScaleSchema.optional(),
+  radius: TokenScaleSchema.optional(),
+});
+
+router.get("/projects/:id/tokens", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const params = GetProjectParams.safeParse({ id: raw });
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+  const [project] = await db
+    .select()
+    .from(projectsTable)
+    .where(eq(projectsTable.id, Number(params.data.id)));
+  if (!project) {
+    res.status(404).json({ error: "Project not found" });
+    return;
+  }
+  let tokens: DesignTokens;
+  let source: "persisted" | "extracted" | "default";
+  if (project.designTokens && typeof project.designTokens === "object") {
+    tokens = coerceTokens(project.designTokens);
+    source = "persisted";
+  } else if (project.sourceCss && project.sourceCss.trim().length > 0) {
+    tokens = extractDesignTokens(project.sourceCss);
+    source = "extracted";
+  } else {
+    tokens = DEFAULT_TOKENS;
+    source = "default";
+  }
+  res.json({ tokens, source });
+});
+
+router.patch("/projects/:id/tokens", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const params = GetProjectParams.safeParse({ id: raw });
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+  const body = DesignTokensSchema.safeParse(req.body);
+  if (!body.success) {
+    res.status(400).json({ error: body.error.message });
+    return;
+  }
+  const [project] = await db
+    .select()
+    .from(projectsTable)
+    .where(eq(projectsTable.id, Number(params.data.id)));
+  if (!project) {
+    res.status(404).json({ error: "Project not found" });
+    return;
+  }
+  // Merge over the existing baseline so a partial PATCH keeps unedited
+  // tiers intact: baseline = persisted ?? extracted ?? defaults.
+  let baseline: DesignTokens;
+  if (project.designTokens && typeof project.designTokens === "object") {
+    baseline = coerceTokens(project.designTokens);
+  } else if (project.sourceCss && project.sourceCss.trim().length > 0) {
+    baseline = extractDesignTokens(project.sourceCss);
+  } else {
+    baseline = DEFAULT_TOKENS;
+  }
+  const merged = coerceTokens({
+    spacing:  { ...baseline.spacing,  ...(body.data.spacing  ?? {}) },
+    fontSize: { ...baseline.fontSize, ...(body.data.fontSize ?? {}) },
+    color:    { ...baseline.color,    ...(body.data.color    ?? {}) },
+    radius:   { ...baseline.radius,   ...(body.data.radius   ?? {}) },
+  });
+  await db
+    .update(projectsTable)
+    .set({ designTokens: merged, updatedAt: new Date() })
+    .where(eq(projectsTable.id, Number(params.data.id)));
+  res.json({ tokens: merged, source: "persisted" });
 });
 
 router.get("/projects/:id/astro-export", async (req, res): Promise<void> => {
