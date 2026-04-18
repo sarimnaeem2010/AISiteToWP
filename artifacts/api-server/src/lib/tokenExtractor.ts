@@ -276,6 +276,14 @@ export function extractDesignTokens(input: ParsedSheet | string | null | undefin
           tally(radii, len.value, len.px);
         }
       } else if (COLOR_PROPS.has(prop)) {
+        // Skip gradient/image/var() backgrounds and other complex values
+        // that contain a hex/rgb substring but don't represent a single
+        // palette color (e.g. `linear-gradient(...)`). Otherwise the
+        // substring scan inside normalizeColor would pollute the palette
+        // with one-off accent stops.
+        if (/\b(?:linear|radial|conic)-gradient\s*\(|\burl\s*\(|\bvar\s*\(/i.test(v)) {
+          continue;
+        }
         const norm = normalizeColor(v);
         if (!norm) continue;
         // Skip near-black / near-white text color collection here so it

@@ -1126,7 +1126,7 @@ export function generateThemeZip(input: ThemeInput): Buffer {
   zip.addFile(`${root}/footer.php`, Buffer.from(FOOTER_PHP, "utf8"));
   zip.addFile(`${root}/inc/elementor-widgets.php`, Buffer.from(ELEMENTOR_WIDGETS_INC, "utf8"));
   zip.addFile(`${root}/assets/template.css`, Buffer.from(combinedCss, "utf8"));
-  if (input.designTokens) {
+  if (input.designTokens && input.conversionMode === "legacy_native") {
     // Compose tokens.css = `:root { --wpb-… }` block + per-leaf rules
     // collected from `buildSectionTemplate`. Per-leaf rules use the
     // `.wpb-leaf-{gid}` selector and reference the same vars, so a

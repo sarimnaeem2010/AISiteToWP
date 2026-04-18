@@ -108,7 +108,15 @@ function buildExtractedPages(project: {
   // /tokens endpoint as the seed value the panel shows on first open
   // — but it does not affect builds until the user explicitly saves.)
   let designTokens: DesignTokens | undefined;
-  if (project.designTokens && typeof project.designTokens === "object") {
+  // Tokens only flow into builds for `legacy_native` mode — that is the
+  // only pipeline that injects per-leaf class hooks the snap rules can
+  // bind to. `shell` and `legacy` modes must stay byte-identical to
+  // their pre-tokens output even when the user has saved tokens.
+  if (
+    modeOverride === "legacy_native" &&
+    project.designTokens &&
+    typeof project.designTokens === "object"
+  ) {
     designTokens = coerceTokens(project.designTokens);
   }
   if (sourcePagesHtml && Object.keys(sourcePagesHtml).length > 0) {
