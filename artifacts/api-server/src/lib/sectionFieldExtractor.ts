@@ -195,6 +195,12 @@ export interface ExtractedSection {
    * legacy custom-widget path leave this undefined.
    */
   nativeElementor?: unknown;
+  /**
+   * Per-leaf token CSS rules harvested from `buildSectionTemplate`.
+   * Empty for native-Elementor sections (those don't use the leaf-class
+   * hook) and for projects without active design tokens.
+   */
+  leafTokenCss?: LeafTokenRule[];
 }
 
 export interface ExtractedPage {
@@ -477,6 +483,26 @@ interface BuildResult {
   template: string;
   fields: ExtractedField[];
   groups: ExtractedGroup[];
+  /**
+   * Per-leaf CSS rules that snap raw spacing / font-size / border-radius
+   * values onto project design tokens. Empty when no tokens are active
+   * or no values fell within snap tolerance. Emitted into `tokens.css`
+   * by the theme generator so token edits propagate to all per-leaf
+   * widgets that snapped to the same tier — Elementor's structured
+   * SLIDER / DIMENSIONS controls cannot themselves hold `var(...)`
+   * strings, so the cascade is what makes site-wide token edits land.
+   */
+  leafTokenCss: LeafTokenRule[];
+}
+
+/**
+ * A single per-leaf token rule. `selector` is the `.wpb-leaf-{gid}`
+ * class assigned at extraction time; `declarations` map CSS property
+ * names to `var(--wpb-...)` references.
+ */
+export interface LeafTokenRule {
+  selector: string;
+  declarations: Record<string, string>;
 }
 
 /**
@@ -491,7 +517,7 @@ function resolveLeafDefaults(
   sheet: ParsedSheet | undefined,
   kind: NativeWidgetKind,
   tokens?: DesignTokens,
-): NativeDefaultStyles | undefined {
+): { defaults: NativeDefaultStyles | undefined; tokenCss: Record<string, string> } {
   // Snap helper: when a project has design tokens, replace common
   // string-shaped CSS values with `var(--wpb-…)` references so the
   // generated theme participates in the project-wide design system.
@@ -500,9 +526,18 @@ function resolveLeafDefaults(
   // tokens.css emitted alongside still drives the actual visual
   // rendering once the CSS variable cascade is in place.
   const snapColor = (v: string | undefined) => snapToToken(v, tokens, "color") ?? v;
-  if (!sheet) return undefined;
+  const tokenCss: Record<string, string> = {};
+  // Helper: if a raw numeric CSS value snaps to a token tier, record
+  // the property → var(...) mapping so the caller can emit a per-leaf
+  // CSS rule that participates in the project-wide design system.
+  const tryNumericSnap = (prop: string, raw: string | undefined, kindKey: "spacing" | "fontSize" | "radius") => {
+    if (!raw) return;
+    const snapped = snapToToken(raw.trim(), tokens, kindKey);
+    if (snapped && snapped.startsWith("var(")) tokenCss[prop] = snapped;
+  };
+  if (!sheet) return { defaults: undefined, tokenCss };
   const raw = computeStyles(el, sheet);
-  if (!raw || Object.keys(raw).length === 0) return undefined;
+  if (!raw || Object.keys(raw).length === 0) return { defaults: undefined, tokenCss };
   // Expand `border:` shorthand into width/style/color longhands so the
   // border parser below picks up the very common authored pattern
   // `border: 1px solid #ccc`. computeStyles preserves declarations
@@ -613,6 +648,22 @@ function resolveLeafDefaults(
   const pad =
     parseDimensions(styles["padding"]) ?? assemblePaddingLonghand(styles);
   if (pad) out.padding = pad;
+  // Per-leaf token CSS for padding: only emit when all four sides snap
+  // to the SAME spacing token, so we don't overwrite asymmetric padding
+  // with a uniform `var(--wpb-space-md)`. Otherwise leave padding raw.
+  const padTopRaw   = styles["padding-top"]   ?? (styles["padding"]?.split(/\s+/)[0] ?? "");
+  const padRightRaw = styles["padding-right"] ?? (styles["padding"]?.split(/\s+/)[1] ?? styles["padding"]?.split(/\s+/)[0] ?? "");
+  const padBottomRaw= styles["padding-bottom"]?? (styles["padding"]?.split(/\s+/)[2] ?? styles["padding"]?.split(/\s+/)[0] ?? "");
+  const padLeftRaw  = styles["padding-left"]  ?? (styles["padding"]?.split(/\s+/)[3] ?? styles["padding"]?.split(/\s+/)[1] ?? styles["padding"]?.split(/\s+/)[0] ?? "");
+  if (padTopRaw && padRightRaw && padBottomRaw && padLeftRaw) {
+    const sT = snapToToken(padTopRaw.trim(),    tokens, "spacing");
+    const sR = snapToToken(padRightRaw.trim(),  tokens, "spacing");
+    const sB = snapToToken(padBottomRaw.trim(), tokens, "spacing");
+    const sL = snapToToken(padLeftRaw.trim(),   tokens, "spacing");
+    if (sT === sR && sR === sB && sB === sL && sT && sT.startsWith("var(")) {
+      tokenCss["padding"] = sT;
+    }
+  }
 
   // ---- border (button, image) ----
   const bw = parseDimensions(styles["border-width"]);
@@ -631,6 +682,16 @@ function resolveLeafDefaults(
   }
   const br = parseDimensions(styles["border-radius"]);
   if (br) out.border_radius = br;
+  // border-radius snap: only when all corners agree (parseDimensions
+  // already collapses 1-value shorthand into uniform corners).
+  if (styles["border-radius"]) {
+    const parts = styles["border-radius"].trim().split(/\s+/);
+    if (parts.length === 1) {
+      tryNumericSnap("border-radius", parts[0], "radius");
+    } else if (parts.length > 1 && parts.every((p) => p === parts[0])) {
+      tryNumericSnap("border-radius", parts[0], "radius");
+    }
+  }
 
   // ---- image-only sliders ----
   if (kind === "image") {
@@ -646,7 +707,13 @@ function resolveLeafDefaults(
     if (fs) out.icon_size = { size: fs.size, unit: fs.unit, sizes: [] };
   }
 
-  return Object.keys(out).length > 0 ? out : undefined;
+  // ---- font-size snap (any text-bearing leaf) ----
+  // Heading/text/button/list typography sizes also snap to the project
+  // type scale so re-themeing the project rescales every snapped leaf.
+  if (styles["font-size"]) tryNumericSnap("font-size", styles["font-size"], "fontSize");
+
+  const defaults = Object.keys(out).length > 0 ? out : undefined;
+  return { defaults, tokenCss };
 }
 
 /**
@@ -676,12 +743,21 @@ function assemblePaddingLonghand(
 
 export function buildSectionTemplate(
   section: Element,
-  opts: { injectLeafClass: boolean; sheet?: ParsedSheet; tokens?: DesignTokens } = { injectLeafClass: false },
+  opts: { injectLeafClass: boolean; sheet?: ParsedSheet; tokens?: DesignTokens; sectionId?: string } = { injectLeafClass: false },
 ): BuildResult {
   rebaseAssetUrls(section);
 
   const fields: ExtractedField[] = [];
   const groups: ExtractedGroup[] = [];
+  const leafTokenCss: LeafTokenRule[] = [];
+  // Helper invoked after each leaf is tagged with its `wpb-leaf-{gid}`
+  // class. When the leaf has any snapped declarations we record a CSS
+  // rule the theme generator will append to `tokens.css`.
+  const recordLeafTokenCss = (leafClass: string, decls: Record<string, string>) => {
+    if (Object.keys(decls).length > 0) {
+      leafTokenCss.push({ selector: `.${leafClass}`, declarations: decls });
+    }
+  };
   const used = new Set<string>();
 
   let groupIdx = 0;
@@ -709,8 +785,11 @@ export function buildSectionTemplate(
   // control whose value is the class itself (the icon ICONS control is
   // the prime example — picking a new font icon would otherwise wipe
   // the leaf hook and break every scoped style control on that group).
+  const leafPrefix = opts.sectionId
+    ? `wpb-leaf-${opts.sectionId.replace(/[^a-zA-Z0-9_-]/g, "-")}-`
+    : "wpb-leaf-";
   const tagLeaf = (el: Element, gid: string): string => {
-    const cls = `wpb-leaf-${gid}`;
+    const cls = `${leafPrefix}${gid}`;
     if (opts.injectLeafClass) {
       const existing = el.getAttribute("class") ?? "";
       const next = existing ? `${existing} ${cls}` : cls;
@@ -733,8 +812,9 @@ export function buildSectionTemplate(
       // authored it. Class injection (tagLeaf) and placeholder text
       // substitution would otherwise risk skewing edge-case attribute
       // selectors like `[class="foo"]` (exact match).
-      const defaultStyles = resolveLeafDefaults(el, opts.sheet, "image", opts.tokens);
+      const { defaults: defaultStyles, tokenCss: leafTok } = resolveLeafDefaults(el, opts.sheet, "image", opts.tokens);
       const leafClass = tagLeaf(el, gid);
+      recordLeafTokenCss(leafClass, leafTok);
       const srcKey = `${gid}_image`;
       const altKey = `${gid}_alt`;
       const src = el.getAttribute("src") ?? "";
@@ -770,8 +850,9 @@ export function buildSectionTemplate(
     // ---- HEADING ----
     if (HEADING_TAGS.has(tag)) {
       const gid = nextGroupId();
-      const defaultStyles = resolveLeafDefaults(el, opts.sheet, "heading", opts.tokens);
+      const { defaults: defaultStyles, tokenCss: leafTok } = resolveLeafDefaults(el, opts.sheet, "heading", opts.tokens);
       const leafClass = tagLeaf(el, gid);
+      recordLeafTokenCss(leafClass, leafTok);
       const textKey = `${gid}_text`;
       const tagKey = `${gid}_tag`;
       const linkKey = `${gid}_link`;
@@ -826,8 +907,9 @@ export function buildSectionTemplate(
     // ---- LIST ----
     if (tag === "UL" || tag === "OL") {
       const gid = nextGroupId();
-      const defaultStyles = resolveLeafDefaults(el, opts.sheet, "icon-list", opts.tokens);
+      const { defaults: defaultStyles, tokenCss: leafTok } = resolveLeafDefaults(el, opts.sheet, "icon-list", opts.tokens);
       const leafClass = tagLeaf(el, gid);
+      recordLeafTokenCss(leafClass, leafTok);
       const itemsKey = `${gid}_items`;
       const items = Array.from(el.children)
         .filter((c) => c.tagName === "LI")
@@ -867,8 +949,9 @@ export function buildSectionTemplate(
     // ---- ICON ----
     if (isIconLeaf(el)) {
       const gid = nextGroupId();
-      const defaultStyles = resolveLeafDefaults(el, opts.sheet, "icon", opts.tokens);
+      const { defaults: defaultStyles, tokenCss: leafTok } = resolveLeafDefaults(el, opts.sheet, "icon", opts.tokens);
       const leafClass = tagLeaf(el, gid);
+      recordLeafTokenCss(leafClass, leafTok);
       const classKey = `${gid}_icon_class`;
       const altKey = `${gid}_icon_alt`;
       const linkKey = `${gid}_icon_link`;
@@ -913,8 +996,9 @@ export function buildSectionTemplate(
     // ---- BUTTON / LINK ----
     if (tag === "BUTTON" || tag === "A") {
       const gid = nextGroupId();
-      const defaultStyles = resolveLeafDefaults(el, opts.sheet, "button", opts.tokens);
+      const { defaults: defaultStyles, tokenCss: leafTok } = resolveLeafDefaults(el, opts.sheet, "button", opts.tokens);
       const leafClass = tagLeaf(el, gid);
+      recordLeafTokenCss(leafClass, leafTok);
       const textKey = `${gid}_text`;
       const text = takeText(el, textKey);
       if (text) addField(textKey, "text", text, "button text");
@@ -981,8 +1065,9 @@ export function buildSectionTemplate(
     // ---- PLAIN TEXT ----
     if (TEXT_PARENTS.has(tag)) {
       const gid = nextGroupId();
-      const defaultStyles = resolveLeafDefaults(el, opts.sheet, "text-editor", opts.tokens);
+      const { defaults: defaultStyles, tokenCss: leafTok } = resolveLeafDefaults(el, opts.sheet, "text-editor", opts.tokens);
       const leafClass = tagLeaf(el, gid);
+      recordLeafTokenCss(leafClass, leafTok);
       const textKey = `${gid}_text`;
       const text = takeText(el, textKey);
       if (!text) continue;
@@ -1012,7 +1097,7 @@ export function buildSectionTemplate(
     }
   }
 
-  return { template: section.outerHTML, fields, groups };
+  return { template: section.outerHTML, fields, groups, leafTokenCss };
 }
 
 export function extractSectionsFromPage(
@@ -1130,8 +1215,9 @@ export function extractSectionsFromPage(
       // classes are the selectors native style controls bind to. Other
       // legacy projects keep their templates byte-identical to the
       // original markup.
-      const { template, fields, groups } = buildSectionTemplate(el, {
+      const { template, fields, groups, leafTokenCss } = buildSectionTemplate(el, {
         injectLeafClass: decomposerModeOverride === "legacy_native",
+        sectionId: id,
         // The parsed stylesheet only feeds the new defaultStyles
         // resolver, which runs solely in legacy_native mode. We pass
         // it unconditionally — `resolveLeafDefaults` early-outs when
@@ -1140,7 +1226,7 @@ export function extractSectionsFromPage(
         sheet,
         tokens,
       });
-      sections.push({ id, blockName, label: `${label} (${category})`, category, template, fields, groups });
+      sections.push({ id, blockName, label: `${label} (${category})`, category, template, fields, groups, leafTokenCss });
     }
   }
   return sections;

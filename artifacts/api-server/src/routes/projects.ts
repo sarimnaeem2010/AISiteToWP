@@ -95,16 +95,21 @@ function buildExtractedPages(project: {
     rawMode === "shell" || rawMode === "deep" || rawMode === "legacy" || rawMode === "legacy_native"
       ? rawMode
       : undefined;
-  // Resolve effective tokens: prefer the persisted user-edited value
-  // (stored in `designTokens` jsonb), fall back to extracting from the
-  // source CSS, fall back to undefined for projects with neither (in
-  // which case the snap helper short-circuits to raw values and the
-  // theme ZIP omits tokens.css entirely — preserves backward compat).
+  // Resolve effective tokens for the BUILD pipeline. Tokens are an
+  // explicitly opt-in feature: they only flow into the snap helper and
+  // the emitted theme ZIP when the user has saved them via the Design
+  // Tokens panel (persisted in the `designTokens` jsonb column). For
+  // every other project — token-less imports, legacy/shell modes that
+  // never saw the panel — `designTokens` stays undefined so the snap
+  // helper short-circuits to raw values and `tokens.css` is omitted
+  // from the ZIP. This guarantees byte-identical output to the
+  // pre-tokens behavior for projects that didn't opt in.
+  // (The auto-extraction path is still available — it powers the GET
+  // /tokens endpoint as the seed value the panel shows on first open
+  // — but it does not affect builds until the user explicitly saves.)
   let designTokens: DesignTokens | undefined;
   if (project.designTokens && typeof project.designTokens === "object") {
     designTokens = coerceTokens(project.designTokens);
-  } else if (sourceCss && sourceCss.trim().length > 0) {
-    designTokens = extractDesignTokens(sourceCss);
   }
   if (sourcePagesHtml && Object.keys(sourcePagesHtml).length > 0) {
     for (const [slug, src] of Object.entries(sourcePagesHtml)) {

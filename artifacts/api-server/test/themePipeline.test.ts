@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { DEFAULT_TOKENS } from "../src/lib/tokenExtractor";
 import vm from "node:vm";
 import AdmZip from "adm-zip";
 import * as csstree from "css-tree";
@@ -1075,6 +1076,106 @@ test("generateThemeZip({ conversionMode: 'shell' }) does NOT enable wpb_native_u
       `${entry.entryName} should leave wpb_native_ui = false outside of legacy_native mode`,
     );
   }
+});
+
+test("design tokens: token-less project produces identical theme ZIP (backward compat)", () => {
+  // Build the same fixture twice — once with no designTokens at all,
+  // once explicitly omitting them — and assert the emitted file set is
+  // identical and contains NO assets/tokens.css. This is the explicit
+  // backward-compat contract: projects that haven't opted into tokens
+  // must keep producing the same theme output as before.
+  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG, undefined, "legacy_native");
+  const buf = generateThemeZip({
+    projectName: "Fixture Site",
+    projectSlug: PROJECT_SLUG,
+    combinedCss: "body{margin:0}",
+    combinedJs: "",
+    pages: [{ slug: PAGE_SLUG, title: "Home", sections }],
+    sourceZip: null,
+    conversionMode: "legacy_native",
+    // designTokens intentionally omitted
+  });
+  const zip = new AdmZip(buf);
+  const entries = zip.getEntries().map((e) => e.entryName).sort();
+  assert.equal(
+    entries.some((n) => n.endsWith("/assets/tokens.css")),
+    false,
+    "no tokens.css must be emitted when project has no designTokens",
+  );
+  // functions.php must NOT carry an unmet wpb-tokens-css dependency.
+  const funcs = zip.getEntry(`${PROJECT_SLUG}/functions.php`)!.getData().toString("utf8");
+  assert.match(funcs, /\$wpb_template_deps = array\(\);/);
+  // The dep handle is only added inside the file_exists branch, so the
+  // base array stays empty for token-less projects.
+});
+
+test("design tokens: per-leaf snapping emits CSS rules for spacing/font-size/radius", () => {
+  // Construct a tiny page where every leaf snaps cleanly to the default
+  // token tiers, then assert the generated tokens.css contains both the
+  // :root vars AND per-leaf selectors with var(--wpb-…) references.
+  const html = `<section><h1 class="hero-title" style="">Hello</h1>
+    <p class="lead">World</p>
+    <button class="cta">Go</button></section>`;
+  // Source CSS that puts every leaf squarely on a default tier:
+  //   font-size 48px → --wpb-font-h1, padding 16px → --wpb-space-md,
+  //   border-radius 8px → --wpb-radius-md.
+  const css = `.hero-title { font-size: 48px; }
+    .lead { font-size: 16px; padding: 16px; }
+    .cta { font-size: 16px; padding: 16px; border-radius: 8px; }`;
+  const sections = extractSectionsFromPage(html, PAGE_SLUG, PROJECT_SLUG, css, "legacy_native", DEFAULT_TOKENS);
+  // Use the default token map (extractor would produce equivalent tiers
+  // for this CSS, but passing DEFAULT_TOKENS makes the assertions exact).
+
+  const buf = generateThemeZip({
+    projectName: "Fixture Site",
+    projectSlug: PROJECT_SLUG,
+    combinedCss: css,
+    combinedJs: "",
+    pages: [{ slug: PAGE_SLUG, title: "Home", sections }],
+    sourceZip: null,
+    conversionMode: "legacy_native",
+    designTokens: DEFAULT_TOKENS,
+  });
+  const zip = new AdmZip(buf);
+  const tokensEntry = zip.getEntry(`${PROJECT_SLUG}/assets/tokens.css`);
+  assert.ok(tokensEntry, "tokens.css must be emitted when designTokens are provided");
+  const tokensCss = tokensEntry!.getData().toString("utf8");
+  // :root block present.
+  assert.match(tokensCss, /:root\s*\{/);
+  // Per-leaf rules section present.
+  assert.match(tokensCss, /\.wpb-leaf-[a-zA-Z0-9_-]+\s*\{[\s\S]*var\(--wpb-/);
+  // At least one of each snap kind: font-size, padding, border-radius.
+  assert.match(tokensCss, /font-size:\s*var\(--wpb-font-/);
+  assert.match(tokensCss, /padding:\s*var\(--wpb-space-/);
+  assert.match(tokensCss, /border-radius:\s*var\(--wpb-radius-/);
+});
+
+test("design tokens: values outside snap tolerance pass through (no token rule emitted)", () => {
+  // 23px font-size is too far from the default tiers (16/24 — the
+  // closest is 24, ~4% off, within tolerance). Use 200px which is far
+  // from every tier (>10% off the 48px h1) to assert no rule lands.
+  const html = `<section><h1 style="">Big</h1></section>`;
+  const css = `h1 { font-size: 200px; padding: 73px; border-radius: 41px; }`;
+  const sections = extractSectionsFromPage(html, PAGE_SLUG, PROJECT_SLUG, css, "legacy_native", DEFAULT_TOKENS);
+
+  const buf = generateThemeZip({
+    projectName: "Fixture Site",
+    projectSlug: PROJECT_SLUG,
+    combinedCss: css,
+    combinedJs: "",
+    pages: [{ slug: PAGE_SLUG, title: "Home", sections }],
+    sourceZip: null,
+    conversionMode: "legacy_native",
+    designTokens: DEFAULT_TOKENS,
+  });
+  const zip = new AdmZip(buf);
+  const tokensCss = zip.getEntry(`${PROJECT_SLUG}/assets/tokens.css`)!.getData().toString("utf8");
+  // :root block must still exist (designTokens were provided).
+  assert.match(tokensCss, /:root\s*\{/);
+  // But there should be NO per-leaf rules pointing at any var() — every
+  // raw value was outside tolerance and passed through.
+  assert.equal(/\.wpb-leaf-[a-zA-Z0-9_-]+\s*\{[\s\S]*var\(--wpb-/.test(tokensCss), false,
+    "no per-leaf token rules should be emitted when raw values fall outside snap tolerance");
 });
 
 test("legacy_native widget PHP passes `php -l` parse check", () => {

@@ -1127,7 +1127,26 @@ export function generateThemeZip(input: ThemeInput): Buffer {
   zip.addFile(`${root}/inc/elementor-widgets.php`, Buffer.from(ELEMENTOR_WIDGETS_INC, "utf8"));
   zip.addFile(`${root}/assets/template.css`, Buffer.from(combinedCss, "utf8"));
   if (input.designTokens) {
-    zip.addFile(`${root}/assets/tokens.css`, Buffer.from(renderTokensCss(input.designTokens), "utf8"));
+    // Compose tokens.css = `:root { --wpb-… }` block + per-leaf rules
+    // collected from `buildSectionTemplate`. Per-leaf rules use the
+    // `.wpb-leaf-{gid}` selector and reference the same vars, so a
+    // single token edit in the panel propagates to every snapped widget.
+    const leafRules: string[] = [];
+    for (const page of pages) {
+      for (const section of page.sections) {
+        if (!section.leafTokenCss) continue;
+        for (const rule of section.leafTokenCss) {
+          const body = Object.entries(rule.declarations)
+            .map(([prop, val]) => `  ${prop}: ${val};`)
+            .join("\n");
+          leafRules.push(`${rule.selector} {\n${body}\n}`);
+        }
+      }
+    }
+    const tokensCss = leafRules.length > 0
+      ? `${renderTokensCss(input.designTokens)}\n\n/* Per-leaf token snaps. */\n${leafRules.join("\n\n")}\n`
+      : renderTokensCss(input.designTokens);
+    zip.addFile(`${root}/assets/tokens.css`, Buffer.from(tokensCss, "utf8"));
   }
   if (combinedJs.trim().length > 0) {
     zip.addFile(`${root}/assets/template.js`, Buffer.from(combinedJs, "utf8"));
