@@ -1,17 +1,19 @@
 import { Router, type IRouter } from "express";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
-import { db, projectsTable } from "@workspace/db";
+import { eq, and, ne, asc } from "drizzle-orm";
+import { db, projectsTable, usersTable, sessionsTable } from "@workspace/db";
 import {
   bootstrapAdmin,
   findUserByUsername,
   verifyPassword,
+  hashPassword,
   createSession,
   deleteSession,
   setSessionCookie,
   clearSessionCookie,
   requireAdmin,
   loadCurrentUser,
+  getAdminUser,
 } from "../lib/adminAuth";
 import {
   getAiSettings,
@@ -79,6 +81,163 @@ router.get("/admin/me", async (req, res): Promise<void> => {
     return;
   }
   res.json({ user: { id: user.id, username: user.username, isAdmin: user.isAdmin } });
+});
+
+// ---- Admin user management (admin only) ---------------------------------
+// All admins can manage all admin accounts. Two invariants are enforced
+// server-side to prevent lockout:
+//   1. The system must always retain at least one admin (no demoting the
+//      last one).
+//   2. An admin cannot demote themselves — a peer must do it. This avoids
+//      the foot-gun where a single admin accidentally locks themselves out.
+
+function toPublicUser(u: { id: number; username: string; isAdmin: boolean; createdAt: Date }) {
+  return { id: u.id, username: u.username, isAdmin: u.isAdmin, createdAt: u.createdAt };
+}
+
+router.get("/admin/users", requireAdmin, async (_req, res): Promise<void> => {
+  const rows = await db
+    .select({
+      id: usersTable.id,
+      username: usersTable.username,
+      isAdmin: usersTable.isAdmin,
+      createdAt: usersTable.createdAt,
+    })
+    .from(usersTable)
+    .orderBy(asc(usersTable.id));
+  res.json({ users: rows.map(toPublicUser) });
+});
+
+const CreateUserSchema = z.object({
+  username: z.string().trim().min(1).max(120),
+  password: z.string().min(8).max(500),
+  isAdmin: z.boolean().optional().default(true),
+});
+
+router.post("/admin/users", requireAdmin, async (req, res): Promise<void> => {
+  const parsed = CreateUserSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const existing = await findUserByUsername(parsed.data.username);
+  if (existing) {
+    res.status(409).json({ error: "Username already exists" });
+    return;
+  }
+  const [row] = await db
+    .insert(usersTable)
+    .values({
+      username: parsed.data.username,
+      passwordHash: hashPassword(parsed.data.password),
+      isAdmin: parsed.data.isAdmin,
+    })
+    .returning({
+      id: usersTable.id,
+      username: usersTable.username,
+      isAdmin: usersTable.isAdmin,
+      createdAt: usersTable.createdAt,
+    });
+  res.status(201).json({ user: toPublicUser(row) });
+});
+
+const ChangePasswordSchema = z.object({
+  newPassword: z.string().min(8).max(500),
+  // Required only when changing your own password — defense in depth so
+  // a hijacked session cannot trivially rotate the cookie owner's pwd.
+  currentPassword: z.string().min(1).max(500).optional(),
+});
+
+router.put("/admin/users/:id/password", requireAdmin, async (req, res): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) {
+    res.status(400).json({ error: "Invalid user id" });
+    return;
+  }
+  const parsed = ChangePasswordSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const [target] = await db.select().from(usersTable).where(eq(usersTable.id, id));
+  if (!target) {
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
+  const isSelf = getAdminUser(req).id === id;
+  if (isSelf) {
+    if (!parsed.data.currentPassword) {
+      res.status(400).json({ error: "currentPassword is required when changing your own password" });
+      return;
+    }
+    if (!verifyPassword(parsed.data.currentPassword, target.passwordHash)) {
+      res.status(401).json({ error: "Current password is incorrect" });
+      return;
+    }
+  }
+  await db
+    .update(usersTable)
+    .set({ passwordHash: hashPassword(parsed.data.newPassword) })
+    .where(eq(usersTable.id, id));
+  // Invalidate every active session for the target so a rotated password
+  // takes effect immediately — matches the UI copy ("they will need to
+  // sign in again") and limits blast radius if the old password leaked.
+  await db.delete(sessionsTable).where(eq(sessionsTable.userId, id));
+  // If the admin rotated their own password, mint a fresh session so they
+  // are not bounced to the login screen on the next request.
+  if (isSelf) {
+    const session = await createSession(id);
+    setSessionCookie(res, session.id, session.expiresAt);
+  }
+  res.json({ ok: true });
+});
+
+const ToggleAdminSchema = z.object({ isAdmin: z.boolean() });
+
+router.put("/admin/users/:id/admin", requireAdmin, async (req, res): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) {
+    res.status(400).json({ error: "Invalid user id" });
+    return;
+  }
+  const parsed = ToggleAdminSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const [target] = await db.select().from(usersTable).where(eq(usersTable.id, id));
+  if (!target) {
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
+  // Guard: never demote yourself.
+  if (getAdminUser(req).id === id && parsed.data.isAdmin === false) {
+    res.status(400).json({ error: "You cannot remove your own admin access. Ask another admin to do it." });
+    return;
+  }
+  // Guard: never demote the last remaining admin. Counts admins OTHER than
+  // the target — if zero, demoting target would leave the system locked out.
+  if (target.isAdmin && parsed.data.isAdmin === false) {
+    const others = await db
+      .select({ id: usersTable.id })
+      .from(usersTable)
+      .where(and(eq(usersTable.isAdmin, true), ne(usersTable.id, id)));
+    if (others.length === 0) {
+      res.status(400).json({ error: "Cannot remove the last admin. Promote another user first." });
+      return;
+    }
+  }
+  await db.update(usersTable).set({ isAdmin: parsed.data.isAdmin }).where(eq(usersTable.id, id));
+  const [row] = await db
+    .select({
+      id: usersTable.id,
+      username: usersTable.username,
+      isAdmin: usersTable.isAdmin,
+      createdAt: usersTable.createdAt,
+    })
+    .from(usersTable)
+    .where(eq(usersTable.id, id));
+  res.json({ user: toPublicUser(row) });
 });
 
 // ---- AI Settings (admin only) -------------------------------------------

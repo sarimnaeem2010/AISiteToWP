@@ -15,6 +15,7 @@ import ProjectPlugin from "./pages/project-plugin";
 import AdminLogin from "./pages/admin-login";
 import AdminForbidden from "./pages/admin-forbidden";
 import AdminAiSettings from "./pages/admin-ai-settings";
+import AdminUsers from "./pages/admin-users";
 import AdminNotFound from "./pages/admin-not-found";
 
 const queryClient = new QueryClient();
@@ -63,6 +64,7 @@ function Router() {
       <Route path="/admin/forbidden" component={AdminForbidden} />
       <Route path="/admin" component={AdminAiSettings} />
       <Route path="/admin/ai-settings" component={AdminAiSettings} />
+      <Route path="/admin/users" component={AdminUsers} />
       {/* Catch-all for /admin/* keeps every admin path inside the admin
           portal boundary — never falls through to the user app routes. */}
       <Route path="/admin/:rest*" component={AdminNotFound} />

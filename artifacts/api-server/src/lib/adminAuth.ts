@@ -186,6 +186,18 @@ declare module "express" {
   }
 }
 
+/**
+ * Helper for inline route handlers: pulls the admin user attached by
+ * `requireAdmin` middleware. Necessary because the generic Request
+ * inferred by Express in inline `(req, res) => ...` handlers does not
+ * pick up the `declare module "express"` augmentation above.
+ */
+export function getAdminUser(req: Request): AdminUserContext {
+  const ctx = (req as Request & { adminUser?: AdminUserContext }).adminUser;
+  if (!ctx) throw new Error("getAdminUser called without requireAdmin middleware");
+  return ctx;
+}
+
 /** Resolve the signed-in user from the cookie, or null. */
 export async function loadCurrentUser(req: Request): Promise<User | null> {
   const cookies = (req as Request & { cookies?: Record<string, string> }).cookies ?? {};

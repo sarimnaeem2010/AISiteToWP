@@ -1,29 +1,19 @@
 import { useEffect, useState } from "react";
-import { useLocation } from "wouter";
 import {
   Sparkles,
-  Shield,
   Loader2,
   CheckCircle2,
   XCircle,
   AlertCircle,
   KeyRound,
-  LogOut,
-  ArrowLeft,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-
-interface AdminUser {
-  id: number;
-  username: string;
-  isAdmin: boolean;
-}
+import { AdminShell, AdminLoading, useAdminAuth } from "@/components/admin-shell";
 
 interface AiSettings {
   enabled: boolean;
@@ -61,34 +51,12 @@ function StatusPill({ status }: { status: AiSettings["status"] }) {
 export default function AdminAiSettings() {
   const apiBase = import.meta.env.BASE_URL;
   const { toast } = useToast();
-  const [, setLocation] = useLocation();
-  const [user, setUser] = useState<AdminUser | null>(null);
-  const [authStatus, setAuthStatus] = useState<"loading" | "ok" | "401" | "403">("loading");
+  const { user, status: authStatus } = useAdminAuth();
   const [settings, setSettings] = useState<AiSettings | null>(null);
   const [keyDraft, setKeyDraft] = useState("");
   const [maxTokensDraft, setMaxTokensDraft] = useState<number>(4096);
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
-
-  // Bootstrap: who am I?
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(`${apiBase}api/admin/me`, { credentials: "include" });
-        if (cancelled) return;
-        if (res.status === 401) { setAuthStatus("401"); return; }
-        if (res.status === 403) { setAuthStatus("403"); return; }
-        if (!res.ok) { setAuthStatus("401"); return; }
-        const body = await res.json();
-        setUser(body.user);
-        setAuthStatus("ok");
-      } catch {
-        if (!cancelled) setAuthStatus("401");
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [apiBase]);
 
   // Load settings once authenticated.
   useEffect(() => {
@@ -110,18 +78,8 @@ export default function AdminAiSettings() {
     return () => { cancelled = true; };
   }, [apiBase, authStatus, toast]);
 
-  // Redirect handling for unauthenticated.
-  useEffect(() => {
-    if (authStatus === "401") setLocation("/admin/login");
-    if (authStatus === "403") setLocation("/admin/forbidden");
-  }, [authStatus, setLocation]);
-
   if (authStatus !== "ok" || !settings) {
-    return (
-      <div className="min-h-screen flex items-center justify-center text-muted-foreground text-sm">
-        <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Loading admin portal…
-      </div>
-    );
+    return <AdminLoading />;
   }
 
   type AiSettingsUpdate = Partial<Omit<AiSettings, "apiKeyLast4">> & { apiKey?: string | null };
@@ -183,36 +141,8 @@ export default function AdminAiSettings() {
     }
   };
 
-  const onLogout = async () => {
-    await fetch(`${apiBase}api/admin/logout`, { method: "POST", credentials: "include" });
-    setLocation("/admin/login");
-  };
-
   return (
-    <div className="min-h-screen bg-background">
-      <header className="sticky top-0 z-10 border-b border-border bg-background/90 backdrop-blur-md">
-        <div className="max-w-5xl mx-auto px-6 h-14 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-              <Shield className="h-4 w-4" />
-            </span>
-            <div className="leading-tight">
-              <div className="text-sm font-semibold">Admin portal</div>
-              <div className="text-[10px] text-muted-foreground">WP Bridge AI</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <Badge variant="outline" className="font-mono text-[11px]">{user?.username}</Badge>
-            <Button variant="ghost" size="sm" onClick={() => setLocation("/")}>
-              <ArrowLeft className="h-4 w-4 mr-1" /> User dashboard
-            </Button>
-            <Button variant="ghost" size="sm" onClick={onLogout}>
-              <LogOut className="h-4 w-4 mr-1" /> Sign out
-            </Button>
-          </div>
-        </div>
-      </header>
-
+    <AdminShell user={user} active="ai-settings">
       <main className="max-w-5xl mx-auto px-6 py-10 space-y-6">
         <section className="flex items-start justify-between gap-4">
           <div>
@@ -373,6 +303,6 @@ export default function AdminAiSettings() {
           {new Date(settings.updatedAt).toLocaleString()}
         </p>
       </main>
-    </div>
+    </AdminShell>
   );
 }
