@@ -571,7 +571,7 @@ function assemblePaddingLonghand(
   };
 }
 
-function buildSectionTemplate(
+export function buildSectionTemplate(
   section: Element,
   opts: { injectLeafClass: boolean; sheet?: ParsedSheet } = { injectLeafClass: false },
 ): BuildResult {

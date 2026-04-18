@@ -7,7 +7,12 @@ import vm from "node:vm";
 import AdmZip from "adm-zip";
 import * as csstree from "css-tree";
 
-import { extractSectionsFromPage } from "../src/lib/sectionFieldExtractor";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import { JSDOM } from "jsdom";
+
+import { buildSectionTemplate, extractSectionsFromPage } from "../src/lib/sectionFieldExtractor";
 import { generateThemeZip } from "../src/lib/themeGenerator";
 import { checkPhpSyntax } from "../src/lib/phpSyntaxCheck";
 
@@ -928,4 +933,190 @@ test("css translator: inheritable color/typography flow from ancestor to widget"
     "font-size must be inherited from .hero",
   );
   assert.equal(heading.settings.typography_font_family, "Inter", "font-family must be inherited");
+});
+
+// ----------------------------------------------------------------------
+// Legacy + Native UI mode (`legacy_native`) regression coverage
+// ----------------------------------------------------------------------
+
+function buildLegacyNativeFixtureSection(): { html: string; section: Element } {
+  // A small but exercise-y section: a heading, a paragraph, a link, an
+  // image, and a list — covers heading / text / link / image / list-item
+  // groups, which is enough surface to assert the leaf-class injection.
+  const html = `<!doctype html><html><body><section class="hero">
+    <h1>Welcome</h1>
+    <p>Lead paragraph copy.</p>
+    <a href="https://example.com">Click</a>
+    <img src="/img/logo.png" alt="Acme">
+    <ul><li>Fast</li><li>Reliable</li><li>Affordable</li></ul>
+  </section></body></html>`;
+  const dom = new JSDOM(html);
+  const sec = dom.window.document.querySelector("section")!;
+  return { html, section: sec };
+}
+
+test("buildSectionTemplate({ injectLeafClass: true }) emits wpb-leaf-{gid} classes on every group's leaf", () => {
+  const { section } = buildLegacyNativeFixtureSection();
+  const result = buildSectionTemplate(section, { injectLeafClass: true });
+
+  assert.ok(result.groups.length > 0, "fixture must produce at least one group");
+
+  for (const g of result.groups) {
+    assert.equal(g.leafClass, `wpb-leaf-${g.id}`, `group ${g.id} must record its leaf class`);
+    assert.match(
+      result.template,
+      new RegExp(`class="[^"]*\\bwpb-leaf-${g.id}\\b[^"]*"`),
+      `template must carry wpb-leaf-${g.id} on the rendered leaf`,
+    );
+    // The PHP swap helpers rely on a sibling marker attribute that
+    // survives any {{ATTR:k}} class-rewrite during render.
+    assert.match(
+      result.template,
+      new RegExp(`data-wpb-leaf-class="wpb-leaf-${g.id}"`),
+      `template must carry data-wpb-leaf-class for ${g.id}`,
+    );
+  }
+});
+
+test("buildSectionTemplate({ injectLeafClass: false }) does NOT emit wpb-leaf-{gid} classes", () => {
+  const { section } = buildLegacyNativeFixtureSection();
+  const result = buildSectionTemplate(section, { injectLeafClass: false });
+
+  assert.ok(result.groups.length > 0, "fixture must produce at least one group");
+  // leafClass is still recorded on the group (shape stability across
+  // modes) but it must NOT have been stamped onto the rendered template.
+  assert.ok(
+    !/wpb-leaf-/.test(result.template),
+    "template must stay byte-identical to source markup outside of legacy_native mode",
+  );
+  assert.ok(
+    !/data-wpb-leaf-class=/.test(result.template),
+    "template must NOT carry the data-wpb-leaf-class marker outside of legacy_native mode",
+  );
+  for (const g of result.groups) {
+    assert.equal(g.leafClass, `wpb-leaf-${g.id}`, "leafClass field is still populated for shape stability");
+  }
+});
+
+test("generateThemeZip({ conversionMode: 'legacy_native' }) wires native sidebar into every widget PHP", () => {
+  // `legacy_native` disables native Elementor decomposition, so every
+  // section falls through to the legacy custom-widget renderer — that's
+  // the only path that emits per-section widget PHP files.
+  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG, undefined, "legacy_native");
+  assert.ok(sections.length > 0, "extractor must yield sections");
+  for (const s of sections) {
+    assert.ok(!s.nativeElementor, `legacy_native must not produce native Elementor trees (got one for ${s.blockName})`);
+    assert.ok(s.template.length > 0, `legacy_native section ${s.blockName} must produce a template`);
+  }
+
+  const buf = generateThemeZip({
+    projectName: "Fixture Site",
+    projectSlug: PROJECT_SLUG,
+    combinedCss: "body{margin:0}",
+    combinedJs: "",
+    pages: [{ slug: PAGE_SLUG, title: "Home", sections }],
+    sourceZip: null,
+    conversionMode: "legacy_native",
+  });
+
+  const zip = new AdmZip(buf);
+  const widgetEntries = zip
+    .getEntries()
+    .filter((e) => /\/widgets\/widget-[^/]+\.php$/.test(e.entryName.replace(/\\/g, "/")));
+  assert.ok(widgetEntries.length > 0, "legacy_native theme must register at least one custom widget");
+
+  for (const entry of widgetEntries) {
+    const src = entry.getData().toString("utf8");
+    assert.match(
+      src,
+      /\$this->wpb_native_ui\s*=\s*true\s*;/,
+      `${entry.entryName} must opt into the native sidebar (wpb_native_ui = true)`,
+    );
+  }
+
+  // The base widget class is what actually invokes wpb_register_native_style
+  // for each group when wpb_native_ui is on. Assert at least one call site
+  // lives somewhere under widgets/ so the per-widget opt-in is meaningful.
+  const baseWidget = zip.getEntry(`${PROJECT_SLUG}/widgets/_base-widget.php`);
+  assert.ok(baseWidget, "theme must ship _base-widget.php");
+  const baseSrc = baseWidget!.getData().toString("utf8");
+  assert.match(
+    baseSrc,
+    /wpb_register_native_style\s*\(/,
+    "_base-widget.php must contain at least one wpb_register_native_style call site",
+  );
+});
+
+test("generateThemeZip({ conversionMode: 'shell' }) does NOT enable wpb_native_ui", () => {
+  // Sanity check: the new flag is opt-in. A non-legacy_native build must
+  // leave wpb_native_ui at its default (false). Use the legacy override
+  // so the per-section widget PHP files actually get emitted to assert
+  // against (native decomposition would skip them entirely).
+  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG, undefined, "legacy");
+  const buf = generateThemeZip({
+    projectName: "Fixture Site",
+    projectSlug: PROJECT_SLUG,
+    combinedCss: "body{margin:0}",
+    combinedJs: "",
+    pages: [{ slug: PAGE_SLUG, title: "Home", sections }],
+    sourceZip: null,
+    conversionMode: "shell",
+  });
+  const zip = new AdmZip(buf);
+  const widgetEntries = zip
+    .getEntries()
+    .filter((e) => /\/widgets\/widget-[^/]+\.php$/.test(e.entryName.replace(/\\/g, "/")));
+  assert.ok(widgetEntries.length > 0, "legacy fallback must still emit per-section widget PHP");
+  for (const entry of widgetEntries) {
+    const src = entry.getData().toString("utf8");
+    assert.match(
+      src,
+      /\$this->wpb_native_ui\s*=\s*false\s*;/,
+      `${entry.entryName} should leave wpb_native_ui = false outside of legacy_native mode`,
+    );
+  }
+});
+
+test("legacy_native widget PHP passes `php -l` parse check", () => {
+  // Optional belt-and-braces: even though checkPhpSyntax already runs on
+  // every PHP file in the parameterized suite, run a real `php -l` over
+  // the legacy_native widget output too — it's the file shape most
+  // likely to break on a real WordPress install (it carries the new
+  // wpb_native_ui flag and the encoded wpb_groups blob).
+  const phpBin = spawnSync("php", ["-v"]);
+  if (phpBin.status !== 0) {
+    // CI without PHP installed: skip silently rather than fail.
+    return;
+  }
+
+  const sections = extractSectionsFromPage(FIXTURE, PAGE_SLUG, PROJECT_SLUG, undefined, "legacy_native");
+  const buf = generateThemeZip({
+    projectName: "Fixture Site",
+    projectSlug: PROJECT_SLUG,
+    combinedCss: "body{margin:0}",
+    combinedJs: "",
+    pages: [{ slug: PAGE_SLUG, title: "Home", sections }],
+    sourceZip: null,
+    conversionMode: "legacy_native",
+  });
+  const zip = new AdmZip(buf);
+  const phpEntries = zip.getEntries().filter((e) => !e.isDirectory && e.entryName.endsWith(".php"));
+  assert.ok(phpEntries.length > 0, "theme must contain PHP files");
+
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "wpb-legacy-native-"));
+  try {
+    for (const entry of phpEntries) {
+      const safeName = entry.entryName.replace(/[\\/]/g, "_");
+      const tmpFile = path.join(tmpDir, safeName);
+      writeFileSync(tmpFile, entry.getData());
+      const result = spawnSync("php", ["-l", tmpFile], { encoding: "utf8" });
+      assert.equal(
+        result.status,
+        0,
+        `php -l failed for ${entry.entryName}: ${result.stdout || ""}${result.stderr || ""}`,
+      );
+    }
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
