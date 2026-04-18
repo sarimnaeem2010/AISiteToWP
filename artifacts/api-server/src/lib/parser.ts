@@ -208,12 +208,12 @@ function aiAnalysisToParsedSite(analysis: AiAnalysis): { parsedSite: ParsedSite;
   return { parsedSite, designSystem };
 }
 
-export async function parseHtml(html: string): Promise<{
+export async function parseHtml(html: string, projectId?: number): Promise<{
   parsedSite: ParsedSite;
   designSystem: DesignSystem;
   aiAnalysis: AiAnalysis | null;
 }> {
-  const ai = await analyzeWithAi(html);
+  const ai = await analyzeWithAi(html, projectId);
   if (ai) {
     const { parsedSite, designSystem } = aiAnalysisToParsedSite(ai);
     return { parsedSite, designSystem, aiAnalysis: ai };
@@ -231,8 +231,9 @@ export async function parseSingleHtmlPage(
   html: string,
   pageName: string,
   pageSlug: string,
+  projectId?: number,
 ): Promise<{ page: ParsedPage; designSystem: DesignSystem; aiAnalysis: AiAnalysis | null }> {
-  const { parsedSite, designSystem, aiAnalysis } = await parseHtml(html);
+  const { parsedSite, designSystem, aiAnalysis } = await parseHtml(html, projectId);
   const sections = parsedSite.pages[0]?.sections ?? [];
   const fallbackName = parsedSite.pages[0]?.name || pageName;
   return {
@@ -240,6 +241,10 @@ export async function parseSingleHtmlPage(
     designSystem,
     aiAnalysis,
   };
+}
+
+export function parseHtmlHeuristicForAi(html: string): ParsedSite {
+  return parseHtmlHeuristic(html).parsedSite;
 }
 
 function parseHtmlHeuristic(html: string): {

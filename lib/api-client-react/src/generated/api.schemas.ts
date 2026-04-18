@@ -5,6 +5,86 @@
  * WP Bridge AI API specification
  * OpenAPI spec version: 0.1.0
  */
+export interface AdminLoginRequest {
+  username: string;
+  password: string;
+}
+
+export type AdminMeResponseUser = {
+  id: number;
+  username: string;
+  isAdmin: boolean;
+};
+
+export interface AdminMeResponse {
+  user: AdminMeResponseUser;
+}
+
+export type AiSettingsPublicStatus =
+  (typeof AiSettingsPublicStatus)[keyof typeof AiSettingsPublicStatus];
+
+export const AiSettingsPublicStatus = {
+  connected: "connected",
+  invalid_key: "invalid_key",
+  disabled: "disabled",
+  unknown: "unknown",
+} as const;
+
+/**
+ * Safe-for-client view of global AI settings. The API key itself is never returned in plaintext.
+ */
+export interface AiSettingsPublic {
+  enabled: boolean;
+  hasKey: boolean;
+  /** Display-only mask of the configured key — never the real key. */
+  keyPreview: string | null;
+  model: string;
+  maxTokens: number;
+  masterControllerMode: boolean;
+  status: AiSettingsPublicStatus;
+  statusMessage: string | null;
+  lastTestedAt: string | null;
+  updatedAt: string;
+}
+
+export interface AiSettingsUpdate {
+  enabled?: boolean;
+  /** Plaintext API key. Stored encrypted at rest. Pass null or empty string to clear. */
+  apiKey?: string | null;
+  model?: string;
+  maxTokens?: number;
+  masterControllerMode?: boolean;
+}
+
+export interface AiKeyTestResult {
+  valid: boolean;
+  message: string;
+  settings: AiSettingsPublic;
+}
+
+export interface ProjectAiRunStatus {
+  lastRunAt: string | null;
+  cacheEntries: number;
+}
+
+export type ProjectAiPublicStatusAiStatus =
+  (typeof ProjectAiPublicStatusAiStatus)[keyof typeof ProjectAiPublicStatusAiStatus];
+
+export const ProjectAiPublicStatusAiStatus = {
+  connected: "connected",
+  invalid_key: "invalid_key",
+  disabled: "disabled",
+  unknown: "unknown",
+} as const;
+
+export interface ProjectAiPublicStatus {
+  aiEnabled: boolean;
+  aiStatus: ProjectAiPublicStatusAiStatus;
+  model: string;
+  lastRunAt: string | null;
+  cacheEntries: number;
+}
+
 export interface HealthStatus {
   status: string;
 }
@@ -202,6 +282,22 @@ export interface ProjectStats {
   pushedProjects: number;
   totalPagesConverted: number;
 }
+
+export type AdminLogout200 = {
+  ok: boolean;
+};
+
+export type TestAdminAiKeyBody = {
+  /** Optional ad-hoc key to test instead of the saved one. */
+  apiKey?: string;
+};
+
+export type ReanalyzeProject200 = {
+  ok: boolean;
+  usedAi: boolean;
+  pageCount: number;
+  aiStatus: ProjectAiRunStatus;
+};
 
 export type UploadProjectZipBody = {
   file: Blob;

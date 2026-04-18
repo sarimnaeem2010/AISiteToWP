@@ -16,6 +16,183 @@ export const HealthCheckResponse = zod.object({
 });
 
 /**
+ * @summary Sign in to the admin portal
+ */
+export const AdminLoginBody = zod.object({
+  username: zod.string(),
+  password: zod.string(),
+});
+
+export const AdminLoginResponse = zod.object({
+  user: zod.object({
+    id: zod.number(),
+    username: zod.string(),
+    isAdmin: zod.boolean(),
+  }),
+});
+
+/**
+ * @summary Sign out
+ */
+export const AdminLogoutResponse = zod.object({
+  ok: zod.boolean(),
+});
+
+/**
+ * @summary Probe the current admin session
+ */
+export const AdminMeResponse = zod.object({
+  user: zod.object({
+    id: zod.number(),
+    username: zod.string(),
+    isAdmin: zod.boolean(),
+  }),
+});
+
+/**
+ * @summary Read global AI settings (admin only)
+ */
+export const GetAdminAiSettingsResponse = zod
+  .object({
+    enabled: zod.boolean(),
+    hasKey: zod.boolean(),
+    keyPreview: zod
+      .string()
+      .nullable()
+      .describe(
+        "Display-only mask of the configured key — never the real key.",
+      ),
+    model: zod.string(),
+    maxTokens: zod.number(),
+    masterControllerMode: zod.boolean(),
+    status: zod.enum(["connected", "invalid_key", "disabled", "unknown"]),
+    statusMessage: zod.string().nullable(),
+    lastTestedAt: zod.string().nullable(),
+    updatedAt: zod.string(),
+  })
+  .describe(
+    "Safe-for-client view of global AI settings. The API key itself is never returned in plaintext.",
+  );
+
+/**
+ * @summary Update global AI settings (admin only)
+ */
+export const UpdateAdminAiSettingsBody = zod.object({
+  enabled: zod.boolean().optional(),
+  apiKey: zod
+    .string()
+    .nullish()
+    .describe(
+      "Plaintext API key. Stored encrypted at rest. Pass null or empty string to clear.",
+    ),
+  model: zod.string().optional(),
+  maxTokens: zod.number().optional(),
+  masterControllerMode: zod.boolean().optional(),
+});
+
+export const UpdateAdminAiSettingsResponse = zod
+  .object({
+    enabled: zod.boolean(),
+    hasKey: zod.boolean(),
+    keyPreview: zod
+      .string()
+      .nullable()
+      .describe(
+        "Display-only mask of the configured key — never the real key.",
+      ),
+    model: zod.string(),
+    maxTokens: zod.number(),
+    masterControllerMode: zod.boolean(),
+    status: zod.enum(["connected", "invalid_key", "disabled", "unknown"]),
+    statusMessage: zod.string().nullable(),
+    lastTestedAt: zod.string().nullable(),
+    updatedAt: zod.string(),
+  })
+  .describe(
+    "Safe-for-client view of global AI settings. The API key itself is never returned in plaintext.",
+  );
+
+/**
+ * @summary Probe the configured (or supplied) OpenAI API key
+ */
+export const TestAdminAiKeyBody = zod.object({
+  apiKey: zod
+    .string()
+    .optional()
+    .describe("Optional ad-hoc key to test instead of the saved one."),
+});
+
+export const TestAdminAiKeyResponse = zod.object({
+  valid: zod.boolean(),
+  message: zod.string(),
+  settings: zod
+    .object({
+      enabled: zod.boolean(),
+      hasKey: zod.boolean(),
+      keyPreview: zod
+        .string()
+        .nullable()
+        .describe(
+          "Display-only mask of the configured key — never the real key.",
+        ),
+      model: zod.string(),
+      maxTokens: zod.number(),
+      masterControllerMode: zod.boolean(),
+      status: zod.enum(["connected", "invalid_key", "disabled", "unknown"]),
+      statusMessage: zod.string().nullable(),
+      lastTestedAt: zod.string().nullable(),
+      updatedAt: zod.string(),
+    })
+    .describe(
+      "Safe-for-client view of global AI settings. The API key itself is never returned in plaintext.",
+    ),
+});
+
+/**
+ * @summary Last-run + cache stats for a project (admin)
+ */
+export const GetAdminProjectAiStatusParams = zod.object({
+  id: zod.coerce.number(),
+});
+
+export const GetAdminProjectAiStatusResponse = zod.object({
+  lastRunAt: zod.string().nullable(),
+  cacheEntries: zod.number(),
+});
+
+/**
+ * @summary Invalidate AI cache and re-run engines on a project's source HTML
+ */
+export const ReanalyzeProjectParams = zod.object({
+  id: zod.coerce.number(),
+});
+
+export const ReanalyzeProjectResponse = zod.object({
+  ok: zod.boolean(),
+  usedAi: zod.boolean(),
+  pageCount: zod.number(),
+  aiStatus: zod.object({
+    lastRunAt: zod.string().nullable(),
+    cacheEntries: zod.number(),
+  }),
+});
+
+/**
+ * @summary Public AI status for a project (read-only, no secrets)
+ */
+export const GetProjectAiStatusParams = zod.object({
+  id: zod.coerce.number(),
+});
+
+export const GetProjectAiStatusResponse = zod.object({
+  aiEnabled: zod.boolean(),
+  aiStatus: zod.enum(["connected", "invalid_key", "disabled", "unknown"]),
+  model: zod.string(),
+  lastRunAt: zod.string().nullable(),
+  cacheEntries: zod.number(),
+});
+
+/**
  * @summary List all projects
  */
 export const ListProjectsResponseItem = zod.object({

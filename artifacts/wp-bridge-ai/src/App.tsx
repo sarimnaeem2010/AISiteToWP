@@ -10,10 +10,14 @@ import NewProject from "./pages/project-new";
 import ProjectWorkspace from "./pages/project-workspace";
 import ProjectPreview from "./pages/project-preview";
 import ProjectPlugin from "./pages/project-plugin";
+import AdminLogin from "./pages/admin-login";
+import AdminForbidden from "./pages/admin-forbidden";
+import AdminAiSettings from "./pages/admin-ai-settings";
+import AdminNotFound from "./pages/admin-not-found";
 
 const queryClient = new QueryClient();
 
-function Router() {
+function UserRoutes() {
   return (
     <MainLayout>
       <Switch>
@@ -25,6 +29,24 @@ function Router() {
         <Route component={NotFound} />
       </Switch>
     </MainLayout>
+  );
+}
+
+function Router() {
+  // Admin routes are intentionally a separate tree — no MainLayout, no
+  // user sidebar, no shared nav state. Visiting /admin while signed out
+  // shows the admin login screen, never the user app.
+  return (
+    <Switch>
+      <Route path="/admin/login" component={AdminLogin} />
+      <Route path="/admin/forbidden" component={AdminForbidden} />
+      <Route path="/admin" component={AdminAiSettings} />
+      <Route path="/admin/ai-settings" component={AdminAiSettings} />
+      {/* Catch-all for /admin/* keeps every admin path inside the admin
+          portal boundary — never falls through to the user app routes. */}
+      <Route path="/admin/:rest*" component={AdminNotFound} />
+      <Route component={UserRoutes} />
+    </Switch>
   );
 }
 

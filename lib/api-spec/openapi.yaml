@@ -33,6 +33,166 @@ paths:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
 
+  # ---- Admin portal -------------------------------------------------------
+  /admin/login:
+    post:
+      operationId: adminLogin
+      tags: [admin]
+      summary: Sign in to the admin portal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminLoginRequest"
+      responses:
+        "200":
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminMeResponse"
+        "401": { description: Invalid credentials }
+        "403": { description: Account is not an admin }
+
+  /admin/logout:
+    post:
+      operationId: adminLogout
+      tags: [admin]
+      summary: Sign out
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { ok: { type: boolean } }
+                required: [ok]
+
+  /admin/me:
+    get:
+      operationId: adminMe
+      tags: [admin]
+      summary: Probe the current admin session
+      responses:
+        "200":
+          description: Authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminMeResponse" }
+        "401": { description: Not signed in }
+        "403": { description: Signed in but not admin }
+
+  /admin/ai-settings:
+    get:
+      operationId: getAdminAiSettings
+      tags: [admin]
+      summary: Read global AI settings (admin only)
+      responses:
+        "200":
+          description: Current settings
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AiSettingsPublic" }
+        "401": { description: Not signed in }
+        "403": { description: Not admin }
+    put:
+      operationId: updateAdminAiSettings
+      tags: [admin]
+      summary: Update global AI settings (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AiSettingsUpdate" }
+      responses:
+        "200":
+          description: Updated settings
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AiSettingsPublic" }
+
+  /admin/ai-settings/test-key:
+    post:
+      operationId: testAdminAiKey
+      tags: [admin]
+      summary: Probe the configured (or supplied) OpenAI API key
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                apiKey:
+                  type: string
+                  description: Optional ad-hoc key to test instead of the saved one.
+      responses:
+        "200":
+          description: Test result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AiKeyTestResult" }
+
+  /admin/projects/{id}/ai-status:
+    get:
+      operationId: getAdminProjectAiStatus
+      tags: [admin]
+      summary: Last-run + cache stats for a project (admin)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProjectAiRunStatus" }
+
+  /admin/projects/{id}/reanalyze:
+    post:
+      operationId: reanalyzeProject
+      tags: [admin]
+      summary: Invalidate AI cache and re-run engines on a project's source HTML
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Re-analysis completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  usedAi: { type: boolean }
+                  pageCount: { type: integer }
+                  aiStatus: { $ref: "#/components/schemas/ProjectAiRunStatus" }
+                required: [ok, usedAi, pageCount, aiStatus]
+
+  /projects/{id}/ai-status:
+    get:
+      operationId: getProjectAiStatus
+      tags: [projects]
+      summary: Public AI status for a project (read-only, no secrets)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProjectAiPublicStatus" }
+
   /projects:
     get:
       operationId: listProjects
@@ -292,6 +452,85 @@ paths:
 
 components:
   schemas:
+    AdminLoginRequest:
+      type: object
+      properties:
+        username: { type: string }
+        password: { type: string }
+      required: [username, password]
+
+    AdminMeResponse:
+      type: object
+      properties:
+        user:
+          type: object
+          properties:
+            id: { type: integer }
+            username: { type: string }
+            isAdmin: { type: boolean }
+          required: [id, username, isAdmin]
+      required: [user]
+
+    AiSettingsPublic:
+      type: object
+      description: Safe-for-client view of global AI settings. The API key itself is never returned in plaintext.
+      properties:
+        enabled: { type: boolean }
+        hasKey: { type: boolean }
+        keyPreview:
+          type: string
+          nullable: true
+          description: Display-only mask of the configured key — never the real key.
+        model: { type: string }
+        maxTokens: { type: integer }
+        masterControllerMode: { type: boolean }
+        status:
+          type: string
+          enum: [connected, invalid_key, disabled, unknown]
+        statusMessage: { type: string, nullable: true }
+        lastTestedAt: { type: string, nullable: true }
+        updatedAt: { type: string }
+      required: [enabled, hasKey, keyPreview, model, maxTokens, masterControllerMode, status, statusMessage, lastTestedAt, updatedAt]
+
+    AiSettingsUpdate:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        apiKey:
+          type: string
+          nullable: true
+          description: Plaintext API key. Stored encrypted at rest. Pass null or empty string to clear.
+        model: { type: string }
+        maxTokens: { type: integer }
+        masterControllerMode: { type: boolean }
+
+    AiKeyTestResult:
+      type: object
+      properties:
+        valid: { type: boolean }
+        message: { type: string }
+        settings: { $ref: "#/components/schemas/AiSettingsPublic" }
+      required: [valid, message, settings]
+
+    ProjectAiRunStatus:
+      type: object
+      properties:
+        lastRunAt: { type: string, nullable: true }
+        cacheEntries: { type: integer }
+      required: [lastRunAt, cacheEntries]
+
+    ProjectAiPublicStatus:
+      type: object
+      properties:
+        aiEnabled: { type: boolean }
+        aiStatus:
+          type: string
+          enum: [connected, invalid_key, disabled, unknown]
+        model: { type: string }
+        lastRunAt: { type: string, nullable: true }
+        cacheEntries: { type: integer }
+      required: [aiEnabled, aiStatus, model, lastRunAt, cacheEntries]
+
     HealthStatus:
       type: object
       properties:

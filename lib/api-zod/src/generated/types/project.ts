@@ -16,5 +16,4 @@ export interface Project {
   updatedAt: string;
   pageCount?: number | null;
   lastPushedAt?: string | null;
-  conversionMode?: "shell" | "deep" | "legacy" | "legacy_native";
 }

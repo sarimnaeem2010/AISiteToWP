@@ -1,4 +1,4 @@
-import OpenAI from "openai";
+import { runEngine } from "./aiClient";
 import { logger } from "./logger";
 import type { ParsedSite } from "./parser";
 
@@ -23,70 +23,40 @@ export interface ChatRefineResult {
   summary: string;
 }
 
-function isAiAvailable(): boolean {
-  return Boolean(
-    process.env.AI_INTEGRATIONS_OPENAI_BASE_URL &&
-      process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-  );
-}
-
 /**
  * Apply a single natural-language layout instruction to a parsed site.
- * Returns the updated site plus a short summary, or null if AI is
- * unavailable / the response could not be parsed.
+ * This is an explicit user action so we always run a fresh AI call —
+ * no caching. Returns null when AI is disabled or the response is
+ * invalid; the caller surfaces a 503 in that case.
  */
 export async function applyChatRefinement(
   site: ParsedSite,
   instruction: string,
 ): Promise<ChatRefineResult | null> {
-  if (!isAiAvailable()) {
-    logger.warn("OpenAI integration env vars not set, cannot run chat refinement");
-    return null;
-  }
-
   const trimmedInstruction = instruction.trim().slice(0, 1000);
   if (!trimmedInstruction) return null;
 
-  const client = new OpenAI({
-    baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
-    apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
+  const result = await runEngine<Partial<ChatRefineResult>>({
+    engine: "chatRefine",
+    systemPrompt: CHAT_SYSTEM_PROMPT,
+    userPrompt: `CURRENT_SITE:\n${JSON.stringify(site, null, 2)}\n\nUSER_INSTRUCTION:\n${trimmedInstruction}\n\nReturn JSON {site, summary}.`,
   });
 
-  try {
-    const response = await client.chat.completions.create({
-      model: "gpt-5.2",
-      max_completion_tokens: 8192,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: CHAT_SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: `CURRENT_SITE:\n${JSON.stringify(site, null, 2)}\n\nUSER_INSTRUCTION:\n${trimmedInstruction}\n\nReturn JSON {site, summary}.`,
-        },
-      ],
-    });
-
-    const raw = response.choices[0]?.message?.content;
-    if (!raw) {
-      logger.warn("Chat refinement returned empty response");
-      return null;
+  if (!result.output) {
+    if (result.error && result.error !== "ai_disabled") {
+      logger.warn({ err: result.error }, "Chat refinement failed");
     }
-
-    const parsed = JSON.parse(raw) as Partial<ChatRefineResult>;
-    if (!parsed.site || !Array.isArray((parsed.site as ParsedSite).pages)) {
-      logger.warn("Chat refinement response missing site.pages");
-      return null;
-    }
-
-    return {
-      site: parsed.site as ParsedSite,
-      summary: typeof parsed.summary === "string" && parsed.summary.length > 0
-        ? parsed.summary.slice(0, 280)
-        : "Layout updated.",
-    };
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.error({ err: msg }, "Chat refinement failed");
     return null;
   }
+  const parsed = result.output;
+  if (!parsed.site || !Array.isArray((parsed.site as ParsedSite).pages)) {
+    logger.warn("Chat refinement response missing site.pages");
+    return null;
+  }
+  return {
+    site: parsed.site as ParsedSite,
+    summary: typeof parsed.summary === "string" && parsed.summary.length > 0
+      ? parsed.summary.slice(0, 280)
+      : "Layout updated.",
+  };
 }

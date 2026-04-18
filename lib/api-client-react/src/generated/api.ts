@@ -17,6 +17,12 @@ import type {
 } from "@tanstack/react-query";
 
 import type {
+  AdminLoginRequest,
+  AdminLogout200,
+  AdminMeResponse,
+  AiKeyTestResult,
+  AiSettingsPublic,
+  AiSettingsUpdate,
   ConnectionTestResult,
   CreateProjectBody,
   HealthStatus,
@@ -24,9 +30,13 @@ import type {
   ParseResult,
   PluginOutput,
   Project,
+  ProjectAiPublicStatus,
+  ProjectAiRunStatus,
   ProjectDetail,
   ProjectStats,
   PushResult,
+  ReanalyzeProject200,
+  TestAdminAiKeyBody,
   UploadProjectZipBody,
   WordPressConfig,
   ZipUploadResult,
@@ -109,6 +119,747 @@ export function useHealthCheck<
   request?: SecondParameter<typeof customFetch>;
 }): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
   const queryOptions = getHealthCheckQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Sign in to the admin portal
+ */
+export const getAdminLoginUrl = () => {
+  return `/api/admin/login`;
+};
+
+export const adminLogin = async (
+  adminLoginRequest: AdminLoginRequest,
+  options?: RequestInit,
+): Promise<AdminMeResponse> => {
+  return customFetch<AdminMeResponse>(getAdminLoginUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(adminLoginRequest),
+  });
+};
+
+export const getAdminLoginMutationOptions = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof adminLogin>>,
+    TError,
+    { data: BodyType<AdminLoginRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof adminLogin>>,
+  TError,
+  { data: BodyType<AdminLoginRequest> },
+  TContext
+> => {
+  const mutationKey = ["adminLogin"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof adminLogin>>,
+    { data: BodyType<AdminLoginRequest> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return adminLogin(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type AdminLoginMutationResult = NonNullable<
+  Awaited<ReturnType<typeof adminLogin>>
+>;
+export type AdminLoginMutationBody = BodyType<AdminLoginRequest>;
+export type AdminLoginMutationError = ErrorType<void>;
+
+/**
+ * @summary Sign in to the admin portal
+ */
+export const useAdminLogin = <
+  TError = ErrorType<void>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof adminLogin>>,
+    TError,
+    { data: BodyType<AdminLoginRequest> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof adminLogin>>,
+  TError,
+  { data: BodyType<AdminLoginRequest> },
+  TContext
+> => {
+  return useMutation(getAdminLoginMutationOptions(options));
+};
+
+/**
+ * @summary Sign out
+ */
+export const getAdminLogoutUrl = () => {
+  return `/api/admin/logout`;
+};
+
+export const adminLogout = async (
+  options?: RequestInit,
+): Promise<AdminLogout200> => {
+  return customFetch<AdminLogout200>(getAdminLogoutUrl(), {
+    ...options,
+    method: "POST",
+  });
+};
+
+export const getAdminLogoutMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof adminLogout>>,
+    TError,
+    void,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof adminLogout>>,
+  TError,
+  void,
+  TContext
+> => {
+  const mutationKey = ["adminLogout"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof adminLogout>>,
+    void
+  > = () => {
+    return adminLogout(requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type AdminLogoutMutationResult = NonNullable<
+  Awaited<ReturnType<typeof adminLogout>>
+>;
+
+export type AdminLogoutMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Sign out
+ */
+export const useAdminLogout = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof adminLogout>>,
+    TError,
+    void,
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof adminLogout>>,
+  TError,
+  void,
+  TContext
+> => {
+  return useMutation(getAdminLogoutMutationOptions(options));
+};
+
+/**
+ * @summary Probe the current admin session
+ */
+export const getAdminMeUrl = () => {
+  return `/api/admin/me`;
+};
+
+export const adminMe = async (
+  options?: RequestInit,
+): Promise<AdminMeResponse> => {
+  return customFetch<AdminMeResponse>(getAdminMeUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getAdminMeQueryKey = () => {
+  return [`/api/admin/me`] as const;
+};
+
+export const getAdminMeQueryOptions = <
+  TData = Awaited<ReturnType<typeof adminMe>>,
+  TError = ErrorType<void>,
+>(options?: {
+  query?: UseQueryOptions<Awaited<ReturnType<typeof adminMe>>, TError, TData>;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getAdminMeQueryKey();
+
+  const queryFn: QueryFunction<Awaited<ReturnType<typeof adminMe>>> = ({
+    signal,
+  }) => adminMe({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof adminMe>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type AdminMeQueryResult = NonNullable<
+  Awaited<ReturnType<typeof adminMe>>
+>;
+export type AdminMeQueryError = ErrorType<void>;
+
+/**
+ * @summary Probe the current admin session
+ */
+
+export function useAdminMe<
+  TData = Awaited<ReturnType<typeof adminMe>>,
+  TError = ErrorType<void>,
+>(options?: {
+  query?: UseQueryOptions<Awaited<ReturnType<typeof adminMe>>, TError, TData>;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getAdminMeQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Read global AI settings (admin only)
+ */
+export const getGetAdminAiSettingsUrl = () => {
+  return `/api/admin/ai-settings`;
+};
+
+export const getAdminAiSettings = async (
+  options?: RequestInit,
+): Promise<AiSettingsPublic> => {
+  return customFetch<AiSettingsPublic>(getGetAdminAiSettingsUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetAdminAiSettingsQueryKey = () => {
+  return [`/api/admin/ai-settings`] as const;
+};
+
+export const getGetAdminAiSettingsQueryOptions = <
+  TData = Awaited<ReturnType<typeof getAdminAiSettings>>,
+  TError = ErrorType<void>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getAdminAiSettings>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetAdminAiSettingsQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getAdminAiSettings>>
+  > = ({ signal }) => getAdminAiSettings({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getAdminAiSettings>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetAdminAiSettingsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getAdminAiSettings>>
+>;
+export type GetAdminAiSettingsQueryError = ErrorType<void>;
+
+/**
+ * @summary Read global AI settings (admin only)
+ */
+
+export function useGetAdminAiSettings<
+  TData = Awaited<ReturnType<typeof getAdminAiSettings>>,
+  TError = ErrorType<void>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof getAdminAiSettings>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetAdminAiSettingsQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Update global AI settings (admin only)
+ */
+export const getUpdateAdminAiSettingsUrl = () => {
+  return `/api/admin/ai-settings`;
+};
+
+export const updateAdminAiSettings = async (
+  aiSettingsUpdate: AiSettingsUpdate,
+  options?: RequestInit,
+): Promise<AiSettingsPublic> => {
+  return customFetch<AiSettingsPublic>(getUpdateAdminAiSettingsUrl(), {
+    ...options,
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(aiSettingsUpdate),
+  });
+};
+
+export const getUpdateAdminAiSettingsMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateAdminAiSettings>>,
+    TError,
+    { data: BodyType<AiSettingsUpdate> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof updateAdminAiSettings>>,
+  TError,
+  { data: BodyType<AiSettingsUpdate> },
+  TContext
+> => {
+  const mutationKey = ["updateAdminAiSettings"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof updateAdminAiSettings>>,
+    { data: BodyType<AiSettingsUpdate> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return updateAdminAiSettings(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UpdateAdminAiSettingsMutationResult = NonNullable<
+  Awaited<ReturnType<typeof updateAdminAiSettings>>
+>;
+export type UpdateAdminAiSettingsMutationBody = BodyType<AiSettingsUpdate>;
+export type UpdateAdminAiSettingsMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Update global AI settings (admin only)
+ */
+export const useUpdateAdminAiSettings = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateAdminAiSettings>>,
+    TError,
+    { data: BodyType<AiSettingsUpdate> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof updateAdminAiSettings>>,
+  TError,
+  { data: BodyType<AiSettingsUpdate> },
+  TContext
+> => {
+  return useMutation(getUpdateAdminAiSettingsMutationOptions(options));
+};
+
+/**
+ * @summary Probe the configured (or supplied) OpenAI API key
+ */
+export const getTestAdminAiKeyUrl = () => {
+  return `/api/admin/ai-settings/test-key`;
+};
+
+export const testAdminAiKey = async (
+  testAdminAiKeyBody?: TestAdminAiKeyBody,
+  options?: RequestInit,
+): Promise<AiKeyTestResult> => {
+  return customFetch<AiKeyTestResult>(getTestAdminAiKeyUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(testAdminAiKeyBody),
+  });
+};
+
+export const getTestAdminAiKeyMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof testAdminAiKey>>,
+    TError,
+    { data: BodyType<TestAdminAiKeyBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof testAdminAiKey>>,
+  TError,
+  { data: BodyType<TestAdminAiKeyBody> },
+  TContext
+> => {
+  const mutationKey = ["testAdminAiKey"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof testAdminAiKey>>,
+    { data: BodyType<TestAdminAiKeyBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return testAdminAiKey(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type TestAdminAiKeyMutationResult = NonNullable<
+  Awaited<ReturnType<typeof testAdminAiKey>>
+>;
+export type TestAdminAiKeyMutationBody = BodyType<TestAdminAiKeyBody>;
+export type TestAdminAiKeyMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Probe the configured (or supplied) OpenAI API key
+ */
+export const useTestAdminAiKey = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof testAdminAiKey>>,
+    TError,
+    { data: BodyType<TestAdminAiKeyBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof testAdminAiKey>>,
+  TError,
+  { data: BodyType<TestAdminAiKeyBody> },
+  TContext
+> => {
+  return useMutation(getTestAdminAiKeyMutationOptions(options));
+};
+
+/**
+ * @summary Last-run + cache stats for a project (admin)
+ */
+export const getGetAdminProjectAiStatusUrl = (id: number) => {
+  return `/api/admin/projects/${id}/ai-status`;
+};
+
+export const getAdminProjectAiStatus = async (
+  id: number,
+  options?: RequestInit,
+): Promise<ProjectAiRunStatus> => {
+  return customFetch<ProjectAiRunStatus>(getGetAdminProjectAiStatusUrl(id), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetAdminProjectAiStatusQueryKey = (id: number) => {
+  return [`/api/admin/projects/${id}/ai-status`] as const;
+};
+
+export const getGetAdminProjectAiStatusQueryOptions = <
+  TData = Awaited<ReturnType<typeof getAdminProjectAiStatus>>,
+  TError = ErrorType<unknown>,
+>(
+  id: number,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getAdminProjectAiStatus>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetAdminProjectAiStatusQueryKey(id);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getAdminProjectAiStatus>>
+  > = ({ signal }) =>
+    getAdminProjectAiStatus(id, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!id,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getAdminProjectAiStatus>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetAdminProjectAiStatusQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getAdminProjectAiStatus>>
+>;
+export type GetAdminProjectAiStatusQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Last-run + cache stats for a project (admin)
+ */
+
+export function useGetAdminProjectAiStatus<
+  TData = Awaited<ReturnType<typeof getAdminProjectAiStatus>>,
+  TError = ErrorType<unknown>,
+>(
+  id: number,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getAdminProjectAiStatus>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetAdminProjectAiStatusQueryOptions(id, options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Invalidate AI cache and re-run engines on a project's source HTML
+ */
+export const getReanalyzeProjectUrl = (id: number) => {
+  return `/api/admin/projects/${id}/reanalyze`;
+};
+
+export const reanalyzeProject = async (
+  id: number,
+  options?: RequestInit,
+): Promise<ReanalyzeProject200> => {
+  return customFetch<ReanalyzeProject200>(getReanalyzeProjectUrl(id), {
+    ...options,
+    method: "POST",
+  });
+};
+
+export const getReanalyzeProjectMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof reanalyzeProject>>,
+    TError,
+    { id: number },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof reanalyzeProject>>,
+  TError,
+  { id: number },
+  TContext
+> => {
+  const mutationKey = ["reanalyzeProject"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof reanalyzeProject>>,
+    { id: number }
+  > = (props) => {
+    const { id } = props ?? {};
+
+    return reanalyzeProject(id, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type ReanalyzeProjectMutationResult = NonNullable<
+  Awaited<ReturnType<typeof reanalyzeProject>>
+>;
+
+export type ReanalyzeProjectMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Invalidate AI cache and re-run engines on a project's source HTML
+ */
+export const useReanalyzeProject = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof reanalyzeProject>>,
+    TError,
+    { id: number },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof reanalyzeProject>>,
+  TError,
+  { id: number },
+  TContext
+> => {
+  return useMutation(getReanalyzeProjectMutationOptions(options));
+};
+
+/**
+ * @summary Public AI status for a project (read-only, no secrets)
+ */
+export const getGetProjectAiStatusUrl = (id: number) => {
+  return `/api/projects/${id}/ai-status`;
+};
+
+export const getProjectAiStatus = async (
+  id: number,
+  options?: RequestInit,
+): Promise<ProjectAiPublicStatus> => {
+  return customFetch<ProjectAiPublicStatus>(getGetProjectAiStatusUrl(id), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getGetProjectAiStatusQueryKey = (id: number) => {
+  return [`/api/projects/${id}/ai-status`] as const;
+};
+
+export const getGetProjectAiStatusQueryOptions = <
+  TData = Awaited<ReturnType<typeof getProjectAiStatus>>,
+  TError = ErrorType<unknown>,
+>(
+  id: number,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getProjectAiStatus>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey = queryOptions?.queryKey ?? getGetProjectAiStatusQueryKey(id);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getProjectAiStatus>>
+  > = ({ signal }) => getProjectAiStatus(id, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: !!id,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getProjectAiStatus>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type GetProjectAiStatusQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getProjectAiStatus>>
+>;
+export type GetProjectAiStatusQueryError = ErrorType<unknown>;
+
+/**
+ * @summary Public AI status for a project (read-only, no secrets)
+ */
+
+export function useGetProjectAiStatus<
+  TData = Awaited<ReturnType<typeof getProjectAiStatus>>,
+  TError = ErrorType<unknown>,
+>(
+  id: number,
+  options?: {
+    query?: UseQueryOptions<
+      Awaited<ReturnType<typeof getProjectAiStatus>>,
+      TError,
+      TData
+    >;
+    request?: SecondParameter<typeof customFetch>;
+  },
+): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getGetProjectAiStatusQueryOptions(id, options);
 
   const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
     queryKey: QueryKey;

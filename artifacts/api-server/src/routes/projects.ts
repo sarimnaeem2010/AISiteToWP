@@ -322,7 +322,7 @@ router.post("/projects/:id/parse", async (req, res): Promise<void> => {
     return;
   }
 
-  const { parsedSite, designSystem, aiAnalysis } = await parseHtml(body.data.htmlContent);
+  const { parsedSite, designSystem, aiAnalysis } = await parseHtml(body.data.htmlContent, project.id);
   const existingCpts = (project.customPostTypes as CustomPostTypeDef[] | null) ?? [];
   const suggested = suggestedToCpts(aiAnalysis?.suggestedCpts);
   // Merge: keep existing user choices, add any new suggestions not already present
@@ -382,7 +382,7 @@ router.post("/projects/:id/scrape-url", async (req, res): Promise<void> => {
     return;
   }
 
-  const { parsedSite, designSystem, aiAnalysis } = await parseHtml(scraped.html);
+  const { parsedSite, designSystem, aiAnalysis } = await parseHtml(scraped.html, project.id);
   const existingCpts = (project.customPostTypes as CustomPostTypeDef[] | null) ?? [];
   const suggested = suggestedToCpts(aiAnalysis?.suggestedCpts);
   const mergedCpts: CustomPostTypeDef[] = [
@@ -1103,7 +1103,7 @@ router.post("/projects/:id/upload-zip", upload.single("file"), async (req, res):
       ? "Home"
       : baseName.replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
     try {
-      const { page, designSystem, aiAnalysis } = await parseSingleHtmlPage(htmlPage.content, niceName, unique);
+      const { page, designSystem, aiAnalysis } = await parseSingleHtmlPage(htmlPage.content, niceName, unique, project.id);
       parsedPages.push(page);
       if (!mergedDesignSystem) mergedDesignSystem = designSystem;
       if (aiAnalysis && !mergedAiAnalysis) {

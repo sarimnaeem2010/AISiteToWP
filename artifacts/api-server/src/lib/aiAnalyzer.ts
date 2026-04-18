@@ -1,5 +1,18 @@
-import OpenAI from "openai";
+import { getAiSettings } from "./aiClient";
 import { logger } from "./logger";
+import {
+  compressSections,
+  chunkSections,
+  toWidgetSectionInput,
+  runMasterController,
+  runSemanticAnalyzer,
+  runWidgetIntelligence,
+  runDesignAudit,
+  type CompressedSection,
+  type WidgetSectionInput,
+} from "./aiEngines";
+import { extractDesignTokens, type DesignTokens } from "./tokenExtractor";
+import { parseHtmlHeuristicForAi } from "./parser";
 
 const SEMANTIC_TYPES = [
   "hero", "features", "about", "services", "testimonials", "pricing",
@@ -14,6 +27,8 @@ export interface AiSection {
   confidence: number;
   fields: Record<string, unknown>;
   repeatItems?: Array<Record<string, unknown>>;
+  /** Set when the Widget Intelligence engine produced a widget mapping. */
+  widget?: { name: string; reason: string; structure: Record<string, unknown> };
 }
 
 export interface AiPage {
@@ -45,254 +60,257 @@ export interface AiAnalysis {
   designSystem: AiDesignSystem;
   suggestedCpts: SuggestedCpt[];
   source: "ai" | "heuristic";
+  /** Which mode was used: "master" = single combined call, "engines" = three separate calls. */
+  mode: "master" | "engines";
+  /** Optional design audit findings + fixes when AI ran. */
+  designAudit?: unknown;
 }
 
-const SYSTEM_PROMPT = `You are an expert web-page structural analyzer. You convert raw HTML into a normalized JSON schema describing pages, sections, design system, and reusable content types for a WordPress importer.
-
-Always:
-- Pick the most accurate semanticType from the allowed list.
-- Extract all visible text into fields. Never invent content.
-- For repeating content (e.g. each testimonial, each pricing plan, each service, each team member), put each entry as one object inside repeatItems.
-- For a single hero/cta/about/contact section, leave repeatItems empty and put the data in fields.
-- Use snake_case keys in fields and inside repeatItems entries (headline, subheadline, cta_text, cta_url, image_url, name, role, quote, plan_name, plan_price, plan_features, etc).
-- Suggest a Custom Post Type for any section that contains 3+ similar repeatItems (testimonials, services, team, projects, plans, faq).
-- Output only valid JSON matching the schema. No prose.`;
-
-const REFINEMENT_SYSTEM_PROMPT = `You are a UI structure refinement post-processor. You take a draft JSON page structure produced by a first-pass analyzer and clean it up.
-
-Rules:
-1. Merge duplicate or overlapping sections that describe the same logical block.
-2. Remove noise sections (empty fields, decorative spacers, sections with no real content).
-3. Ensure logical top-to-bottom flow (e.g. header/navbar first, hero next, footer last).
-4. Normalize content: trim excessive whitespace, drop placeholder text like "Lorem ipsum" if obvious filler, but never invent content.
-5. Ensure each section is self-contained: every section must have either non-empty fields or non-empty repeatItems.
-6. Keep semanticType values from the allowed list. If unsure, use "custom".
-7. Preserve the designSystem and suggestedCpts; only adjust suggestedCpts.itemCount if you removed/merged repeatItems.
-8. Output only the improved JSON, matching the SAME schema as the input. No prose.`;
-
-const SCHEMA_HINT = {
-  pages: [
-    {
-      name: "Home",
-      slug: "home",
-      sections: [
-        {
-          semanticType: "hero",
-          confidence: 0.95,
-          fields: {
-            headline: "string",
-            subheadline: "string",
-            cta_text: "string",
-            cta_url: "string",
-            image_url: "string",
-          },
-          repeatItems: [],
-        },
-      ],
-    },
-  ],
-  designSystem: {
+function inferDesignSystem(siteHtml: string): AiDesignSystem {
+  const tokens = extractDesignTokens(siteHtml);
+  const colors = Object.values(tokens.color).filter(Boolean) as string[];
+  return {
     font: "Inter, sans-serif",
-    fontHeading: "Inter, sans-serif",
-    colors: ["#111827", "#6366F1", "#FFFFFF"],
-    primaryColor: "#6366F1",
+    fontHeading: undefined,
+    colors,
+    primaryColor: tokens.color.primary,
     buttonStyle: "rounded",
     headingStyle: "bold",
-  },
-  suggestedCpts: [
-    {
-      slug: "testimonial",
-      label: "Testimonial",
-      pluralLabel: "Testimonials",
-      sourceSemanticType: "testimonials",
-      fields: ["quote", "author_name", "author_role"],
-      itemCount: 3,
-    },
-  ],
-};
-
-function trimHtmlForLLM(html: string, maxChars = 60_000): string {
-  // Strip script/style noise to give the model more room for content.
-  const cleaned = html
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/\s+/g, " ");
-  if (cleaned.length <= maxChars) return cleaned;
-  // Keep head + first portion of body + tail.
-  return cleaned.slice(0, maxChars - 2000) + "\n<!-- TRUNCATED -->\n" + cleaned.slice(-2000);
+  };
 }
 
-function isAiAvailable(): boolean {
-  return Boolean(process.env.AI_INTEGRATIONS_OPENAI_BASE_URL && process.env.AI_INTEGRATIONS_OPENAI_API_KEY);
+async function buildSuggestedCpts(
+  pages: AiPage[],
+  projectId: number | null,
+): Promise<SuggestedCpt[]> {
+  const out: SuggestedCpt[] = [];
+  const seen = new Set<string>();
+  for (const page of pages) {
+    for (const s of page.sections) {
+      if (!s.repeatItems || s.repeatItems.length < 3) continue;
+      const slug = s.semanticType.replace(/[^a-z0-9_]/g, "_").slice(0, 20);
+      if (seen.has(slug)) continue;
+      seen.add(slug);
+      const fields = Array.from(
+        new Set(s.repeatItems.flatMap((it) => Object.keys(it))),
+      ).slice(0, 12);
+      out.push({
+        slug,
+        label: s.semanticType.charAt(0).toUpperCase() + s.semanticType.slice(1),
+        pluralLabel: `${s.semanticType.charAt(0).toUpperCase()}${s.semanticType.slice(1)}s`,
+        sourceSemanticType: s.semanticType,
+        fields,
+        itemCount: s.repeatItems.length,
+      });
+    }
+  }
+  void projectId;
+  return out;
 }
 
-export async function analyzeWithAi(html: string): Promise<AiAnalysis | null> {
-  if (!isAiAvailable()) {
-    logger.warn("OpenAI integration env vars not set, skipping AI analysis");
+/**
+ * Convert raw HTML into the normalized analysis schema. Routing:
+ *
+ *  1. Always run the deterministic parser first — this gives us a
+ *     trustworthy ParsedSite scaffold (no hallucinated content).
+ *  2. If AI is enabled in admin settings:
+ *       - masterControllerMode = true  → one Master Controller call
+ *         that returns semantic + widget + designAudit at once.
+ *       - masterControllerMode = false → three engine calls
+ *         (Semantic, then Widget per section, then Design Audit).
+ *  3. Merge engine outputs onto the parsed scaffold and return.
+ *  4. On any AI failure or if AI is off, return null and let the caller
+ *     fall back to the pure heuristic shape.
+ */
+export async function analyzeWithAi(html: string, projectId?: number): Promise<AiAnalysis | null> {
+  const settings = await getAiSettings();
+  const apiEnabled = settings.enabled && Boolean(settings.apiKeyCiphertext) && settings.status !== "invalid_key";
+  if (!apiEnabled) {
     return null;
   }
 
-  const client = new OpenAI({
-    baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
-    apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-  });
-
-  const trimmed = trimHtmlForLLM(html);
-
-  try {
-    const response = await client.chat.completions.create({
-      model: "gpt-5.2",
-      max_completion_tokens: 8192,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: `Analyze this HTML and return JSON matching this exact schema (allowed semanticType values: ${SEMANTIC_TYPES.join(", ")}):\n\nSCHEMA:\n${JSON.stringify(SCHEMA_HINT, null, 2)}\n\nHTML:\n${trimmed}`,
-        },
-      ],
-    });
-
-    const raw = response.choices[0]?.message?.content;
-    if (!raw) {
-      logger.warn("AI returned empty response");
-      return null;
-    }
-
-    const parsed = JSON.parse(raw) as Partial<AiAnalysis>;
-    if (!Array.isArray(parsed.pages) || parsed.pages.length === 0) {
-      logger.warn({ raw: raw.slice(0, 200) }, "AI response missing pages");
-      return null;
-    }
-
-    // Normalize and defensive-default
-    const pages: AiPage[] = parsed.pages.map((p, i) => ({
-      name: p.name || `Page ${i + 1}`,
-      slug: p.slug || (i === 0 ? "home" : `page-${i + 1}`),
-      sections: (p.sections ?? []).map((s) => ({
-        semanticType: SEMANTIC_TYPES.includes(s.semanticType as SemanticType)
-          ? (s.semanticType as SemanticType)
-          : "custom",
-        confidence: typeof s.confidence === "number" ? s.confidence : 0.5,
-        fields: s.fields ?? {},
-        repeatItems: Array.isArray(s.repeatItems) ? s.repeatItems : [],
-      })),
-    }));
-
-    const designSystem: AiDesignSystem = {
-      font: parsed.designSystem?.font || "Inter, sans-serif",
-      fontHeading: parsed.designSystem?.fontHeading,
-      colors: Array.isArray(parsed.designSystem?.colors) ? parsed.designSystem!.colors : [],
-      primaryColor: parsed.designSystem?.primaryColor,
-      buttonStyle: parsed.designSystem?.buttonStyle || "rounded",
-      headingStyle: parsed.designSystem?.headingStyle || "bold",
-    };
-
-    const suggestedCpts: SuggestedCpt[] = (parsed.suggestedCpts ?? [])
-      .filter((c) => c && typeof c.slug === "string" && c.slug.length > 0)
-      .map((c) => ({
-        slug: c.slug.replace(/[^a-z0-9_]/g, "_").slice(0, 20),
-        label: c.label || c.slug,
-        pluralLabel: c.pluralLabel || `${c.label || c.slug}s`,
-        sourceSemanticType: SEMANTIC_TYPES.includes(c.sourceSemanticType as SemanticType)
-          ? (c.sourceSemanticType as SemanticType)
-          : "custom",
-        fields: Array.isArray(c.fields) ? c.fields : [],
-        itemCount: typeof c.itemCount === "number" ? c.itemCount : 0,
-      }));
-
-    const draft: AiAnalysis = { pages, designSystem, suggestedCpts, source: "ai" };
-
-    // Second pass: refinement / cleaning of the draft structure.
-    const refined = await refineWithAi(client, draft);
-    return refined ?? draft;
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.error({ err: msg }, "AI analysis failed");
+  // Deterministic skeleton — never lies about structure.
+  const skeleton = parseHtmlHeuristicForAi(html);
+  if (skeleton.pages.length === 0) {
     return null;
   }
-}
 
-async function refineWithAi(client: OpenAI, draft: AiAnalysis): Promise<AiAnalysis | null> {
-  try {
-    const response = await client.chat.completions.create({
-      model: "gpt-5.2",
-      max_completion_tokens: 8192,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: REFINEMENT_SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: `Refine this draft structure (allowed semanticType values: ${SEMANTIC_TYPES.join(", ")}). Return JSON in the same shape.\n\nDRAFT:\n${JSON.stringify(draft, null, 2)}`,
-        },
-      ],
-    });
+  const pid = typeof projectId === "number" ? projectId : 0;
+  const compressed = compressSections(skeleton);
+  const tokens = extractDesignTokens(html);
+  const SECTIONS_PER_CALL = 10;
 
-    const raw = response.choices[0]?.message?.content;
-    if (!raw) {
-      logger.warn("AI refinement returned empty response, keeping draft");
-      return null;
-    }
+  // Flatten all sections in skeleton order so the index aligns with `compressed`.
+  const flatSections = skeleton.pages.flatMap((p) => p.sections);
 
-    const parsed = JSON.parse(raw) as Partial<AiAnalysis>;
-    if (!Array.isArray(parsed.pages) || parsed.pages.length === 0) {
-      logger.warn("AI refinement missing pages, keeping draft");
-      return null;
-    }
-
-    const pages: AiPage[] = parsed.pages.map((p, i) => ({
-      name: p.name || draft.pages[i]?.name || `Page ${i + 1}`,
-      slug: p.slug || draft.pages[i]?.slug || (i === 0 ? "home" : `page-${i + 1}`),
-      sections: (p.sections ?? [])
-        .map((s) => ({
-          semanticType: SEMANTIC_TYPES.includes(s.semanticType as SemanticType)
-            ? (s.semanticType as SemanticType)
-            : "custom",
-          confidence: typeof s.confidence === "number" ? s.confidence : 0.5,
-          fields: s.fields ?? {},
-          repeatItems: Array.isArray(s.repeatItems) ? s.repeatItems : [],
-        }))
-        // Drop sections with no real content after refinement.
-        .filter((s) => Object.keys(s.fields).length > 0 || (s.repeatItems?.length ?? 0) > 0),
-    }));
-
-    const designSystem: AiDesignSystem = {
-      font: parsed.designSystem?.font || draft.designSystem.font,
-      fontHeading: parsed.designSystem?.fontHeading ?? draft.designSystem.fontHeading,
-      colors: Array.isArray(parsed.designSystem?.colors) ? parsed.designSystem!.colors : draft.designSystem.colors,
-      primaryColor: parsed.designSystem?.primaryColor ?? draft.designSystem.primaryColor,
-      buttonStyle: parsed.designSystem?.buttonStyle || draft.designSystem.buttonStyle,
-      headingStyle: parsed.designSystem?.headingStyle || draft.designSystem.headingStyle,
-    };
-
-    const suggestedCpts: SuggestedCpt[] = Array.isArray(parsed.suggestedCpts)
-      ? parsed.suggestedCpts
-          .filter((c) => c && typeof c.slug === "string" && c.slug.length > 0)
-          .map((c) => ({
-            slug: c.slug.replace(/[^a-z0-9_]/g, "_").slice(0, 20),
-            label: c.label || c.slug,
-            pluralLabel: c.pluralLabel || `${c.label || c.slug}s`,
-            sourceSemanticType: SEMANTIC_TYPES.includes(c.sourceSemanticType as SemanticType)
-              ? (c.sourceSemanticType as SemanticType)
-              : "custom",
-            fields: Array.isArray(c.fields) ? c.fields : [],
-            itemCount: typeof c.itemCount === "number" ? c.itemCount : 0,
-          }))
-      : draft.suggestedCpts;
-
-    logger.info(
-      {
-        draftSections: draft.pages.reduce((n, p) => n + p.sections.length, 0),
-        refinedSections: pages.reduce((n, p) => n + p.sections.length, 0),
-      },
-      "AI refinement pass complete"
+  if (settings.masterControllerMode) {
+    const sectionInputs: WidgetSectionInput[] = flatSections.map((s) =>
+      toWidgetSectionInput(s, s.semanticType ?? s.type, ""),
     );
-
-    return { pages, designSystem, suggestedCpts, source: "ai" };
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.warn({ err: msg }, "AI refinement failed, keeping draft");
-    return null;
+    // Chunk by SECTIONS_PER_CALL so the Master Controller stays inside the
+    // per-call section budget. Each chunk's compressed sections still carry
+    // their original global `index`, so we can merge outputs directly.
+    const compChunks = chunkSections(compressed, SECTIONS_PER_CALL);
+    const sectChunks = chunkSections(sectionInputs, SECTIONS_PER_CALL);
+    const mergedSections: Array<{ index: number; type: string; intent: string; confidence: number }> = [];
+    const mergedWidgets: Array<{ index: number; widget: string; reason: string; structure: { settings: Record<string, unknown>; elements: unknown[] } }> = [];
+    let designAudit: unknown = null;
+    for (let c = 0; c < compChunks.length; c++) {
+      const result = await runMasterController(pid, {
+        compressed: compChunks[c],
+        sections: sectChunks[c] ?? [],
+        tokens,
+      });
+      if (!result.output) {
+        logger.warn({ engine: "master", chunk: c }, "Master Controller returned no output; falling back");
+        return null;
+      }
+      for (const s of result.output.sections.sections ?? []) mergedSections.push(s);
+      for (const w of result.output.widgets ?? []) mergedWidgets.push(w);
+      // Design audit is a function of tokens only; keep the first response.
+      if (designAudit === null) designAudit = result.output.designAudit;
+    }
+    return projectMasterToAnalysis(
+      skeleton,
+      { sections: { sections: mergedSections }, widgets: mergedWidgets, designAudit },
+      html,
+      projectId ?? null,
+    );
   }
+
+  // Three-engine path. Chunk sections so each Semantic Analyzer call stays
+  // ≤10 sections; merge results by their original `index`.
+  const semanticChunks = chunkSections(compressed, SECTIONS_PER_CALL);
+  const semanticAll: Array<{ index: number; type: string; intent: string; confidence: number }> = [];
+  for (const chunk of semanticChunks) {
+    const out = await runSemanticAnalyzer(pid, chunk);
+    if (!out.output) {
+      logger.warn({ engine: "semantic" }, "Semantic Analyzer failed; falling back");
+      return null;
+    }
+    for (const s of out.output.sections) semanticAll.push(s);
+  }
+  const semantic = { sections: semanticAll };
+
+  const widgetByIndex = new Map<
+    number,
+    { widget: string; reason: string; structure: { settings: Record<string, unknown>; elements: unknown[] } }
+  >();
+  for (let idx = 0; idx < flatSections.length; idx++) {
+    const s = flatSections[idx];
+    const sem = semanticAll.find((x) => x.index === idx);
+    const wIn = toWidgetSectionInput(s, sem?.type ?? s.semanticType ?? s.type, sem?.intent ?? "");
+    const w = await runWidgetIntelligence(pid, wIn);
+    if (w.output) widgetByIndex.set(idx, w.output);
+  }
+  const designAudit = await runDesignAudit(pid, tokens);
+  return projectEnginesToAnalysis(
+    skeleton,
+    semantic,
+    widgetByIndex,
+    designAudit.output,
+    html,
+    projectId ?? null,
+  );
 }
+
+interface MasterOutput {
+  sections: { sections: Array<{ index: number; type: string; intent: string; confidence: number }> };
+  widgets: Array<{ index: number; widget: string; reason: string; structure: { settings: Record<string, unknown>; elements: unknown[] } }>;
+  designAudit: unknown;
+}
+
+async function projectMasterToAnalysis(
+  skeleton: ReturnType<typeof parseHtmlHeuristicForAi>,
+  master: MasterOutput,
+  html: string,
+  projectId: number | null,
+): Promise<AiAnalysis> {
+  const widgetMap = new Map<number, MasterOutput["widgets"][number]>();
+  for (const w of master.widgets ?? []) widgetMap.set(w.index, w);
+  const semByIndex = new Map<number, { type: string; intent: string; confidence: number }>();
+  for (const s of master.sections.sections ?? []) semByIndex.set(s.index, s);
+
+  let i = 0;
+  const pages: AiPage[] = skeleton.pages.map((p) => ({
+    name: p.name,
+    slug: p.slug,
+    sections: p.sections.map((s): AiSection => {
+      const sem = semByIndex.get(i);
+      const w = widgetMap.get(i);
+      const repeatItems = Array.isArray((s.content as Record<string, unknown>).items)
+        ? ((s.content as Record<string, unknown>).items as Array<Record<string, unknown>>)
+        : [];
+      i++;
+      const semanticType = (SEMANTIC_TYPES as readonly string[]).includes(sem?.type ?? "")
+        ? (sem!.type as SemanticType)
+        : (s.semanticType as SemanticType) ?? "custom";
+      return {
+        semanticType,
+        confidence: sem?.confidence ?? 0.5,
+        fields: { ...s.content, intent: sem?.intent },
+        repeatItems,
+        widget: w
+          ? { name: w.widget, reason: w.reason, structure: { settings: w.structure.settings, elements: w.structure.elements } }
+          : undefined,
+      };
+    }),
+  }));
+
+  const suggestedCpts = await buildSuggestedCpts(pages, projectId);
+  return {
+    pages,
+    designSystem: inferDesignSystem(html),
+    suggestedCpts,
+    source: "ai",
+    mode: "master",
+    designAudit: master.designAudit,
+  };
+}
+
+async function projectEnginesToAnalysis(
+  skeleton: ReturnType<typeof parseHtmlHeuristicForAi>,
+  semantic: { sections: Array<{ index: number; type: string; intent: string; confidence: number }> },
+  widgetByIndex: Map<number, { widget: string; reason: string; structure: { settings: Record<string, unknown>; elements: unknown[] } }>,
+  designAudit: unknown,
+  html: string,
+  projectId: number | null,
+): Promise<AiAnalysis> {
+  const semByIndex = new Map<number, { type: string; intent: string; confidence: number }>();
+  for (const s of semantic.sections ?? []) semByIndex.set(s.index, s);
+  let i = 0;
+  const pages: AiPage[] = skeleton.pages.map((p) => ({
+    name: p.name,
+    slug: p.slug,
+    sections: p.sections.map((s): AiSection => {
+      const sem = semByIndex.get(i);
+      const w = widgetByIndex.get(i);
+      const repeatItems = Array.isArray((s.content as Record<string, unknown>).items)
+        ? ((s.content as Record<string, unknown>).items as Array<Record<string, unknown>>)
+        : [];
+      i++;
+      const semanticType = (SEMANTIC_TYPES as readonly string[]).includes(sem?.type ?? "")
+        ? (sem!.type as SemanticType)
+        : (s.semanticType as SemanticType) ?? "custom";
+      return {
+        semanticType,
+        confidence: sem?.confidence ?? 0.5,
+        fields: { ...s.content, intent: sem?.intent },
+        repeatItems,
+        widget: w ? { name: w.widget, reason: w.reason, structure: { settings: w.structure.settings, elements: w.structure.elements } } : undefined,
+      };
+    }),
+  }));
+  const suggestedCpts = await buildSuggestedCpts(pages, projectId);
+  return {
+    pages,
+    designSystem: inferDesignSystem(html),
+    suggestedCpts,
+    source: "ai",
+    mode: "engines",
+    designAudit,
+  };
+}
+
+// Re-export for legacy imports that still reference these types.
+export type { CompressedSection };

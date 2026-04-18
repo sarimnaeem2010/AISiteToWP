@@ -72,6 +72,60 @@ interface DesignTokens {
   radius: Record<string, string>;
 }
 
+interface AiPublicStatus {
+  aiEnabled: boolean;
+  aiStatus: "connected" | "invalid_key" | "disabled" | "unknown";
+  model: string;
+  lastRunAt: string | null;
+  cacheEntries: number;
+}
+
+function relativeTime(iso: string | null): string {
+  if (!iso) return "never";
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 60_000) return "just now";
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`;
+  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h ago`;
+  return `${Math.round(ms / 86_400_000)}d ago`;
+}
+
+/**
+ * Read-only AI status indicator for a project. Shows whether AI is on
+ * globally, when the project was last analyzed, and how much of that
+ * analysis is cached. Never reveals the API key or any settings detail.
+ */
+function ProjectAiStatusPill({ projectId }: { projectId: string }) {
+  const apiBase = import.meta.env.BASE_URL;
+  const [status, setStatus] = useState<AiPublicStatus | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${apiBase}api/projects/${projectId}/ai-status`);
+        if (!res.ok) return;
+        const body = (await res.json()) as AiPublicStatus;
+        if (!cancelled) setStatus(body);
+      } catch { /* silent — status is informational only */ }
+    })();
+    return () => { cancelled = true; };
+  }, [apiBase, projectId]);
+  if (!status) return null;
+  const label = status.aiEnabled
+    ? `AI on (${status.model}) · last run ${relativeTime(status.lastRunAt)}${status.cacheEntries > 0 ? ` · ${status.cacheEntries} cached` : ""}`
+    : "Deterministic parser (AI off)";
+  const cls = status.aiEnabled
+    ? "bg-emerald-50 text-emerald-700 border-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-900"
+    : "bg-muted text-muted-foreground border-border";
+  return (
+    <span
+      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium ${cls}`}
+      title={status.lastRunAt ? `Last run: ${new Date(status.lastRunAt).toLocaleString()}` : "Not analyzed yet"}
+    >
+      {label}
+    </span>
+  );
+}
+
 function DesignTokensCard({ projectId }: { projectId: string }) {
   const { toast } = useToast();
   const apiBase = import.meta.env.BASE_URL;
@@ -737,6 +791,7 @@ export default function ProjectWorkspace() {
             <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium uppercase tracking-wider ${statusBadgeClass[project.status] || statusBadgeClass.created}`}>
               {project.status}
             </span>
+            <ProjectAiStatusPill projectId={id!} />
           </div>
           <h1 className="text-3xl md:text-4xl font-bold tracking-tight truncate">{project.name}</h1>
           <p className="text-muted-foreground flex items-center gap-2 text-sm">
