@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Sparkles,
   Loader2,
@@ -6,12 +6,24 @@ import {
   XCircle,
   AlertCircle,
   KeyRound,
+  BarChart3,
+  RefreshCw,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
 import { AdminShell, AdminLoading, useAdminAuth } from "@/components/admin-shell";
 
@@ -45,6 +57,197 @@ function StatusPill({ status }: { status: AiSettings["status"] }) {
     <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${c.cls}`}>
       <c.Icon className="h-3 w-3" /> {c.label}
     </span>
+  );
+}
+
+interface UsageItem {
+  projectId: number | null;
+  projectName: string | null;
+  engine: string;
+  model: string;
+  calls: number;
+  cacheHits: number;
+  tokensTotal: number;
+  lastCallAt: string | null;
+  estimatedCostUsd: number;
+}
+
+interface UsageResponse {
+  from: string | null;
+  to: string | null;
+  items: UsageItem[];
+  totals: { calls: number; cacheHits: number; tokensTotal: number; estimatedCostUsd: number };
+  pricing: Record<string, number>;
+}
+
+function formatNumber(n: number): string {
+  return n.toLocaleString();
+}
+
+function formatUsd(n: number): string {
+  if (n < 0.01) return `$${n.toFixed(4)}`;
+  return `$${n.toFixed(2)}`;
+}
+
+function UsageTab({ apiBase, activeModel }: { apiBase: string; activeModel: string }) {
+  const { toast } = useToast();
+  const [from, setFrom] = useState<string>("");
+  const [to, setTo] = useState<string>("");
+  const [data, setData] = useState<UsageResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (from) params.set("from", new Date(from).toISOString());
+      if (to) params.set("to", new Date(to).toISOString());
+      const qs = params.toString();
+      const res = await fetch(
+        `${apiBase}api/admin/ai-usage${qs ? `?${qs}` : ""}`,
+        { credentials: "include" },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json()) as UsageResponse;
+      setData(body);
+    } catch (err) {
+      toast({ title: "Could not load usage", description: String(err), variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
+  }, [apiBase, from, to, toast]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const activeRate = useMemo(
+    () => data?.pricing[activeModel] ?? null,
+    [data, activeModel],
+  );
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <BarChart3 className="h-4 w-4 text-primary" /> Token usage by project
+          </CardTitle>
+          <CardDescription>
+            Aggregated from every recorded AI call. Cost is a rough blended estimate based on the
+            model used for each row.
+            {activeRate !== null && (
+              <span className="ml-1">
+                Active model <code className="font-mono">{activeModel}</code> ≈ ${activeRate.toFixed(2)}/1M
+                tokens.
+              </span>
+            )}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="usage-from" className="text-xs">From</Label>
+              <Input
+                id="usage-from"
+                type="date"
+                value={from}
+                onChange={(e) => setFrom(e.target.value)}
+                className="h-9 w-44"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="usage-to" className="text-xs">To</Label>
+              <Input
+                id="usage-to"
+                type="date"
+                value={to}
+                onChange={(e) => setTo(e.target.value)}
+                className="h-9 w-44"
+              />
+            </div>
+            <Button variant="outline" onClick={load} disabled={loading}>
+              {loading ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4 mr-2" />
+              )}
+              Refresh
+            </Button>
+            {(from || to) && (
+              <Button
+                variant="ghost"
+                onClick={() => { setFrom(""); setTo(""); }}
+                disabled={loading}
+              >
+                Clear
+              </Button>
+            )}
+          </div>
+
+          {data && data.items.length === 0 ? (
+            <div className="rounded-md border border-dashed border-border py-10 text-center text-sm text-muted-foreground">
+              No AI calls recorded {from || to ? "for this date range" : "yet"}.
+            </div>
+          ) : (
+            <div className="rounded-md border border-border overflow-hidden">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Project</TableHead>
+                    <TableHead>Engine</TableHead>
+                    <TableHead>Model</TableHead>
+                    <TableHead className="text-right">Calls</TableHead>
+                    <TableHead className="text-right">Cache hits</TableHead>
+                    <TableHead className="text-right">Tokens</TableHead>
+                    <TableHead className="text-right">Est. cost</TableHead>
+                    <TableHead>Last call</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {data?.items.map((r, i) => (
+                    <TableRow key={`${r.projectId ?? "null"}-${r.engine}-${r.model}-${i}`}>
+                      <TableCell className="font-medium">
+                        {r.projectName ?? <span className="text-muted-foreground italic">unassigned</span>}
+                        {r.projectId !== null && (
+                          <span className="text-[10px] text-muted-foreground ml-1.5">#{r.projectId}</span>
+                        )}
+                      </TableCell>
+                      <TableCell><Badge variant="outline" className="font-mono text-[10px]">{r.engine}</Badge></TableCell>
+                      <TableCell className="font-mono text-xs">{r.model}</TableCell>
+                      <TableCell className="text-right tabular-nums">{formatNumber(r.calls)}</TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">
+                        {formatNumber(r.cacheHits)}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">{formatNumber(r.tokensTotal)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{formatUsd(r.estimatedCostUsd)}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {r.lastCallAt ? new Date(r.lastCallAt).toLocaleString() : "—"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {data && data.items.length > 0 && (
+                    <TableRow className="bg-muted/40 font-medium">
+                      <TableCell colSpan={3}>Total</TableCell>
+                      <TableCell className="text-right tabular-nums">{formatNumber(data.totals.calls)}</TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">
+                        {formatNumber(data.totals.cacheHits)}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">{formatNumber(data.totals.tokensTotal)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{formatUsd(data.totals.estimatedCostUsd)}</TableCell>
+                      <TableCell />
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+
+          <p className="text-[11px] text-muted-foreground">
+            Cost figures are approximate, blended prompt+completion estimates per model — useful for
+            spotting runaway usage, not for billing reconciliation.
+          </p>
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 
@@ -147,16 +350,27 @@ export default function AdminAiSettings() {
         <section className="flex items-start justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-              <Sparkles className="h-5 w-5 text-primary" /> AI settings
+              <Sparkles className="h-5 w-5 text-primary" /> AI control center
             </h1>
             <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
-              Global, system-wide controls for the AI pipeline. Changes apply to every project. The
-              API key is stored securely and never returned to clients in plaintext.
+              Global, system-wide controls for the AI pipeline plus per-project token usage.
+              The API key is stored securely and never returned to clients in plaintext.
             </p>
           </div>
           <StatusPill status={settings.status} />
         </section>
 
+        <Tabs defaultValue="settings" className="space-y-6">
+          <TabsList>
+            <TabsTrigger value="settings">
+              <Sparkles className="h-3.5 w-3.5 mr-1.5" /> Settings
+            </TabsTrigger>
+            <TabsTrigger value="usage">
+              <BarChart3 className="h-3.5 w-3.5 mr-1.5" /> Usage
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="settings" className="space-y-6">
         {/* Enable */}
         <Card>
           <CardHeader>
@@ -302,6 +516,12 @@ export default function AdminAiSettings() {
           Active model: <code className="font-mono">{settings.model}</code> · Updated{" "}
           {new Date(settings.updatedAt).toLocaleString()}
         </p>
+          </TabsContent>
+
+          <TabsContent value="usage" className="space-y-6">
+            <UsageTab apiBase={apiBase} activeModel={settings.model} />
+          </TabsContent>
+        </Tabs>
       </main>
     </AdminShell>
   );

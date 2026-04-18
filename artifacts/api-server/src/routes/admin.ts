@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { z } from "zod";
-import { eq, and, ne, asc } from "drizzle-orm";
-import { db, projectsTable, usersTable, sessionsTable } from "@workspace/db";
+import { eq, and, ne, asc, gte, lte, sql } from "drizzle-orm";
+import { db, projectsTable, usersTable, sessionsTable, aiTokenLogTable } from "@workspace/db";
 import {
   bootstrapAdmin,
   findUserByUsername,
@@ -341,6 +341,115 @@ router.post("/admin/projects/:id/reanalyze", requireAdmin, async (req, res): Pro
     usedAi: Boolean(aiAnalysis),
     pageCount: parsedSite.pages.length,
     aiStatus: status,
+  });
+});
+
+// ---- AI usage aggregation (admin only) ----------------------------------
+// Rough blended $/1M-token estimates. Real OpenAI pricing splits prompt vs
+// completion, but the log table only stores a single `tokensUsed` total per
+// call, so we apply a conservative blended rate per model.
+const MODEL_COST_PER_1M_TOKENS: Record<string, number> = {
+  "gpt-4o-mini": 0.4,
+  "gpt-4o": 5.0,
+  "gpt-4-turbo": 10.0,
+  "gpt-4": 30.0,
+  "gpt-3.5-turbo": 0.75,
+};
+const DEFAULT_COST_PER_1M_TOKENS = 1.0;
+
+function estimateCostUsd(model: string, tokens: number): number {
+  const rate = MODEL_COST_PER_1M_TOKENS[model] ?? DEFAULT_COST_PER_1M_TOKENS;
+  return (tokens / 1_000_000) * rate;
+}
+
+const AiUsageQuerySchema = z.object({
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+});
+
+router.get("/admin/ai-usage", requireAdmin, async (req, res): Promise<void> => {
+  const parsed = AiUsageQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const fromDate = parsed.data.from ? new Date(parsed.data.from) : null;
+  const toDate = parsed.data.to ? new Date(parsed.data.to) : null;
+
+  const filters = [
+    fromDate ? gte(aiTokenLogTable.createdAt, fromDate) : undefined,
+    toDate ? lte(aiTokenLogTable.createdAt, toDate) : undefined,
+  ].filter((c): c is NonNullable<typeof c> => Boolean(c));
+  const whereClause = filters.length > 0 ? and(...filters) : undefined;
+
+  interface UsageRow {
+    projectId: number | null;
+    engine: string;
+    model: string;
+    calls: number;
+    cacheHits: number;
+    tokensTotal: number;
+    lastCallAt: Date | string | null;
+  }
+
+  const baseQuery = db
+    .select({
+      projectId: aiTokenLogTable.projectId,
+      engine: aiTokenLogTable.engine,
+      model: aiTokenLogTable.model,
+      calls: sql<number>`count(*)::int`,
+      cacheHits: sql<number>`sum(case when ${aiTokenLogTable.cacheHit} then 1 else 0 end)::int`,
+      tokensTotal: sql<number>`coalesce(sum(${aiTokenLogTable.tokensUsed}), 0)::int`,
+      lastCallAt: sql<Date>`max(${aiTokenLogTable.createdAt})`,
+    })
+    .from(aiTokenLogTable);
+  const rows = (await (whereClause ? baseQuery.where(whereClause) : baseQuery)
+    .groupBy(aiTokenLogTable.projectId, aiTokenLogTable.engine, aiTokenLogTable.model)
+    .orderBy(sql`max(${aiTokenLogTable.createdAt}) desc`)) as UsageRow[];
+
+  // Resolve project names for the projectIds we have.
+  const projectIds = Array.from(
+    new Set(rows.map((r: UsageRow) => r.projectId).filter((id): id is number => id !== null)),
+  );
+  const projects = projectIds.length
+    ? ((await db
+        .select({ id: projectsTable.id, name: projectsTable.name })
+        .from(projectsTable)
+        .where(sql`${projectsTable.id} = ANY(${projectIds})`)) as { id: number; name: string }[])
+    : [];
+  const projectNameById = new Map(projects.map((p) => [p.id, p.name] as const));
+
+  const items = rows.map((r: UsageRow) => ({
+    projectId: r.projectId,
+    projectName:
+      r.projectId === null ? null : projectNameById.get(r.projectId) ?? `Project #${r.projectId}`,
+    engine: r.engine,
+    model: r.model,
+    calls: Number(r.calls),
+    cacheHits: Number(r.cacheHits),
+    tokensTotal: Number(r.tokensTotal),
+    lastCallAt: r.lastCallAt instanceof Date ? r.lastCallAt.toISOString() : r.lastCallAt,
+    estimatedCostUsd: Number(estimateCostUsd(r.model, Number(r.tokensTotal)).toFixed(4)),
+  }));
+
+  const totals = items.reduce(
+    (acc, r) => {
+      acc.calls += r.calls;
+      acc.cacheHits += r.cacheHits;
+      acc.tokensTotal += r.tokensTotal;
+      acc.estimatedCostUsd += r.estimatedCostUsd;
+      return acc;
+    },
+    { calls: 0, cacheHits: 0, tokensTotal: 0, estimatedCostUsd: 0 },
+  );
+  totals.estimatedCostUsd = Number(totals.estimatedCostUsd.toFixed(4));
+
+  res.json({
+    from: fromDate?.toISOString() ?? null,
+    to: toDate?.toISOString() ?? null,
+    items,
+    totals,
+    pricing: MODEL_COST_PER_1M_TOKENS,
   });
 });
 
