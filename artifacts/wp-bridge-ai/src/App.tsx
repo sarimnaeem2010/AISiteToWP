@@ -1,12 +1,14 @@
 import { Switch, Route, Router as WouterRouter, useLocation, Redirect } from "wouter";
 import { useEffect } from "react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/not-found";
 
 import { MainLayout } from "./components/layout";
 import Landing from "./pages/landing";
+import Login from "./pages/login";
+import Signup from "./pages/signup";
 import Dashboard from "./pages/dashboard";
 import NewProject from "./pages/project-new";
 import ProjectWorkspace from "./pages/project-workspace";
@@ -20,14 +22,34 @@ import AdminNotFound from "./pages/admin-not-found";
 
 const queryClient = new QueryClient();
 
-// Stub: until real auth is wired, treat all visitors as signed-out on the
-// landing page. Replace with real session check when auth lands.
-function useIsAuthenticated() {
-  return false;
+/**
+ * Real session check against the user-cookie session endpoint.
+ * Returns:
+ *  - { isAuthed: false, isLoading: true } while the probe is in flight
+ *  - { isAuthed: true,  isLoading: false } when /api/auth/me returns 200
+ *  - { isAuthed: false, isLoading: false } when /api/auth/me returns 401
+ */
+function useIsAuthenticated(): { isAuthed: boolean; isLoading: boolean } {
+  const apiBase = import.meta.env.BASE_URL;
+  const { data, isLoading } = useQuery({
+    queryKey: ["auth", "me"],
+    queryFn: async () => {
+      const res = await fetch(`${apiBase}api/auth/me`, { credentials: "include" });
+      if (res.status === 401) return null;
+      if (!res.ok) throw new Error(`auth probe failed: ${res.status}`);
+      return (await res.json()) as { id: number; username: string; isAdmin: boolean };
+    },
+    retry: false,
+    staleTime: 60_000,
+  });
+  return { isAuthed: !!data, isLoading };
 }
 
 function LandingRoute() {
-  const isAuthed = useIsAuthenticated();
+  const { isAuthed, isLoading } = useIsAuthenticated();
+  // Don't flash the marketing page to a signed-in user during the probe;
+  // wait one tick so we can redirect cleanly.
+  if (isLoading) return null;
   if (isAuthed) return <Redirect to="/app" />;
   return <Landing />;
 }
@@ -69,6 +91,8 @@ function Router() {
           portal boundary — never falls through to the user app routes. */}
       <Route path="/admin/:rest*" component={AdminNotFound} />
       <Route path="/" component={LandingRoute} />
+      <Route path="/login" component={Login} />
+      <Route path="/signup" component={Signup} />
       <Route component={AppRoutes} />
     </Switch>
   );

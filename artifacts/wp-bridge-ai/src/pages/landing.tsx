@@ -15,7 +15,8 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-const APP_HREF = "/app";
+const SIGNIN_HREF = "/login";
+const SIGNUP_HREF = "/signup";
 
 function MarketingHeader() {
   const [open, setOpen] = useState(false);
@@ -48,10 +49,10 @@ function MarketingHeader() {
         </nav>
 
         <div className="hidden items-center gap-2 md:flex">
-          <Link href={APP_HREF}>
+          <Link href={SIGNIN_HREF}>
             <Button variant="ghost" size="sm">Sign in</Button>
           </Link>
-          <Link href={APP_HREF}>
+          <Link href={SIGNUP_HREF}>
             <Button size="sm">Get started</Button>
           </Link>
         </div>
@@ -79,10 +80,10 @@ function MarketingHeader() {
               </a>
             ))}
             <div className="mt-2 flex gap-2 px-1">
-              <Link href={APP_HREF} className="flex-1">
+              <Link href={SIGNIN_HREF} className="flex-1">
                 <Button variant="outline" size="sm" className="w-full">Sign in</Button>
               </Link>
-              <Link href={APP_HREF} className="flex-1">
+              <Link href={SIGNUP_HREF} className="flex-1">
                 <Button size="sm" className="w-full">Get started</Button>
               </Link>
             </div>
@@ -109,13 +110,13 @@ function Hero() {
             WP Bridge AI uses semantic analysis to convert AI-generated HTML, live URLs, or ZIP exports into a clean child theme with native Elementor widgets — fully editable, no manual rebuilding.
           </p>
           <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
-            <Link href={APP_HREF}>
+            <Link href={SIGNUP_HREF}>
               <Button size="lg" className="shadow-md">
                 Get started
                 <ArrowRight className="h-4 w-4" />
               </Button>
             </Link>
-            <Link href={APP_HREF}>
+            <Link href={SIGNIN_HREF}>
               <Button size="lg" variant="outline">Sign in</Button>
             </Link>
           </div>
@@ -280,7 +281,7 @@ function Footer() {
             <a href="#features" className="hover:text-foreground">Features</a>
             <a href="#how" className="hover:text-foreground">How it works</a>
             <a href="#faq" className="hover:text-foreground">FAQ</a>
-            <Link href={APP_HREF} className="hover:text-foreground">Sign in</Link>
+            <Link href={SIGNIN_HREF} className="hover:text-foreground">Sign in</Link>
           </div>
           <p className="text-xs text-muted-foreground">© {new Date().getFullYear()} WP Bridge AI</p>
         </div>
