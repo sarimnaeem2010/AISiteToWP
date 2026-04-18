@@ -117,25 +117,36 @@ export default function ProjectPreview() {
                 </div>
                 <Badge variant="outline" className="text-xs">{page.sections.length} blocks</Badge>
               </div>
-              <CardContent className="p-0">
-                <div className="divide-y divide-border">
-                  {page.sections.map((section, sIdx) => (
-                    <div key={sIdx} className="p-4 hover:bg-muted/30 transition-colors flex items-start gap-4">
-                      <div className="h-9 w-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0">
-                        <Component className="h-4 w-4" />
+              <CardContent className="p-4 space-y-3">
+                {page.sections.map((section, sIdx) => {
+                  const isHero = sIdx === 0;
+                  return (
+                    <div
+                      key={sIdx}
+                      className={`rounded-xl border-2 px-5 py-4 transition-colors ${
+                        isHero
+                          ? "border-dashed border-primary/40 bg-primary/5"
+                          : "border-border bg-card hover:bg-muted/30"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-3 mb-3">
+                        <div className="flex items-center gap-2">
+                          <Component className={`h-4 w-4 ${isHero ? "text-primary" : "text-muted-foreground"}`} />
+                          <span className={`text-[11px] font-semibold uppercase tracking-wider ${isHero ? "text-primary" : "text-muted-foreground"}`}>
+                            {section.type}{isHero ? " · Elementor section" : ""}
+                          </span>
+                        </div>
+                        <span className="font-mono text-[10px] text-muted-foreground">
+                          section-{String(sIdx + 1).padStart(2, "0")}
+                        </span>
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1.5">
-                          <span className="font-semibold text-sm uppercase tracking-wider">{section.type}</span>
-                        </div>
-                        <div className="text-xs font-mono text-muted-foreground truncate bg-muted/40 p-2 rounded border border-border">
-                          {Object.keys(section.content || {}).slice(0, 5).join(", ")}
-                          {Object.keys(section.content || {}).length > 5 ? ", …" : ""}
-                        </div>
+                      <div className="text-xs font-mono text-muted-foreground truncate bg-muted/40 p-2 rounded border border-border">
+                        {Object.keys(section.content || {}).slice(0, 5).join(", ")}
+                        {Object.keys(section.content || {}).length > 5 ? ", …" : ""}
                       </div>
                     </div>
-                  ))}
-                </div>
+                  );
+                })}
               </CardContent>
             </Card>
           ))}

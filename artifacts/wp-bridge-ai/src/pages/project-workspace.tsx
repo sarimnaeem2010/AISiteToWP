@@ -577,6 +577,34 @@ export default function ProjectWorkspace() {
   const [activeSection, setActiveSection] = useState<number>(0);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
+  // Scroll-linked active section: keep the left-rail highlight in sync with
+  // the section card the user is currently viewing inside the Overview tab.
+  // Re-runs whenever the section count or the active tab changes.
+  const sectionCount = project?.parsedSite?.pages?.[0]?.sections?.length ?? 0;
+  useEffect(() => {
+    if (activeTab !== "overview" || sectionCount === 0) return;
+    const els: HTMLElement[] = [];
+    for (let i = 0; i < sectionCount; i += 1) {
+      const el = document.getElementById(`section-${i}`);
+      if (el) els.push(el);
+    }
+    if (els.length === 0) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (visible[0]) {
+          const idx = Number(visible[0].target.id.replace("section-", ""));
+          if (!Number.isNaN(idx)) setActiveSection(idx);
+        }
+      },
+      { rootMargin: "-30% 0px -55% 0px", threshold: 0 },
+    );
+    els.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, [activeTab, sectionCount]);
+
   const form = useForm<z.infer<typeof wpConfigSchema>>({
     resolver: zodResolver(wpConfigSchema),
     defaultValues: {
@@ -915,7 +943,25 @@ export default function ProjectWorkspace() {
   };
 
   // ── Derived data for the new 2-pane layout ─────────────────────────────
+  // Prefer a real source-file label when we have one (uploaded ZIP index path,
+  // scraped URL filename, pasted HTML). Fall back to the project slug only
+  // when no source is on file yet.
   const sourceFileName = (() => {
+    const uploaded = (proj as { uploadedFiles?: { indexPath?: string; files?: Array<{ name?: string }> } }).uploadedFiles;
+    if (uploaded?.indexPath) {
+      const last = uploaded.indexPath.split(/[\\/]/).pop();
+      if (last) return last;
+    }
+    const url = (proj as { sourceUrl?: string }).sourceUrl;
+    if (url) {
+      try {
+        const u = new URL(url);
+        const last = u.pathname.split("/").filter(Boolean).pop();
+        if (last && /\.[a-z0-9]{2,5}$/i.test(last)) return last;
+        return u.hostname.replace(/^www\./, "") + ".html";
+      } catch { /* fall through */ }
+    }
+    if (proj.sourceHtml) return "pasted.html";
     const slug = (project.name || "site").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "site";
     return `${slug}.html`;
   })();
