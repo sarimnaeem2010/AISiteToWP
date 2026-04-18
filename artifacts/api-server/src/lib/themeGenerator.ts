@@ -517,14 +517,15 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
     }
 
     /**
-     * "Headings", "Buttons (4)", "Image" — the section title shown in
-     * the Elementor sidebar. Pluralised + count-suffixed when the bucket
-     * has more than one leaf, so the user knows at a glance how many
-     * items hide inside that accordion before opening it.
+     * "Headings", "Buttons", "Image" — the section title shown in the
+     * Elementor sidebar. Pluralised when the bucket has more than one
+     * leaf, singular when it has exactly one. The label is intentionally
+     * content-free: it never embeds the user-editable text of any leaf
+     * inside the bucket, so renaming a heading or button label inside
+     * the editor cannot change the section title.
      */
     private function wpb_bucket_label( $kind, $count ) {
-        if ( $count <= 1 ) return $this->wpb_kind_name( $kind, false );
-        return sprintf( '%s (%d)', $this->wpb_kind_name( $kind, true ), $count );
+        return $this->wpb_kind_name( $kind, $count > 1 );
     }
 
     /**

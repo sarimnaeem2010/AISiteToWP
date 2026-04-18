@@ -1221,3 +1221,247 @@ test("legacy_native widget PHP passes `php -l` parse check", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+// ----------------------------------------------------------------------
+// Locks the grouped sidebar shape introduced in task #9: the Content tab
+// of the generated PHP widget must collapse leaves into role-named
+// buckets ("Headings", "Buttons", "Image"...) — content-free, no count
+// suffix, no leaf text — instead of one accordion per leaf, and the
+// Style tab must stay one-section-per-leaf.
+// Any future regression that re-introduces leaf text into bucket headers,
+// drops the per-leaf HEADING divider in multi-leaf buckets, or splits the
+// buckets back into per-leaf accordions will trip this assertion.
+// ----------------------------------------------------------------------
+test("grouped sidebar shape: Content tab buckets by role, Style tab stays per-leaf", () => {
+  const html = `<!doctype html><html><body><section class="hero">
+    <h1>First headline</h1>
+    <h2>Second headline</h2>
+    <button type="button">Primary CTA</button>
+    <button type="button">Secondary CTA</button>
+    <img src="/img/promo.png" alt="Promo">
+  </section></body></html>`;
+
+  // legacy_native forces the custom-PHP-widget path (groups[] populated)
+  // AND opts the widget into native-style sidebar registration so the
+  // Style tab actually emits one section per leaf via wpb_register_native_style.
+  const sections = extractSectionsFromPage(html, "home", "bucket-fixture", undefined, "legacy_native");
+  assert.equal(sections.length, 1, "fixture should produce exactly one section");
+  const section = sections[0];
+  assert.ok(!section.nativeElementor, "legacy_native must skip native Elementor decomposition");
+
+  // Sanity-check the fixture: the extractor must see 2 headings, 2
+  // buttons, and 1 image group on this section. If this changes the
+  // remaining bucket assertions are meaningless.
+  const kindCounts: Record<string, number> = {};
+  for (const g of section.groups) {
+    kindCounts[g.nativeWidget] = (kindCounts[g.nativeWidget] ?? 0) + 1;
+  }
+  assert.equal(kindCounts.heading, 2, `fixture must produce 2 headings, got ${kindCounts.heading ?? 0}`);
+  assert.equal(kindCounts.button, 2, `fixture must produce 2 buttons, got ${kindCounts.button ?? 0}`);
+  assert.equal(kindCounts.image, 1, `fixture must produce 1 image, got ${kindCounts.image ?? 0}`);
+
+  const buf = generateThemeZip({
+    projectName: "Bucket Fixture",
+    projectSlug: "bucket-fixture",
+    combinedCss: "body{margin:0}",
+    combinedJs: "",
+    pages: [{ slug: "home", title: "Home", sections }],
+    sourceZip: null,
+    conversionMode: "legacy_native",
+  });
+  const zip = new AdmZip(buf);
+  const dir = section.blockName.split("/")[1];
+  const widgetEntry = zip.getEntry(`bucket-fixture/widgets/widget-${dir}.php`);
+  assert.ok(widgetEntry, `expected generated widget PHP for ${section.blockName}`);
+  const baseEntry = zip.getEntry(`bucket-fixture/widgets/_base-widget.php`);
+  assert.ok(baseEntry, "expected _base-widget.php in the generated theme");
+
+  // The bucket-emitting register_controls() lives on the shared base
+  // widget class and reads $this->wpb_groups (encoded into the per-
+  // section widget PHP). To snapshot the runtime sidebar shape we boot
+  // the two PHP files under a tiny stub of Elementor's Widget_Base /
+  // Controls_Manager + a recorder, invoke register_controls() via
+  // reflection, and inspect the recorded section/control tree.
+  const phpBin = spawnSync("php", ["--version"], { encoding: "utf8" });
+  if (phpBin.status !== 0) {
+    // No PHP CLI available — skip rather than fail. Other tests in this
+    // file (legacy_native widget PHP passes `php -l`) already gate on
+    // PHP being present.
+    return;
+  }
+
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "wpb-bucket-snap-"));
+  try {
+    const baseFile = path.join(tmpDir, "_base-widget.php");
+    const widgetFile = path.join(tmpDir, "widget.php");
+    writeFileSync(baseFile, baseEntry!.getData());
+    writeFileSync(widgetFile, widgetEntry!.getData());
+
+    // Derive the generated widget class name the same way themeGenerator does.
+    const safeId = dir.replace(/[^a-zA-Z0-9_]/g, "_");
+    const widgetClass = `WPB_Widget_${safeId}`;
+
+    const harness = `<?php
+namespace Elementor {
+    class Controls_Manager {
+        const TAB_CONTENT = 'content';
+        const TAB_STYLE   = 'style';
+        const HEADING     = 'heading';
+        const TEXT        = 'text';
+        const TEXTAREA    = 'textarea';
+        const URL         = 'url';
+        const MEDIA       = 'media';
+        const ICONS       = 'icons';
+        const CHOOSE      = 'choose';
+        const REPEATER    = 'repeater';
+        const SELECT      = 'select';
+        const COLOR       = 'color';
+        const DIMENSIONS  = 'dimensions';
+        const SLIDER      = 'slider';
+        const NUMBER      = 'number';
+        const SWITCHER    = 'switcher';
+        const HIDDEN      = 'hidden';
+    }
+    class Repeater {
+        public function add_control($k, $a = array()) {}
+        public function get_controls() { return array(); }
+    }
+    class Group_Control_Typography  { public static function get_type() { return 'typography'; } }
+    class Group_Control_Text_Shadow { public static function get_type() { return 'text-shadow'; } }
+    class Group_Control_Text_Stroke { public static function get_type() { return 'text-stroke'; } }
+    class Group_Control_Border      { public static function get_type() { return 'border'; } }
+    class Widget_Base {
+        public function __construct($d = null, $a = null) {}
+        public function start_controls_section($id, $args = array()) { \\Recorder::startSection($id, $args); }
+        public function end_controls_section() { \\Recorder::endSection(); }
+        public function add_control($id, $args = array()) { \\Recorder::addControl($id, $args); }
+        public function add_responsive_control($id, $args = array()) { \\Recorder::addControl($id, $args); }
+        public function add_group_control($name, $args = array()) { \\Recorder::addGroupControl($name, $args); }
+        public function start_controls_tabs($id, $args = array()) {}
+        public function end_controls_tabs() {}
+        public function start_controls_tab($id, $args = array()) {}
+        public function end_controls_tab() {}
+    }
+}
+namespace {
+    class Recorder {
+        public static $sections = array();
+        public static $current  = null;
+        public static function startSection($id, $args) {
+            self::$current = array(
+                'id'       => $id,
+                'label'    => isset($args['label']) ? $args['label'] : null,
+                'tab'      => isset($args['tab']) ? $args['tab'] : null,
+                'controls' => array(),
+            );
+        }
+        public static function endSection() {
+            if (self::$current) self::$sections[] = self::$current;
+            self::$current = null;
+        }
+        public static function addControl($id, $args) {
+            if (self::$current) self::$current['controls'][] = array(
+                'id'    => $id,
+                'type'  => isset($args['type']) ? $args['type'] : null,
+                'label' => isset($args['label']) ? $args['label'] : null,
+            );
+        }
+        public static function addGroupControl($name, $args) {
+            if (self::$current) self::$current['controls'][] = array('group' => $name);
+        }
+    }
+    if (! function_exists('esc_html'))   { function esc_html($s)      { return $s; } }
+    if (! function_exists('esc_html__')) { function esc_html__($s, $d = null) { return $s; } }
+    if (! function_exists('esc_attr'))   { function esc_attr($s)      { return $s; } }
+    if (! function_exists('esc_attr__')) { function esc_attr__($s, $d = null) { return $s; } }
+    if (! function_exists('esc_url'))    { function esc_url($s)       { return $s; } }
+    if (! function_exists('wp_kses_post')){function wp_kses_post($s)   { return $s; } }
+    if (! function_exists('__'))         { function __($s, $d = null) { return $s; } }
+    if (! defined('ABSPATH')) define('ABSPATH', __DIR__);
+    require ${JSON.stringify(baseFile)};
+    require ${JSON.stringify(widgetFile)};
+    $cls = ${JSON.stringify(widgetClass)};
+    if (! class_exists($cls)) { fwrite(STDERR, "missing class: $cls\\n"); exit(2); }
+    $w = new $cls();
+    $rc = new ReflectionMethod($w, 'register_controls');
+    $rc->setAccessible(true);
+    $rc->invoke($w);
+    echo json_encode(Recorder::$sections);
+}
+`;
+    const harnessFile = path.join(tmpDir, "harness.php");
+    writeFileSync(harnessFile, harness);
+    const result = spawnSync("php", [harnessFile], { encoding: "utf8" });
+    assert.equal(
+      result.status,
+      0,
+      `PHP harness exited ${result.status}: ${result.stderr || result.stdout}`,
+    );
+    const recorded = JSON.parse(result.stdout) as Array<{
+      id: string;
+      label: string | null;
+      tab: string | null;
+      controls: Array<{ id?: string; type?: string | null; label?: string | null; group?: string }>;
+    }>;
+
+    // -- Content tab: exactly one section per role bucket -----------------
+    const contentSections = recorded.filter((s) => s.tab === "content");
+    assert.equal(
+      contentSections.length,
+      3,
+      `Content tab must emit exactly one section per role bucket (heading/button/image); got ${contentSections.length}`,
+    );
+
+    // -- Bucket labels are role-named and content-free: pluralised when
+    //    the bucket has more than one leaf, singular otherwise. NO leaf
+    //    text from the fixture bleeds into the label.                 --
+    const labels = contentSections.map((s) => s.label);
+    assert.deepEqual(
+      [...labels].sort(),
+      ["Buttons", "Headings", "Image"].sort(),
+      `bucket labels must read 'Headings', 'Buttons', 'Image'; got ${JSON.stringify(labels)}`,
+    );
+    for (const userText of ["First headline", "Second headline", "Primary CTA", "Secondary CTA", "Promo"]) {
+      for (const s of contentSections) {
+        assert.ok(
+          !(s.label ?? "").includes(userText),
+          `bucket label "${s.label}" must not embed user-editable text (found "${userText}")`,
+        );
+        for (const c of s.controls) {
+          if (c.type === "heading") {
+            assert.ok(
+              !(c.label ?? "").includes(userText),
+              `HEADING divider label "${c.label}" must not embed user-editable text (found "${userText}")`,
+            );
+          }
+        }
+      }
+    }
+
+    // -- Multi-leaf buckets emit one HEADING divider per leaf with a
+    //    content-free sub-label. Single-leaf buckets emit none. ----------
+    const headings = contentSections.find((s) => s.label === "Headings")!;
+    const buttons  = contentSections.find((s) => s.label === "Buttons")!;
+    const image    = contentSections.find((s) => s.label === "Image")!;
+    const headingDividerLabels = headings.controls.filter((c) => c.type === "heading").map((c) => c.label);
+    const buttonDividerLabels  = buttons.controls.filter((c) => c.type === "heading").map((c) => c.label);
+    const imageDividerLabels   = image.controls.filter((c) => c.type === "heading").map((c) => c.label);
+    assert.deepEqual(headingDividerLabels, ["Heading 1", "Heading 2"],
+      `Headings bucket must contain a HEADING divider per leaf, got ${JSON.stringify(headingDividerLabels)}`);
+    assert.deepEqual(buttonDividerLabels, ["Button 1", "Button 2"],
+      `Buttons bucket must contain a HEADING divider per leaf, got ${JSON.stringify(buttonDividerLabels)}`);
+    assert.deepEqual(imageDividerLabels, [],
+      `single-leaf Image bucket must not emit any HEADING divider, got ${JSON.stringify(imageDividerLabels)}`);
+
+    // -- Style tab still emits ONE section per leaf (sanity check that
+    //    the bucket refactor didn't dedupe leaf-specific style sections). -
+    const styleSections = recorded.filter((s) => s.tab === "style");
+    assert.equal(
+      styleSections.length,
+      5,
+      `Style tab must emit one section per leaf (2 headings + 2 buttons + 1 image = 5); got ${styleSections.length}`,
+    );
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
