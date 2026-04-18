@@ -924,16 +924,35 @@ export default function ProjectWorkspace() {
     }
   };
 
+  /**
+   * Returns true if a fetch response looks like an API-key mismatch.
+   * Catches both the structured 409 path (added by the new preflight)
+   * and any raw upstream 403 with `code: "forbidden"` or "Invalid API key"
+   * verbiage that might leak through if preflight is bypassed (e.g. an
+   * older server build, or network proxies that rewrite responses).
+   */
+  const isApiKeyMismatch = (status: number, body: unknown): boolean => {
+    const b = (body ?? {}) as { error?: string; code?: string; message?: string };
+    if (status === 409 && b.error === "api_key_mismatch") return true;
+    if (status === 403) return true;
+    if (b.code === "forbidden") return true;
+    if (typeof b.message === "string" && /invalid api key/i.test(b.message)) return true;
+    return false;
+  };
+
   const installTheme = async () => {
     try {
       const res = await fetch(`${apiBase}api/projects/${id}/install-theme`, { method: "POST" });
       const data = await res.json().catch(() => ({}));
-      // 409 + error: "api_key_mismatch" means the plugin on WP is using
-      // an older/different baked-in key. Show a sticky callout instead
-      // of a toast and stop here — the user needs to take an action
-      // (re-download + re-upload) before retrying.
-      if (res.status === 409 && (data as { error?: string }).error === "api_key_mismatch") {
-        setKeyRecovery({ stage: "install", message: (data as { message?: string }).message || "API key mismatch with installed plugin." });
+      // Show the sticky recovery callout for either the structured 409
+      // mismatch *or* a generic 403 forbidden bubbled up from upstream.
+      if (!res.ok && isApiKeyMismatch(res.status, data)) {
+        setKeyRecovery({
+          stage: "install",
+          message: (data as { message?: string }).message ||
+            "The plugin on your WordPress site is using a different API key than this project. " +
+            "Re-download the plugin from the Plugin tab and re-upload it on WordPress, then try again.",
+        });
         return;
       }
       if (!res.ok) throw new Error((data as { message?: string; error?: string }).message || (data as { error?: string }).error || `HTTP ${res.status}`);
@@ -951,8 +970,13 @@ export default function ProjectWorkspace() {
     try {
       const res = await fetch(`${apiBase}api/projects/${id}/activate-theme`, { method: "POST" });
       const data = await res.json().catch(() => ({}));
-      if (res.status === 409 && (data as { error?: string }).error === "api_key_mismatch") {
-        setKeyRecovery({ stage: "activate", message: (data as { message?: string }).message || "API key mismatch with installed plugin." });
+      if (!res.ok && isApiKeyMismatch(res.status, data)) {
+        setKeyRecovery({
+          stage: "activate",
+          message: (data as { message?: string }).message ||
+            "The plugin on your WordPress site is using a different API key than this project. " +
+            "Re-download the plugin from the Plugin tab and re-upload it on WordPress, then try again.",
+        });
         return;
       }
       if (!res.ok) throw new Error((data as { message?: string; error?: string }).message || (data as { error?: string }).error || `HTTP ${res.status}`);
