@@ -121,9 +121,114 @@ function Hero() {
             </Link>
           </div>
           <p className="mt-4 text-xs text-muted-foreground">No credit card required · Beta</p>
+
+          <div className="mt-14 md:mt-16">
+            <ProductPreview />
+          </div>
         </div>
       </div>
     </section>
+  );
+}
+
+function ProductPreview() {
+  return (
+    <div className="relative mx-auto max-w-5xl">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute -inset-x-8 -inset-y-6 -z-10 rounded-[2rem] bg-gradient-to-b from-primary/10 to-transparent blur-2xl"
+      />
+      <div className="overflow-hidden rounded-xl border border-card-border bg-card shadow-xl">
+        <div className="flex items-center gap-2 border-b border-border bg-muted/40 px-4 py-2.5">
+          <span className="h-2.5 w-2.5 rounded-full bg-red-400/80" />
+          <span className="h-2.5 w-2.5 rounded-full bg-yellow-400/80" />
+          <span className="h-2.5 w-2.5 rounded-full bg-green-400/80" />
+          <div className="ml-3 hidden flex-1 items-center justify-center sm:flex">
+            <div className="inline-flex max-w-sm items-center gap-2 truncate rounded-md border border-border bg-background px-3 py-1 text-[11px] font-medium text-muted-foreground">
+              <Plug className="h-3 w-3" />
+              app.wpbridge.ai/projects/landing-v2
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-0 md:grid-cols-12">
+          <aside className="hidden border-r border-border bg-muted/20 p-4 md:col-span-3 md:block">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Project</div>
+            <div className="mt-2 flex items-center gap-2 rounded-md bg-primary/10 px-2.5 py-1.5 text-xs font-medium text-primary">
+              <FileCode2 className="h-3.5 w-3.5" />
+              landing-v2.html
+            </div>
+            <div className="mt-5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Detected sections</div>
+            <ul className="mt-2 space-y-1.5 text-xs text-foreground/80">
+              {[
+                { label: "Hero", icon: LayoutTemplate },
+                { label: "Features", icon: Brain },
+                { label: "Pricing", icon: Palette },
+                { label: "FAQ", icon: CheckCircle2 },
+                { label: "Footer", icon: Send },
+              ].map((s) => (
+                <li key={s.label} className="flex items-center gap-2 rounded-md px-2 py-1 hover:bg-muted">
+                  <s.icon className="h-3.5 w-3.5 text-muted-foreground" />
+                  {s.label}
+                </li>
+              ))}
+            </ul>
+          </aside>
+
+          <div className="md:col-span-9">
+            <div className="flex items-center justify-between border-b border-border px-5 py-3">
+              <div className="flex items-center gap-2">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-green-500/10 px-2 py-0.5 text-[11px] font-medium text-green-700 dark:text-green-400">
+                  <span className="h-1.5 w-1.5 rounded-full bg-green-500" />
+                  Parsed
+                </span>
+                <span className="text-xs text-muted-foreground">12 widgets · 4 tokens</span>
+              </div>
+              <div className="hidden items-center gap-1.5 rounded-md bg-primary px-2.5 py-1 text-[11px] font-semibold text-primary-foreground sm:inline-flex">
+                <Send className="h-3 w-3" />
+                Push to WordPress
+              </div>
+            </div>
+
+            <div className="space-y-3 p-5">
+              <div className="rounded-lg border border-dashed border-primary/40 bg-primary/5 p-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-primary">Hero · Elementor section</span>
+                  <span className="text-[10px] font-mono text-muted-foreground">section-01</span>
+                </div>
+                <div className="mt-3 h-3 w-2/3 rounded bg-foreground/80" />
+                <div className="mt-2 h-2 w-1/2 rounded bg-muted-foreground/40" />
+                <div className="mt-4 flex gap-2">
+                  <div className="h-6 w-20 rounded-md bg-primary" />
+                  <div className="h-6 w-20 rounded-md border border-border" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                {[0, 1, 2].map((i) => (
+                  <div key={i} className="rounded-lg border border-card-border bg-background p-3">
+                    <div className="h-6 w-6 rounded-md bg-primary/15" />
+                    <div className="mt-2 h-2 w-3/4 rounded bg-foreground/70" />
+                    <div className="mt-1.5 h-1.5 w-full rounded bg-muted-foreground/30" />
+                    <div className="mt-1 h-1.5 w-5/6 rounded bg-muted-foreground/30" />
+                  </div>
+                ))}
+              </div>
+
+              <div className="hidden items-center gap-3 rounded-lg border border-card-border bg-background p-3 sm:flex">
+                <Palette className="h-4 w-4 text-muted-foreground" />
+                <div className="flex items-center gap-1.5">
+                  {["bg-primary", "bg-foreground", "bg-muted-foreground/60", "bg-primary/40"].map((c) => (
+                    <span key={c} className={`h-4 w-4 rounded-full border border-border ${c}`} />
+                  ))}
+                </div>
+                <span className="text-[11px] text-muted-foreground">Design tokens extracted</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
