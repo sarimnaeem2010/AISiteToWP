@@ -121,7 +121,7 @@ function relativeTime(iso: string | null): string {
  * globally, when the project was last analyzed, and how much of that
  * analysis is cached. Never reveals the API key or any settings detail.
  */
-function ProjectAiStatusPill({ projectId }: { projectId: string }) {
+function ProjectAiStatusPill({ projectId, refreshSignal = 0 }: { projectId: string; refreshSignal?: number }) {
   const apiBase = import.meta.env.BASE_URL;
   const { toast } = useToast();
   const [status, setStatus] = useState<AiPublicStatus | null>(null);
@@ -200,6 +200,19 @@ function ProjectAiStatusPill({ projectId }: { projectId: string }) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiBase, projectId]);
+
+  // External re-fetch trigger: when the parent bumps `refreshSignal` after
+  // a re-import (ZIP, HTML paste, URL scrape, …) we refresh the pill
+  // immediately instead of waiting for the next 30s tick. The initial
+  // mount value (0) is skipped — the load-on-mount effect above already
+  // covers that case.
+  useEffect(() => {
+    if (refreshSignal === 0) return;
+    const signal = { cancelled: false };
+    void loadStatus(signal);
+    return () => { signal.cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshSignal]);
 
   const onReanalyze = async () => {
     setReanalyzing(true);
@@ -559,6 +572,11 @@ export default function ProjectWorkspace() {
   } | null>(null);
   const [pastedHtml, setPastedHtml] = useState("");
   const [reparsing, setReparsing] = useState(false);
+  // Bumped after any action that re-runs the analyzer (re-upload ZIP,
+  // re-parse HTML, scrape URL). Passed to <ProjectAiStatusPill> which
+  // refetches its status immediately on change instead of waiting for
+  // its 30s polling tick.
+  const [aiStatusRefreshTick, setAiStatusRefreshTick] = useState(0);
   const [scrapeUrlInput, setScrapeUrlInput] = useState("");
   const [chatInput, setChatInput] = useState("");
   const [chatBusy, setChatBusy] = useState(false);
@@ -789,6 +807,7 @@ export default function ProjectWorkspace() {
       const res = await fetch(`${apiBase}api/projects/${id}/upload-zip`, { method: "POST", body: fd });
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
       toast({ title: "Source re-uploaded", description: "Project re-parsed from ZIP. Elementor widgets regenerated." });
+      setAiStatusRefreshTick((n) => n + 1);
       refetch();
     } catch (err) {
       toast({ title: "Re-upload failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
@@ -808,6 +827,7 @@ export default function ProjectWorkspace() {
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
       toast({ title: "HTML re-parsed", description: "Elementor widgets regenerated from the new source." });
       setPastedHtml("");
+      setAiStatusRefreshTick((n) => n + 1);
       refetch();
     } catch (err) {
       toast({ title: "Re-parse failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
@@ -827,6 +847,7 @@ export default function ProjectWorkspace() {
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
       toast({ title: "URL scraped & parsed", description: "Site structure extracted from the live URL." });
       setScrapeUrlInput("");
+      setAiStatusRefreshTick((n) => n + 1);
       refetch();
     } catch (err) {
       toast({ title: "URL scrape failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
@@ -1112,7 +1133,7 @@ export default function ProjectWorkspace() {
                   </span>
                 )}
                 <div className="hidden md:flex items-center gap-2 ml-1">
-                  <ProjectAiStatusPill projectId={id!} />
+                  <ProjectAiStatusPill projectId={id!} refreshSignal={aiStatusRefreshTick} />
                 </div>
               </div>
 
