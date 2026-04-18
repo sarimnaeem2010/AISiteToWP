@@ -28,17 +28,21 @@ export default function ProjectPreview() {
   }
 
   return (
-    <div className="max-w-6xl mx-auto space-y-8 pb-20 animate-in fade-in duration-500">
-      <div className="flex items-center gap-4">
+    <div className="max-w-6xl mx-auto space-y-6 pb-20 animate-in fade-in duration-500">
+      <div className="sticky top-0 z-20 -mx-4 sm:-mx-6 lg:-mx-10 px-4 sm:px-6 lg:px-10 py-3 border-b border-border bg-background/85 backdrop-blur-md flex items-center gap-3">
         <Link href={`/projects/${id}`}>
-          <Button variant="ghost" size="icon" className="rounded-full">
-            <ArrowLeft className="h-5 w-5" />
+          <Button variant="ghost" size="sm" className="h-8 -ml-2">
+            <ArrowLeft className="h-4 w-4" />
+            Back
           </Button>
         </Link>
-        <div>
-          <h1 className="text-2xl">Structure preview</h1>
-          <p className="text-muted-foreground text-sm">Review extracted pages and blocks before deploying.</p>
+        <div className="min-w-0 flex-1">
+          <h1 className="text-base font-semibold truncate">Structure preview</h1>
+          <p className="text-muted-foreground text-xs truncate">Review extracted pages and blocks before deploying.</p>
         </div>
+        <span className="hidden sm:inline-flex items-center rounded-full border border-border bg-muted/40 px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
+          {parsedSite.pages.length} {parsedSite.pages.length === 1 ? "page" : "pages"} · {parsedSite.pages.reduce((acc, p) => acc + p.sections.length, 0)} blocks
+        </span>
       </div>
 
       {/* Hero summary card — at-a-glance overview before per-page detail */}

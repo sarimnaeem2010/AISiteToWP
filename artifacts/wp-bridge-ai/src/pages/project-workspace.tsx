@@ -3,7 +3,7 @@ import { Link, useParams, useLocation } from "wouter";
 import { z } from "zod";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Check, ChevronDown, Download, FileCode2, Globe, LayoutTemplate, Settings2, Trash2, Shield, UploadCloud, Eye, AlertCircle, Database, Layers, Sparkles, Palette, Ruler, Type as TypeIcon, CornerDownRight, RefreshCw } from "lucide-react";
+import { Check, ChevronDown, Download, FileCode2, Globe, LayoutTemplate, Settings2, Trash2, Shield, UploadCloud, Eye, AlertCircle, Database, Layers, Sparkles, Palette, Ruler, Type as TypeIcon, CornerDownRight, RefreshCw, Send, Menu, MessageSquare, Image as ImageIcon, AlignLeft, Component, HelpCircle, DollarSign, Users } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -17,6 +17,33 @@ import { useGetProject, useUpdateWordPressConfig, useTestWordPressConnection, us
 import { useToast } from "@/hooks/use-toast";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
+
+// Map common section type strings to a representative lucide icon for the
+// left-rail "Detected sections" list. Falls back to Component for unknown types.
+const SECTION_ICON_MAP: Record<string, React.ElementType> = {
+  hero: LayoutTemplate,
+  header: AlignLeft,
+  nav: AlignLeft,
+  features: Sparkles,
+  pricing: DollarSign,
+  faq: HelpCircle,
+  footer: AlignLeft,
+  testimonials: Users,
+  cta: Send,
+  about: FileCode2,
+  contact: Globe,
+  gallery: ImageIcon,
+};
+function sectionIconFor(type: string): React.ElementType {
+  const key = (type || "").toLowerCase();
+  return SECTION_ICON_MAP[key] || Component;
+}
+function prettyType(type: string): string {
+  if (!type) return "Section";
+  return type.charAt(0).toUpperCase() + type.slice(1).toLowerCase();
+}
 
 const wpConfigSchema = z
   .object({
@@ -546,6 +573,9 @@ export default function ProjectWorkspace() {
     reason: string | null;
   } | null>(null);
   const [pushing, setPushing] = useState(false);
+  const [activeTab, setActiveTab] = useState<string>("overview");
+  const [activeSection, setActiveSection] = useState<number>(0);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   const form = useForm<z.infer<typeof wpConfigSchema>>({
     resolver: zodResolver(wpConfigSchema),
@@ -884,724 +914,1007 @@ export default function ProjectWorkspace() {
     error:      "bg-destructive/10 text-destructive border-destructive/20",
   };
 
-  return (
-    <div className="max-w-5xl mx-auto space-y-8 animate-in fade-in duration-500 pb-20">
-      {/* Page header */}
-      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
-        <div className="space-y-3 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="inline-flex items-center rounded-full border border-border bg-muted/40 px-2.5 py-1 text-[11px] font-mono text-muted-foreground">
-              ID • {project.id.slice(0, 8)}
-            </span>
-            <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium uppercase tracking-wider ${statusBadgeClass[project.status] || statusBadgeClass.created}`}>
-              {project.status}
-            </span>
-            <ProjectAiStatusPill projectId={id!} />
+  // ── Derived data for the new 2-pane layout ─────────────────────────────
+  const sourceFileName = (() => {
+    const slug = (project.name || "site").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "site";
+    return `${slug}.html`;
+  })();
+  // Use the first parsed page's sections for the left-rail "Detected sections"
+  // list — the mockup shows a single-page navigation. Sections from other
+  // pages still render inside the Overview tab, just without a quick-jump entry.
+  const railSections = project.parsedSite?.pages?.[0]?.sections ?? [];
+  const totalSections = project.parsedSite?.pages?.reduce((acc, p) => acc + p.sections.length, 0) ?? 0;
+  const widgetCount = totalSections;
+  const tokenColors = (project.designSystem?.colors ?? []).slice(0, 8);
+  const tokenCount = tokenColors.length;
+  const isParsed = currentStep >= 2 && !!project.parsedSite;
+
+  // Smooth-scroll to a section anchor in the Overview tab. If the user
+  // clicked a section while a different tab was open, switch back first.
+  const jumpToSection = (idx: number) => {
+    setActiveSection(idx);
+    setMobileNavOpen(false);
+    if (activeTab !== "overview") {
+      setActiveTab("overview");
+      // Wait a frame for the Overview tab to mount before scrolling.
+      requestAnimationFrame(() => {
+        const el = document.getElementById(`section-${idx}`);
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    } else {
+      const el = document.getElementById(`section-${idx}`);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  };
+
+  const statusLabel = (project.status || "").toUpperCase();
+  const isDeployable = currentStep >= 3;
+
+  // Left-rail content (used both in desktop sidebar and mobile sheet).
+  const RailContent = () => (
+    <div className="flex h-full flex-col gap-6 p-5">
+      <div className="space-y-2 min-w-0">
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Project
+        </div>
+        <button
+          type="button"
+          onClick={() => { setActiveTab("overview"); setMobileNavOpen(false); }}
+          className="flex w-full items-center gap-2 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2.5 text-left text-sm font-medium text-foreground transition-colors hover:bg-primary/10"
+          data-testid="rail-source-file"
+        >
+          <FileCode2 className="h-4 w-4 text-primary shrink-0" />
+          <span className="truncate font-mono text-[12px]">{sourceFileName}</span>
+        </button>
+        <p className="px-1 text-[11px] text-muted-foreground truncate" title={project.name}>
+          {project.name}
+        </p>
+      </div>
+
+      {railSections.length > 0 && (
+        <div className="space-y-2 min-w-0">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Detected sections
           </div>
-          <h1 className="text-3xl md:text-4xl font-bold tracking-tight truncate">{project.name}</h1>
-          <p className="text-muted-foreground flex items-center gap-2 text-sm">
-            <Globe className="h-4 w-4" />
-            {project.wpConfig?.wpUrl || "No target URL configured"}
-          </p>
+          <nav className="space-y-0.5">
+            {railSections.map((s, i) => {
+              const Icon = sectionIconFor(s.type);
+              const active = activeSection === i && activeTab === "overview";
+              return (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => jumpToSection(i)}
+                  aria-current={active ? "true" : undefined}
+                  className={`group flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm transition-colors ${
+                    active
+                      ? "bg-muted text-foreground font-medium"
+                      : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                  }`}
+                  data-testid={`rail-section-${i}`}
+                >
+                  <Icon className={`h-4 w-4 shrink-0 ${active ? "text-primary" : "text-muted-foreground group-hover:text-foreground"}`} />
+                  <span className="truncate">{prettyType(s.type)}</span>
+                </button>
+              );
+            })}
+          </nav>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
-          {project.status !== "created" && (
-            <Button
-              variant="outline"
-              onClick={() => {
-                const base = import.meta.env.BASE_URL;
-                window.location.href = `${base}api/projects/${id}/astro-export`;
-              }}
-            >
-              <FileCode2 className="h-4 w-4" />
-              Export Astro
-            </Button>
-          )}
-          <Link href={`/projects/${id}/plugin`}>
-            <Button variant="outline">
-              <Download className="h-4 w-4" />
-              Get plugin
-            </Button>
-          </Link>
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button variant="destructive" size="icon">
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Delete project</AlertDialogTitle>
-                <AlertDialogDescription>
-                  Are you sure you want to delete this conversion project? This cannot be undone.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction onClick={onDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
-                  Delete
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-        </div>
+      )}
+
+      <div className="mt-auto space-y-1">
+        <Link href={`/projects/${id}/preview`}>
+          <Button variant="outline" size="sm" className="w-full justify-start">
+            <Eye className="h-3.5 w-3.5" />
+            Preview
+          </Button>
+        </Link>
+        <Link href="/app">
+          <Button variant="ghost" size="sm" className="w-full justify-start text-muted-foreground">
+            ← All projects
+          </Button>
+        </Link>
       </div>
+    </div>
+  );
 
-      {/* Stepper */}
-      <div className="rounded-xl border border-card-border bg-card shadow-xs p-5">
-        <div className="flex items-center justify-between">
-          {[
-            { step: 1, label: "Source", icon: FileCode2 },
-            { step: 2, label: "Parse", icon: LayoutTemplate },
-            { step: 3, label: "Config", icon: Settings2 },
-            { step: 4, label: "Deploy", icon: UploadCloud },
-          ].map((s, i, arr) => {
-            const done = currentStep > s.step;
-            const active = currentStep === s.step;
-            return (
-              <div key={s.step} className="flex items-center flex-1 last:flex-none">
-                <div className="flex flex-col items-center gap-2 min-w-[64px]">
-                  <div className={`h-10 w-10 rounded-full flex items-center justify-center transition-colors ${
-                    done
-                      ? "bg-primary text-primary-foreground shadow-sm"
-                      : active
-                        ? "bg-primary/10 text-primary border border-primary/30"
-                        : "bg-muted text-muted-foreground"
-                  }`}>
-                    {done ? <Check className="h-5 w-5" /> : <s.icon className="h-5 w-5" />}
-                  </div>
-                  <span className={`text-xs font-medium ${active || done ? "text-foreground" : "text-muted-foreground"}`}>{s.label}</span>
-                </div>
-                {i < arr.length - 1 && (
-                  <div className={`flex-1 h-px mx-2 sm:mx-3 ${done ? "bg-primary/40" : "bg-border"}`} />
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
+  return (
+    <div className="-mx-4 sm:-mx-6 lg:-mx-10 -my-8 min-h-[calc(100vh-0px)] bg-background animate-in fade-in duration-500">
+      <div className="grid grid-cols-1 lg:grid-cols-[260px_1fr]">
+        {/* Left rail — desktop */}
+        <aside className="hidden lg:block border-r border-border bg-muted/20 sticky top-0 self-start h-screen overflow-y-auto">
+          <RailContent />
+        </aside>
 
-      <div className="space-y-6">
-        {/* Stacked section cards */}
-        <div className="space-y-6">
-          {project.status === "created" && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Waiting for structure</CardTitle>
-                <CardDescription>Parse a source to continue.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <Link href="/projects/new">
-                  <Button>Go to parse step</Button>
-                </Link>
-              </CardContent>
-            </Card>
-          )}
+        {/* Right pane */}
+        <section className="min-w-0 flex flex-col">
+          {/* Sticky header — status + meta + primary CTA */}
+          <header className="sticky top-0 z-20 border-b border-border bg-background/85 backdrop-blur-md">
+            <div className="flex items-center gap-3 px-4 sm:px-6 lg:px-8 py-3">
+              {/* Mobile rail toggle */}
+              <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
+                <SheetTrigger asChild>
+                  <Button variant="ghost" size="icon" className="lg:hidden -ml-2 h-8 w-8" aria-label="Open project navigation">
+                    <Menu className="h-4 w-4" />
+                  </Button>
+                </SheetTrigger>
+                <SheetContent side="left" className="p-0 w-72">
+                  <RailContent />
+                </SheetContent>
+              </Sheet>
 
-          {currentStep >= 2 && project.parsedSite && (
-            <Card className="overflow-hidden border-emerald-200/70 dark:border-emerald-900/50">
-              <div className="bg-emerald-50/60 dark:bg-emerald-950/20 border-b border-emerald-100 dark:border-emerald-900/40 px-5 py-4 flex items-center justify-between gap-4">
-                <div className="flex items-start gap-3 min-w-0">
-                  <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-300">
-                    <Check className="h-4 w-4" />
+              <div className="flex items-center gap-2 min-w-0 flex-1">
+                <span
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium ${
+                    statusBadgeClass[project.status] || statusBadgeClass.created
+                  }`}
+                  data-testid="status-pill"
+                >
+                  <span className={`h-1.5 w-1.5 rounded-full ${
+                    project.status === "pushed" ? "bg-emerald-500" :
+                    project.status === "configured" ? "bg-amber-500" :
+                    project.status === "parsed" ? "bg-blue-500" :
+                    project.status === "error" ? "bg-destructive" :
+                    "bg-muted-foreground"
+                  }`} />
+                  {prettyType(statusLabel)}
+                </span>
+                {isParsed && (
+                  <span className="hidden sm:inline text-[12px] text-muted-foreground truncate">
+                    {widgetCount} {widgetCount === 1 ? "widget" : "widgets"}
+                    {tokenCount > 0 ? ` · ${tokenCount} tokens` : ""}
                   </span>
-                  <div className="min-w-0">
-                    <h3 className="font-semibold text-base">Structure parsed</h3>
-                    <p className="text-sm text-muted-foreground mt-0.5">
-                      Found {project.parsedSite.pages.length} pages and {project.parsedSite.pages.reduce((acc, p) => acc + p.sections.length, 0)} blocks.
-                    </p>
-                  </div>
+                )}
+                <div className="hidden md:flex items-center gap-2 ml-1">
+                  <ProjectAiStatusPill projectId={id!} />
                 </div>
-                <Link href={`/projects/${id}/preview`}>
-                  <Button variant="outline" size="sm">
-                    <Eye className="h-4 w-4" />
-                    Preview
+              </div>
+
+              <div className="flex items-center gap-1.5 shrink-0">
+                {project.status !== "created" && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="hidden sm:inline-flex h-8"
+                    onClick={() => {
+                      const base = import.meta.env.BASE_URL;
+                      window.location.href = `${base}api/projects/${id}/astro-export`;
+                    }}
+                    data-testid="header-export-astro"
+                  >
+                    <FileCode2 className="h-3.5 w-3.5" />
+                    Astro
+                  </Button>
+                )}
+                <Link href={`/projects/${id}/plugin`} className="hidden sm:inline-block">
+                  <Button variant="ghost" size="sm" className="h-8">
+                    <Download className="h-3.5 w-3.5" />
+                    Plugin
                   </Button>
                 </Link>
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" aria-label="Delete project">
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Delete project</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        Are you sure you want to delete this conversion project? This cannot be undone.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction onClick={onDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+                        Delete
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+                <Button
+                  size="sm"
+                  className="h-8"
+                  onClick={onPush}
+                  disabled={pushing || !isDeployable}
+                  title={isDeployable ? "Push project to WordPress" : "Configure WordPress target first"}
+                  data-testid="header-push-button"
+                >
+                  <Send className="h-3.5 w-3.5" />
+                  {pushing ? "Pushing…" : "Push to WordPress"}
+                </Button>
               </div>
-            </Card>
-          )}
+            </div>
+            {/* Sub-header: project name */}
+            <div className="px-4 sm:px-6 lg:px-8 pb-3 -mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+              <Globe className="h-3 w-3 shrink-0" />
+              <span className="truncate">{project.wpConfig?.wpUrl || "No target URL configured"}</span>
+              <span className="mx-1 text-border">·</span>
+              <span className="font-mono text-[10px] truncate">id {project.id.slice(0, 8)}</span>
+            </div>
+          </header>
 
-          {currentStep >= 2 && project.parsedSite && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Sparkles className="h-5 w-5 text-primary" />
-                  Layout assistant
-                </CardTitle>
-                <CardDescription>
-                  Refine your parsed structure in plain English. Try things like
-                  <span className="italic"> "make the header sticky"</span>,
-                  <span className="italic"> "add a 3-column features section about pricing"</span>, or
-                  <span className="italic"> "remove the testimonials"</span>.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                {chatLog.length > 0 && (
-                  <ScrollArea className="h-48 rounded-lg border border-border bg-muted/30 p-3">
-                    <div className="space-y-2.5">
-                      {chatLog.map((m, i) => (
-                        <div
-                          key={i}
-                          className="text-sm flex gap-2"
-                          data-testid={`chat-message-${m.role}`}
-                        >
-                          <span className={`shrink-0 inline-flex h-5 px-1.5 items-center rounded text-[10px] font-semibold uppercase tracking-wider ${m.role === "user" ? "bg-muted text-muted-foreground" : "bg-primary/10 text-primary"}`}>
-                            {m.role === "user" ? "you" : "ai"}
+          {/* Tabs */}
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1">
+            <div className="border-b border-border bg-background px-4 sm:px-6 lg:px-8">
+              <TabsList className="h-10 w-full justify-start gap-1 rounded-none bg-transparent p-0 overflow-x-auto">
+                {[
+                  { v: "overview",  label: "Overview" },
+                  { v: "source",    label: "Source" },
+                  { v: "mapping",   label: "Mapping" },
+                  { v: "design",    label: "Design" },
+                  { v: "wordpress", label: "WordPress" },
+                  { v: "deploy",    label: "Deploy" },
+                  { v: "refine",    label: "Refine" },
+                ].map((t) => (
+                  <TabsTrigger
+                    key={t.v}
+                    value={t.v}
+                    className="relative h-10 rounded-none border-b-2 border-transparent bg-transparent px-3 text-[13px] font-medium text-muted-foreground shadow-none data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
+                    data-testid={`tab-${t.v}`}
+                  >
+                    {t.label}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </div>
+
+            <div className="px-4 sm:px-6 lg:px-8 py-6 max-w-5xl">
+              {/* ─── Overview ─────────────────────────────────────────── */}
+              <TabsContent value="overview" className="mt-0 space-y-4">
+                {project.status === "created" && (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>Waiting for structure</CardTitle>
+                      <CardDescription>Parse a source to continue.</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <Link href="/projects/new">
+                        <Button>Go to parse step</Button>
+                      </Link>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {isParsed && project.parsedSite!.pages.flatMap((p) => p.sections).map((section, idx) => {
+                  const isHero = idx === 0;
+                  const Icon = sectionIconFor(section.type);
+                  return (
+                    <div
+                      key={idx}
+                      id={`section-${idx}`}
+                      className={`rounded-xl border-2 px-5 py-5 transition-colors ${
+                        isHero
+                          ? "border-dashed border-primary/40 bg-primary/5"
+                          : "border-border bg-card"
+                      }`}
+                      data-testid={`overview-section-${idx}`}
+                    >
+                      <div className="flex items-center justify-between gap-3 mb-4">
+                        <div className="flex items-center gap-2">
+                          <Icon className={`h-4 w-4 ${isHero ? "text-primary" : "text-muted-foreground"}`} />
+                          <span className={`text-[11px] font-semibold uppercase tracking-wider ${isHero ? "text-primary" : "text-muted-foreground"}`}>
+                            {prettyType(section.type)}
+                            {isHero ? " · Elementor section" : ""}
                           </span>
-                          <span className="text-foreground">{m.text}</span>
                         </div>
+                        <span className="font-mono text-[10px] text-muted-foreground">
+                          section-{String(idx + 1).padStart(2, "0")}
+                        </span>
+                      </div>
+                      <div className="space-y-2.5">
+                        <div className="h-3 w-full rounded bg-foreground/80" />
+                        <div className="h-2 w-3/4 rounded bg-muted-foreground/40" />
+                      </div>
+                      {isHero && (
+                        <div className="mt-4 flex items-center gap-2">
+                          <div className="h-7 w-24 rounded-md bg-primary" />
+                          <div className="h-7 w-20 rounded-md border border-border bg-card" />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {isParsed && tokenColors.length > 0 && (
+                  <div className="rounded-xl border border-border bg-card px-5 py-3.5 flex items-center gap-3 flex-wrap">
+                    <Palette className="h-4 w-4 text-muted-foreground shrink-0" />
+                    <div className="flex items-center gap-1.5">
+                      {tokenColors.map((c, i) => (
+                        <span
+                          key={i}
+                          className="h-5 w-5 rounded-full border border-border shadow-xs"
+                          style={{ backgroundColor: c }}
+                          title={c}
+                        />
                       ))}
                     </div>
-                  </ScrollArea>
+                    <span className="text-[12px] text-muted-foreground">Design tokens extracted</span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 ml-auto text-xs"
+                      onClick={() => setActiveTab("design")}
+                    >
+                      Edit tokens →
+                    </Button>
+                  </div>
                 )}
-                <div className="flex gap-2">
-                  <Input
-                    type="text"
-                    placeholder='e.g. "Change background to dark"'
-                    value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && !e.shiftKey) {
-                        e.preventDefault();
-                        sendChatMessage(chatInput);
-                      }
-                    }}
-                    disabled={chatBusy}
-                    data-testid="input-chat-instruction"
-                  />
-                  <Button
-                    type="button"
-                    onClick={() => sendChatMessage(chatInput)}
-                    disabled={chatBusy || chatInput.trim().length === 0}
-                    data-testid="button-chat-send"
-                  >
-                    {chatBusy ? "Thinking…" : "Send"}
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          )}
 
-          {currentStep >= 2 && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <FileCode2 className="h-5 w-5 text-primary" />
-                  Source files
-                </CardTitle>
-                <CardDescription>
-                  Re-upload a ZIP or paste source HTML to refresh the parsed structure and regenerate the per-section Elementor widgets.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-5">
-                <div className="flex items-center gap-3 flex-wrap">
-                  <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium ${
-                    proj.sourceHtml || proj.uploadedFiles
-                      ? "bg-emerald-50 text-emerald-700 border-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-900"
-                      : "bg-muted text-muted-foreground border-border"
-                  }`}>
-                    {proj.sourceHtml ? "Source HTML stored" : proj.uploadedFiles ? "ZIP files stored" : "No source on file"}
-                  </span>
-                  {!proj.sourceHtml && (
-                    <span className="text-xs text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
-                      <AlertCircle className="h-3.5 w-3.5" />
-                      Re-upload required to regenerate the Elementor widgets.
-                    </span>
-                  )}
-                </div>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div className="space-y-1.5">
-                    <Label className="text-xs">Re-upload ZIP</Label>
-                    <Input
-                      type="file"
-                      accept=".zip,application/zip"
-                      className="text-xs"
-                      onChange={(e) => {
-                        const f = e.target.files?.[0];
-                        if (f) reuploadZip(f);
-                        e.currentTarget.value = "";
-                      }}
-                      disabled={reparsing}
-                      data-testid="input-reupload-zip"
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label className="text-xs">Or paste HTML</Label>
-                    <div className="flex gap-2">
-                      <Input
-                        type="text"
-                        placeholder="<html>…</html>"
-                        className="font-mono text-xs"
-                        value={pastedHtml}
-                        onChange={(e) => setPastedHtml(e.target.value)}
-                        disabled={reparsing}
-                        data-testid="input-paste-html"
-                      />
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={() => reparseHtml(pastedHtml)}
-                        disabled={reparsing || pastedHtml.trim().length === 0}
-                        data-testid="button-reparse-html"
-                      >
-                        {reparsing ? "Parsing…" : "Re-parse"}
-                      </Button>
-                    </div>
-                  </div>
-                  <div className="md:col-span-2 space-y-1.5">
-                    <Label className="text-xs">Or fetch from a live URL</Label>
-                    <div className="flex gap-2">
-                      <Input
-                        type="url"
-                        placeholder="https://example.com"
-                        value={scrapeUrlInput}
-                        onChange={(e) => setScrapeUrlInput(e.target.value)}
-                        disabled={reparsing}
-                        data-testid="input-scrape-url"
-                      />
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={() => scrapeFromUrl(scrapeUrlInput)}
-                        disabled={reparsing || scrapeUrlInput.trim().length === 0}
-                        data-testid="button-scrape-url"
-                      >
-                        <Globe className="h-3.5 w-3.5" />
-                        {reparsing ? "Fetching…" : "Scrape"}
-                      </Button>
-                    </div>
-                    <p className="text-[11px] text-muted-foreground mt-1">
-                      Public http(s) URLs only. Private/loopback addresses are blocked.
-                    </p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          )}
-
-          {currentStep >= 2 && (
-            <ConversionModeCard
-              projectId={id!}
-              project={{
-                conversionMode: (() => {
-                  const v = (project as unknown as { conversionMode?: unknown }).conversionMode;
-                  return isConversionMode(v) ? v : undefined;
-                })(),
-              }}
-              onSaved={() => refetch()}
-            />
-          )}
-
-          {currentStep >= 2 && <DesignTokensCard projectId={id!} />}
-
-          {currentStep >= 2 && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Settings2 className="h-5 w-5 text-primary" />
-                  WordPress target
-                </CardTitle>
-                <CardDescription>Configure credentials for the target WordPress instance.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <Form {...form}>
-                  <form onSubmit={form.handleSubmit(onSaveConfig)} className="space-y-5">
-                    <FormField
-                      control={form.control}
-                      name="wpUrl"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>WordPress URL</FormLabel>
-                          <FormControl>
-                            <Input placeholder="https://my-wp-site.com" {...field} />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    <FormField
-                      control={form.control}
-                      name="authMode"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Auth mode</FormLabel>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                            {[
-                              { v: "basic" as const,   t: "Application password", d: "Admin user + app password via WP REST" },
-                              { v: "api_key" as const, t: "Plugin API key",       d: "Install bridge plugin, paste its API key" },
-                            ].map(({ v, t, d }) => {
-                              const active = field.value === v;
-                              return (
-                                <button
-                                  key={v}
-                                  type="button"
-                                  onClick={() => field.onChange(v)}
-                                  className={`text-left rounded-lg border p-3.5 transition-all relative ${
-                                    active
-                                      ? "border-primary bg-primary/5 shadow-xs ring-1 ring-primary/20"
-                                      : "border-border bg-card hover:border-primary/40 hover:bg-muted/30"
-                                  }`}
-                                >
-                                  {active && (
-                                    <span className="absolute top-2 right-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary text-primary-foreground">
-                                      <Check className="h-3 w-3" />
-                                    </span>
-                                  )}
-                                  <div className="text-sm font-semibold mb-0.5">{t}</div>
-                                  <div className="text-xs text-muted-foreground">{d}</div>
-                                </button>
-                              );
-                            })}
+                {/* Slim stepper at the bottom of overview for context */}
+                <div className="rounded-xl border border-border bg-muted/20 p-4 mt-2">
+                  <div className="flex items-center justify-between">
+                    {[
+                      { step: 1, label: "Source", icon: FileCode2 },
+                      { step: 2, label: "Parse", icon: LayoutTemplate },
+                      { step: 3, label: "Config", icon: Settings2 },
+                      { step: 4, label: "Deploy", icon: UploadCloud },
+                    ].map((s, i, arr) => {
+                      const done = currentStep > s.step;
+                      const active = currentStep === s.step;
+                      return (
+                        <div key={s.step} className="flex items-center flex-1 last:flex-none">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <div className={`h-7 w-7 rounded-full flex items-center justify-center text-xs ${
+                              done
+                                ? "bg-primary text-primary-foreground"
+                                : active
+                                  ? "bg-primary/10 text-primary border border-primary/30"
+                                  : "bg-muted text-muted-foreground"
+                            }`}>
+                              {done ? <Check className="h-3.5 w-3.5" /> : <s.icon className="h-3.5 w-3.5" />}
+                            </div>
+                            <span className={`text-[11px] font-medium ${active || done ? "text-foreground" : "text-muted-foreground"}`}>{s.label}</span>
                           </div>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                    {currentAuthMode === "basic" && (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        <FormField
-                          control={form.control}
-                          name="wpUsername"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Admin username</FormLabel>
-                              <FormControl>
-                                <Input placeholder="admin" {...field} />
-                              </FormControl>
-                              <FormMessage />
-                            </FormItem>
+                          {i < arr.length - 1 && (
+                            <div className={`flex-1 h-px mx-2 ${done ? "bg-primary/40" : "bg-border"}`} />
                           )}
-                        />
-                        <FormField
-                          control={form.control}
-                          name="wpAppPassword"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Application password</FormLabel>
-                              <FormControl>
-                                <Input type="password" placeholder="xxxx xxxx xxxx xxxx" className="font-mono" {...field} />
-                              </FormControl>
-                              <FormDescription className="text-[11px]">Generate in WP profile settings.</FormDescription>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-                      </div>
-                    )}
-                    {currentAuthMode === "api_key" && (
-                      <FormField
-                        control={form.control}
-                        name="wpApiKey"
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel>Plugin API key</FormLabel>
-                            <FormControl>
-                              <Input type="password" placeholder="paste key from Get Plugin screen" className="font-mono" {...field} />
-                            </FormControl>
-                            <FormDescription className="text-[11px]">Generated and embedded by the bridge plugin PHP file (see Get Plugin).</FormDescription>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-                    )}
-                    <div className="space-y-2">
-                      <Label>Output</Label>
-                      <div
-                        className="rounded-lg border border-primary/30 bg-primary/5 p-4"
-                        data-testid="renderer-pixel_perfect"
-                      >
-                        <div className="font-semibold flex items-center gap-2 text-sm">
-                          <Sparkles className="h-4 w-4 text-primary" /> Elementor + custom theme
                         </div>
-                        <div className="text-xs text-muted-foreground mt-1.5 leading-relaxed">
-                          Generates a child theme with one Elementor widget per section. Each widget exposes
-                          native control groups (Button text + link, Image + alt, Heading + tag, etc.) so the
-                          sidebar in Elementor feels like a stock widget. Install the theme on your WordPress
-                          site first, then push your pages.
-                        </div>
-                      </div>
-                      {renderer === "pixel_perfect" && (
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-2">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={downloadThemeZip}
-                            data-testid="button-download-theme-zip"
-                          >
-                            <Download className="h-3.5 w-3.5" /> Download ZIP
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={installTheme}
-                            data-testid="button-install-theme"
-                          >
-                            <UploadCloud className="h-3.5 w-3.5" /> Install theme
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="default"
-                            size="sm"
-                            onClick={activateTheme}
-                            data-testid="button-activate-theme"
-                          >
-                            <Check className="h-3.5 w-3.5" /> Activate theme
-                          </Button>
-                        </div>
-                      )}
-                    </div>
-                    <FormField
-                      control={form.control}
-                      name="useAcf"
-                      render={({ field }) => (
-                        <FormItem className="flex flex-row items-center justify-between rounded-lg border border-border p-4 bg-card">
-                          <div className="space-y-0.5">
-                            <FormLabel>Advanced Custom Fields</FormLabel>
-                            <FormDescription>
-                              Map parsed data to ACF fields backing the Elementor widgets in the generated child theme.
-                            </FormDescription>
-                          </div>
-                          <FormControl>
-                            <Switch
-                              checked={field.value}
-                              onCheckedChange={field.onChange}
-                            />
-                          </FormControl>
-                        </FormItem>
-                      )}
-                    />
-                    <div className="flex items-center gap-3 pt-4 border-t border-border">
-                      <Button type="submit" disabled={updateConfig.isPending}>
-                        {updateConfig.isPending ? "Saving…" : "Save config"}
-                      </Button>
-                      <Button type="button" variant="outline" onClick={onTestConnection} disabled={testConnection.isPending}>
-                        {testConnection.isPending ? "Testing…" : "Test connection"}
-                      </Button>
-                    </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </TabsContent>
 
-                    {testResult && (
-                      <div className="space-y-2 mt-4">
-                        <div className={`p-3.5 rounded-lg text-sm flex items-start gap-2.5 border ${
-                          testResult.success
-                            ? "bg-emerald-50 text-emerald-800 border-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-900"
-                            : "bg-destructive/10 text-destructive border-destructive/20"
+              {/* ─── Source ───────────────────────────────────────────── */}
+              <TabsContent value="source" className="mt-0">
+                {currentStep >= 2 ? (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2">
+                        <FileCode2 className="h-5 w-5 text-primary" />
+                        Source files
+                      </CardTitle>
+                      <CardDescription>
+                        Re-upload a ZIP or paste source HTML to refresh the parsed structure and regenerate the per-section Elementor widgets.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-5">
+                      <div className="flex items-center gap-3 flex-wrap">
+                        <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium ${
+                          proj.sourceHtml || proj.uploadedFiles
+                            ? "bg-emerald-50 text-emerald-700 border-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-900"
+                            : "bg-muted text-muted-foreground border-border"
                         }`}>
-                          {testResult.success ? <Check className="h-4 w-4 mt-0.5 shrink-0" /> : <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />}
-                          <div>
-                            <div className="font-semibold">{testResult.success ? "Connection verified" : "Connection failed"}</div>
-                            <div className="opacity-90 mt-0.5">{testResult.message}</div>
+                          {proj.sourceHtml ? "Source HTML stored" : proj.uploadedFiles ? "ZIP files stored" : "No source on file"}
+                        </span>
+                        {!proj.sourceHtml && (
+                          <span className="text-xs text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
+                            <AlertCircle className="h-3.5 w-3.5" />
+                            Re-upload required to regenerate the Elementor widgets.
+                          </span>
+                        )}
+                      </div>
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <div className="space-y-1.5">
+                          <Label className="text-xs">Re-upload ZIP</Label>
+                          <Input
+                            type="file"
+                            accept=".zip,application/zip"
+                            className="text-xs"
+                            onChange={(e) => {
+                              const f = e.target.files?.[0];
+                              if (f) reuploadZip(f);
+                              e.currentTarget.value = "";
+                            }}
+                            disabled={reparsing}
+                            data-testid="input-reupload-zip"
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label className="text-xs">Or paste HTML</Label>
+                          <div className="flex gap-2">
+                            <Input
+                              type="text"
+                              placeholder="<html>…</html>"
+                              className="font-mono text-xs"
+                              value={pastedHtml}
+                              onChange={(e) => setPastedHtml(e.target.value)}
+                              disabled={reparsing}
+                              data-testid="input-paste-html"
+                            />
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={() => reparseHtml(pastedHtml)}
+                              disabled={reparsing || pastedHtml.trim().length === 0}
+                              data-testid="button-reparse-html"
+                            >
+                              {reparsing ? "Parsing…" : "Re-parse"}
+                            </Button>
                           </div>
                         </div>
-                        {testResult.pluginOutdated && testResult.pluginVersion && testResult.expectedPluginVersion && (
-                          <div className="p-3.5 rounded-lg text-sm flex items-start gap-2.5 bg-amber-50 text-amber-800 border border-amber-100 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-900">
-                            <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
-                            <div>
-                              <div className="font-semibold">Companion plugin out of date</div>
-                              <div className="opacity-90 mt-0.5">
-                                Installed plugin is v{testResult.pluginVersion}, but this server expects v{testResult.expectedPluginVersion}.
-                                Re-download from the <span className="font-semibold">Get Plugin</span> page and re-upload to your site
-                                so the new pre-flight theme check is enabled.
+                        <div className="md:col-span-2 space-y-1.5">
+                          <Label className="text-xs">Or fetch from a live URL</Label>
+                          <div className="flex gap-2">
+                            <Input
+                              type="url"
+                              placeholder="https://example.com"
+                              value={scrapeUrlInput}
+                              onChange={(e) => setScrapeUrlInput(e.target.value)}
+                              disabled={reparsing}
+                              data-testid="input-scrape-url"
+                            />
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={() => scrapeFromUrl(scrapeUrlInput)}
+                              disabled={reparsing || scrapeUrlInput.trim().length === 0}
+                              data-testid="button-scrape-url"
+                            >
+                              <Globe className="h-3.5 w-3.5" />
+                              {reparsing ? "Fetching…" : "Scrape"}
+                            </Button>
+                          </div>
+                          <p className="text-[11px] text-muted-foreground mt-1">
+                            Public http(s) URLs only. Private/loopback addresses are blocked.
+                          </p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ) : (
+                  <Card>
+                    <CardContent className="py-8 text-center text-sm text-muted-foreground">
+                      Parse a source first to enable re-imports.
+                    </CardContent>
+                  </Card>
+                )}
+              </TabsContent>
+
+              {/* ─── Mapping ──────────────────────────────────────────── */}
+              <TabsContent value="mapping" className="mt-0 space-y-4">
+                {currentStep >= 2 ? (
+                  <>
+                    <ConversionModeCard
+                      projectId={id!}
+                      project={{
+                        conversionMode: (() => {
+                          const v = (project as unknown as { conversionMode?: unknown }).conversionMode;
+                          return isConversionMode(v) ? v : undefined;
+                        })(),
+                      }}
+                      onSaved={() => refetch()}
+                    />
+                    {cpts.length > 0 && (
+                      <Card>
+                        <CardHeader>
+                          <CardTitle className="flex items-center gap-2">
+                            <Database className="h-5 w-5 text-primary" />
+                            Custom post types
+                            <span className="ml-1 inline-flex items-center rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary uppercase tracking-wider">
+                              AI-detected
+                            </span>
+                          </CardTitle>
+                          <CardDescription>
+                            Repeated content patterns detected. Enabled types will be registered by the plugin and pushed as CPT entries instead of inline page sections.
+                          </CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                          <div className="space-y-2.5">
+                            {cpts.map((cpt) => (
+                              <div key={cpt.slug} className="flex items-center justify-between rounded-lg border border-border p-3.5 bg-muted/30">
+                                <div className="space-y-1.5 min-w-0">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="text-sm font-semibold">{cpt.label}</span>
+                                    <span className="font-mono text-[11px] text-muted-foreground bg-muted/60 border border-border rounded px-1.5 py-0.5">{cpt.slug}</span>
+                                    {cpt.sourceSemanticType && (
+                                      <span className="text-[11px] text-muted-foreground">from {cpt.sourceSemanticType}</span>
+                                    )}
+                                  </div>
+                                  <p className="text-xs text-muted-foreground">
+                                    {(cpt.fields?.length ?? 0)} fields · {cpt.enabled ? "will register & import" : "disabled"}
+                                  </p>
+                                </div>
+                                <Switch
+                                  checked={cpt.enabled !== false}
+                                  onCheckedChange={(checked) => toggleCpt(cpt.slug, checked)}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                          <p className="text-xs text-muted-foreground mt-4">
+                            After toggling CPTs, re-download the companion plugin from the Get Plugin page so the new CPT registrations take effect on activation.
+                          </p>
+                        </CardContent>
+                      </Card>
+                    )}
+                  </>
+                ) : (
+                  <Card>
+                    <CardContent className="py-8 text-center text-sm text-muted-foreground">
+                      Parse a source first to configure mapping.
+                    </CardContent>
+                  </Card>
+                )}
+              </TabsContent>
+
+              {/* ─── Design ───────────────────────────────────────────── */}
+              <TabsContent value="design" className="mt-0">
+                {currentStep >= 2 ? (
+                  <DesignTokensCard projectId={id!} />
+                ) : (
+                  <Card>
+                    <CardContent className="py-8 text-center text-sm text-muted-foreground">
+                      Parse a source first to extract design tokens.
+                    </CardContent>
+                  </Card>
+                )}
+              </TabsContent>
+
+              {/* ─── WordPress ────────────────────────────────────────── */}
+              <TabsContent value="wordpress" className="mt-0">
+                {currentStep >= 2 ? (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2">
+                        <Settings2 className="h-5 w-5 text-primary" />
+                        WordPress target
+                      </CardTitle>
+                      <CardDescription>Configure credentials for the target WordPress instance.</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <Form {...form}>
+                        <form onSubmit={form.handleSubmit(onSaveConfig)} className="space-y-5">
+                          <FormField
+                            control={form.control}
+                            name="wpUrl"
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormLabel>WordPress URL</FormLabel>
+                                <FormControl>
+                                  <Input placeholder="https://my-wp-site.com" {...field} />
+                                </FormControl>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
+                          <FormField
+                            control={form.control}
+                            name="authMode"
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormLabel>Auth mode</FormLabel>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                  {[
+                                    { v: "basic" as const,   t: "Application password", d: "Admin user + app password via WP REST" },
+                                    { v: "api_key" as const, t: "Plugin API key",       d: "Install bridge plugin, paste its API key" },
+                                  ].map(({ v, t, d }) => {
+                                    const active = field.value === v;
+                                    return (
+                                      <button
+                                        key={v}
+                                        type="button"
+                                        onClick={() => field.onChange(v)}
+                                        className={`text-left rounded-lg border p-3.5 transition-all relative ${
+                                          active
+                                            ? "border-primary bg-primary/5 shadow-xs ring-1 ring-primary/20"
+                                            : "border-border bg-card hover:border-primary/40 hover:bg-muted/30"
+                                        }`}
+                                      >
+                                        {active && (
+                                          <span className="absolute top-2 right-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary text-primary-foreground">
+                                            <Check className="h-3 w-3" />
+                                          </span>
+                                        )}
+                                        <div className="text-sm font-semibold mb-0.5">{t}</div>
+                                        <div className="text-xs text-muted-foreground">{d}</div>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
+                          {currentAuthMode === "basic" && (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                              <FormField
+                                control={form.control}
+                                name="wpUsername"
+                                render={({ field }) => (
+                                  <FormItem>
+                                    <FormLabel>Admin username</FormLabel>
+                                    <FormControl>
+                                      <Input placeholder="admin" {...field} />
+                                    </FormControl>
+                                    <FormMessage />
+                                  </FormItem>
+                                )}
+                              />
+                              <FormField
+                                control={form.control}
+                                name="wpAppPassword"
+                                render={({ field }) => (
+                                  <FormItem>
+                                    <FormLabel>Application password</FormLabel>
+                                    <FormControl>
+                                      <Input type="password" placeholder="xxxx xxxx xxxx xxxx" className="font-mono" {...field} />
+                                    </FormControl>
+                                    <FormDescription className="text-[11px]">Generate in WP profile settings.</FormDescription>
+                                    <FormMessage />
+                                  </FormItem>
+                                )}
+                              />
+                            </div>
+                          )}
+                          {currentAuthMode === "api_key" && (
+                            <FormField
+                              control={form.control}
+                              name="wpApiKey"
+                              render={({ field }) => (
+                                <FormItem>
+                                  <FormLabel>Plugin API key</FormLabel>
+                                  <FormControl>
+                                    <Input type="password" placeholder="paste key from Get Plugin screen" className="font-mono" {...field} />
+                                  </FormControl>
+                                  <FormDescription className="text-[11px]">Generated and embedded by the bridge plugin PHP file (see Get Plugin).</FormDescription>
+                                  <FormMessage />
+                                </FormItem>
+                              )}
+                            />
+                          )}
+                          <div className="space-y-2">
+                            <Label>Output</Label>
+                            <div
+                              className="rounded-lg border border-primary/30 bg-primary/5 p-4"
+                              data-testid="renderer-pixel_perfect"
+                            >
+                              <div className="font-semibold flex items-center gap-2 text-sm">
+                                <Sparkles className="h-4 w-4 text-primary" /> Elementor + custom theme
+                              </div>
+                              <div className="text-xs text-muted-foreground mt-1.5 leading-relaxed">
+                                Generates a child theme with one Elementor widget per section. Each widget exposes
+                                native control groups (Button text + link, Image + alt, Heading + tag, etc.) so the
+                                sidebar in Elementor feels like a stock widget. Install the theme on your WordPress
+                                site first, then push your pages.
                               </div>
                             </div>
+                            {renderer === "pixel_perfect" && (
+                              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-2">
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={downloadThemeZip}
+                                  data-testid="button-download-theme-zip"
+                                >
+                                  <Download className="h-3.5 w-3.5" /> Download ZIP
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={installTheme}
+                                  data-testid="button-install-theme"
+                                >
+                                  <UploadCloud className="h-3.5 w-3.5" /> Install theme
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="default"
+                                  size="sm"
+                                  onClick={activateTheme}
+                                  data-testid="button-activate-theme"
+                                >
+                                  <Check className="h-3.5 w-3.5" /> Activate theme
+                                </Button>
+                              </div>
+                            )}
                           </div>
-                        )}
-                      </div>
-                    )}
-                  </form>
-                </Form>
-              </CardContent>
-            </Card>
-          )}
+                          <FormField
+                            control={form.control}
+                            name="useAcf"
+                            render={({ field }) => (
+                              <FormItem className="flex flex-row items-center justify-between rounded-lg border border-border p-4 bg-card">
+                                <div className="space-y-0.5">
+                                  <FormLabel>Advanced Custom Fields</FormLabel>
+                                  <FormDescription>
+                                    Map parsed data to ACF fields backing the Elementor widgets in the generated child theme.
+                                  </FormDescription>
+                                </div>
+                                <FormControl>
+                                  <Switch
+                                    checked={field.value}
+                                    onCheckedChange={field.onChange}
+                                  />
+                                </FormControl>
+                              </FormItem>
+                            )}
+                          />
+                          <div className="flex items-center gap-3 pt-4 border-t border-border">
+                            <Button type="submit" disabled={updateConfig.isPending}>
+                              {updateConfig.isPending ? "Saving…" : "Save config"}
+                            </Button>
+                            <Button type="button" variant="outline" onClick={onTestConnection} disabled={testConnection.isPending}>
+                              {testConnection.isPending ? "Testing…" : "Test connection"}
+                            </Button>
+                          </div>
 
-          {currentStep >= 2 && cpts.length > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Database className="h-5 w-5 text-primary" />
-                  Custom post types
-                  <span className="ml-1 inline-flex items-center rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary uppercase tracking-wider">
-                    AI-detected
-                  </span>
-                </CardTitle>
-                <CardDescription>
-                  Repeated content patterns detected. Enabled types will be registered by the plugin and pushed as CPT entries instead of inline page sections.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-2.5">
-                  {cpts.map((cpt) => (
-                    <div key={cpt.slug} className="flex items-center justify-between rounded-lg border border-border p-3.5 bg-muted/30">
-                      <div className="space-y-1.5 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-sm font-semibold">{cpt.label}</span>
-                          <span className="font-mono text-[11px] text-muted-foreground bg-muted/60 border border-border rounded px-1.5 py-0.5">{cpt.slug}</span>
-                          {cpt.sourceSemanticType && (
-                            <span className="text-[11px] text-muted-foreground">from {cpt.sourceSemanticType}</span>
+                          {testResult && (
+                            <div className="space-y-2 mt-4">
+                              <div className={`p-3.5 rounded-lg text-sm flex items-start gap-2.5 border ${
+                                testResult.success
+                                  ? "bg-emerald-50 text-emerald-800 border-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-900"
+                                  : "bg-destructive/10 text-destructive border-destructive/20"
+                              }`}>
+                                {testResult.success ? <Check className="h-4 w-4 mt-0.5 shrink-0" /> : <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />}
+                                <div>
+                                  <div className="font-semibold">{testResult.success ? "Connection verified" : "Connection failed"}</div>
+                                  <div className="opacity-90 mt-0.5">{testResult.message}</div>
+                                </div>
+                              </div>
+                              {testResult.pluginOutdated && testResult.pluginVersion && testResult.expectedPluginVersion && (
+                                <div className="p-3.5 rounded-lg text-sm flex items-start gap-2.5 bg-amber-50 text-amber-800 border border-amber-100 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-900">
+                                  <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+                                  <div>
+                                    <div className="font-semibold">Companion plugin out of date</div>
+                                    <div className="opacity-90 mt-0.5">
+                                      Installed plugin is v{testResult.pluginVersion}, but this server expects v{testResult.expectedPluginVersion}.
+                                      Re-download from the <span className="font-semibold">Get Plugin</span> page and re-upload to your site
+                                      so the new pre-flight theme check is enabled.
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
                           )}
-                        </div>
-                        <p className="text-xs text-muted-foreground">
-                          {(cpt.fields?.length ?? 0)} fields · {cpt.enabled ? "will register & import" : "disabled"}
-                        </p>
-                      </div>
-                      <Switch
-                        checked={cpt.enabled !== false}
-                        onCheckedChange={(checked) => toggleCpt(cpt.slug, checked)}
-                      />
-                    </div>
-                  ))}
-                </div>
-                <p className="text-xs text-muted-foreground mt-4">
-                  After toggling CPTs, re-download the companion plugin from the Get Plugin page so the new CPT registrations take effect on activation.
-                </p>
-              </CardContent>
-            </Card>
-          )}
-
-          {currentStep >= 3 && (
-            <Card className={project.status === "configured" ? "border-primary/40 shadow-md" : ""}>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <UploadCloud className="h-5 w-5 text-primary" />
-                  Deploy to WordPress
-                </CardTitle>
-                <CardDescription>Push the generated structure and design system to your WP instance.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="rounded-lg bg-muted/30 p-4 border border-border mb-6">
-                  <h4 className="text-sm font-semibold mb-3 flex items-center gap-2">
-                    <Shield className="h-4 w-4 text-amber-500" />
-                    Pre-flight check
-                  </h4>
-                  <ul className="text-sm space-y-2 text-muted-foreground">
-                    <li className="flex items-center gap-2"><Check className="h-3.5 w-3.5 text-emerald-500" /> Parsed structure ready</li>
-                    <li className="flex items-center gap-2"><Check className="h-3.5 w-3.5 text-emerald-500" /> WP REST API reachable</li>
-                    <li className="flex items-center gap-2"><Check className="h-3.5 w-3.5 text-emerald-500" /> Plugin companion ready</li>
-                  </ul>
-                </div>
-                {(() => {
-                  const themeMissing =
-                    renderer === "pixel_perfect" &&
-                    themeStatus !== null &&
-                    themeStatus.requiresCustomTheme &&
-                    themeStatus.reachable &&
-                    !themeStatus.matches;
-                  const themeUnknown =
-                    renderer === "pixel_perfect" &&
-                    (themeStatus === null || !themeStatus.reachable);
-                  const tooltip = themeMissing
-                    ? `The pixel-perfect theme "${themeStatus?.expectedThemeSlug}" is not active on the target site (active: "${themeStatus?.activeThemeSlug ?? "unknown"}"). Pages will render as "unknown block" placeholders. Install and activate the theme above first, or push anyway to override.`
-                    : themeUnknown && renderer === "pixel_perfect"
-                      ? "Could not verify the active theme on the target site (api-key auth required). Pixel-perfect mode needs the generated theme installed and active before pushing — install/activate it above first."
-                      : "";
-                  const button = (
-                    <Button
-                      size="lg"
-                      className={`w-full text-base h-14 ${themeMissing ? "border-amber-400 bg-amber-50 hover:bg-amber-100 text-amber-800 dark:border-amber-500 dark:bg-amber-950/40 dark:hover:bg-amber-950/60 dark:text-amber-300" : ""}`}
-                      variant={themeMissing ? "outline" : "default"}
-                      onClick={onPush}
-                      disabled={pushing}
-                      data-testid="button-push-to-wordpress"
-                    >
-                      {pushing ? (
-                        "Deploying…"
-                      ) : themeMissing ? (
-                        <>
-                          <AlertCircle className="h-5 w-5" />
-                          Push anyway — theme not active
-                        </>
-                      ) : (
-                        <>
-                          <UploadCloud className="h-5 w-5" />
-                          Convert &amp; push to WordPress
-                        </>
-                      )}
-                    </Button>
-                  );
-                  return tooltip ? (
-                    <TooltipProvider>
-                      <Tooltip>
-                        <TooltipTrigger asChild>{button}</TooltipTrigger>
-                        <TooltipContent className="max-w-sm text-xs">{tooltip}</TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
-                  ) : (
-                    button
-                  );
-                })()}
-                {renderer === "pixel_perfect" && themeStatus && themeStatus.reachable && !themeStatus.matches && (
-                  <p
-                    className="text-xs text-amber-700 dark:text-amber-400 mt-3 flex items-start gap-2"
-                    data-testid="theme-warning"
-                  >
-                    <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                    <span>
-                      The custom theme <span className="font-semibold">{themeStatus.expectedThemeSlug}</span> isn't
-                      active on this site (active: <span className="font-semibold">{themeStatus.activeThemeSlug ?? "unknown"}</span>).
-                      Install and activate it from the WordPress Target card above before pushing — otherwise
-                      every section will render as an "unknown block" placeholder.
-                    </span>
-                  </p>
-                )}
-                {renderer === "pixel_perfect" && (themeStatus === null || !themeStatus.reachable) && (
-                  <p
-                    className="text-xs text-muted-foreground mt-3"
-                    data-testid="theme-warning-unknown"
-                  >
-                    Pixel-perfect mode requires the generated theme to be installed and active on the target site.
-                    Use the Install/Activate Theme buttons above before pushing.
-                  </p>
-                )}
-              </CardContent>
-            </Card>
-          )}
-        </div>
-
-        {/* Deployment log — stacked beneath sections */}
-        <div className="space-y-6">
-          <Card className="h-[480px] flex flex-col overflow-hidden p-0 gap-0">
-            <CardHeader className="py-3.5 px-4 border-b border-border bg-card">
-              <CardTitle className="text-sm flex items-center justify-between">
-                <span className="flex items-center gap-2">
-                  <span className="relative flex h-2 w-2">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                  </span>
-                  Deployment log
-                </span>
-                <span className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Live</span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="flex-1 p-0 overflow-hidden bg-[#0b0d12] text-emerald-300 font-mono text-xs">
-              <ScrollArea className="h-full w-full p-4">
-                {(!project.pushLog || project.pushLog.length === 0) ? (
-                  <div className="text-emerald-400/40 italic">Waiting for deployment…</div>
+                        </form>
+                      </Form>
+                    </CardContent>
+                  </Card>
                 ) : (
-                  <div className="space-y-2">
-                    {project.pushLog.map((log, i) => (
-                      <div key={i} className="flex gap-3">
-                        <span className="text-emerald-400/40 shrink-0">[{new Date(log.createdAt).toLocaleTimeString()}]</span>
-                        <span className={`shrink-0 font-semibold ${log.status === 'error' ? 'text-red-400' : log.status === 'success' ? 'text-emerald-300' : 'text-amber-300'}`}>
-                          {log.status.toUpperCase()}
-                        </span>
-                        <span className="break-all text-emerald-100/90">{log.pageName} {log.error ? `— ${log.error}` : ''}</span>
-                        {log.wpUrl && (
-                          <a href={log.wpUrl} target="_blank" rel="noreferrer" className="text-sky-400 hover:underline shrink-0 flex items-center">
-                            view <Globe className="h-3 w-3 ml-1" />
-                          </a>
-                        )}
-                      </div>
-                    ))}
-                  </div>
+                  <Card>
+                    <CardContent className="py-8 text-center text-sm text-muted-foreground">
+                      Parse a source first to configure your WordPress target.
+                    </CardContent>
+                  </Card>
                 )}
-              </ScrollArea>
-            </CardContent>
-          </Card>
-        </div>
+              </TabsContent>
+
+              {/* ─── Deploy ───────────────────────────────────────────── */}
+              <TabsContent value="deploy" className="mt-0 space-y-6">
+                {currentStep >= 3 ? (
+                  <Card className={project.status === "configured" ? "border-primary/40 shadow-md" : ""}>
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2">
+                        <UploadCloud className="h-5 w-5 text-primary" />
+                        Deploy to WordPress
+                      </CardTitle>
+                      <CardDescription>Push the generated structure and design system to your WP instance.</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="rounded-lg bg-muted/30 p-4 border border-border mb-6">
+                        <h4 className="text-sm font-semibold mb-3 flex items-center gap-2">
+                          <Shield className="h-4 w-4 text-amber-500" />
+                          Pre-flight check
+                        </h4>
+                        <ul className="text-sm space-y-2 text-muted-foreground">
+                          <li className="flex items-center gap-2"><Check className="h-3.5 w-3.5 text-emerald-500" /> Parsed structure ready</li>
+                          <li className="flex items-center gap-2"><Check className="h-3.5 w-3.5 text-emerald-500" /> WP REST API reachable</li>
+                          <li className="flex items-center gap-2"><Check className="h-3.5 w-3.5 text-emerald-500" /> Plugin companion ready</li>
+                        </ul>
+                      </div>
+                      {(() => {
+                        const themeMissing =
+                          renderer === "pixel_perfect" &&
+                          themeStatus !== null &&
+                          themeStatus.requiresCustomTheme &&
+                          themeStatus.reachable &&
+                          !themeStatus.matches;
+                        const themeUnknown =
+                          renderer === "pixel_perfect" &&
+                          (themeStatus === null || !themeStatus.reachable);
+                        const tooltip = themeMissing
+                          ? `The pixel-perfect theme "${themeStatus?.expectedThemeSlug}" is not active on the target site (active: "${themeStatus?.activeThemeSlug ?? "unknown"}"). Pages will render as "unknown block" placeholders. Install and activate the theme above first, or push anyway to override.`
+                          : themeUnknown && renderer === "pixel_perfect"
+                            ? "Could not verify the active theme on the target site (api-key auth required). Pixel-perfect mode needs the generated theme installed and active before pushing — install/activate it above first."
+                            : "";
+                        const button = (
+                          <Button
+                            size="lg"
+                            className={`w-full text-base h-14 ${themeMissing ? "border-amber-400 bg-amber-50 hover:bg-amber-100 text-amber-800 dark:border-amber-500 dark:bg-amber-950/40 dark:hover:bg-amber-950/60 dark:text-amber-300" : ""}`}
+                            variant={themeMissing ? "outline" : "default"}
+                            onClick={onPush}
+                            disabled={pushing}
+                            data-testid="button-push-to-wordpress"
+                          >
+                            {pushing ? (
+                              "Deploying…"
+                            ) : themeMissing ? (
+                              <>
+                                <AlertCircle className="h-5 w-5" />
+                                Push anyway — theme not active
+                              </>
+                            ) : (
+                              <>
+                                <UploadCloud className="h-5 w-5" />
+                                Convert &amp; push to WordPress
+                              </>
+                            )}
+                          </Button>
+                        );
+                        return tooltip ? (
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger asChild>{button}</TooltipTrigger>
+                              <TooltipContent className="max-w-sm text-xs">{tooltip}</TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        ) : (
+                          button
+                        );
+                      })()}
+                      {renderer === "pixel_perfect" && themeStatus && themeStatus.reachable && !themeStatus.matches && (
+                        <p
+                          className="text-xs text-amber-700 dark:text-amber-400 mt-3 flex items-start gap-2"
+                          data-testid="theme-warning"
+                        >
+                          <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                          <span>
+                            The custom theme <span className="font-semibold">{themeStatus.expectedThemeSlug}</span> isn't
+                            active on this site (active: <span className="font-semibold">{themeStatus.activeThemeSlug ?? "unknown"}</span>).
+                            Install and activate it from the WordPress Target card above before pushing — otherwise
+                            every section will render as an "unknown block" placeholder.
+                          </span>
+                        </p>
+                      )}
+                      {renderer === "pixel_perfect" && (themeStatus === null || !themeStatus.reachable) && (
+                        <p
+                          className="text-xs text-muted-foreground mt-3"
+                          data-testid="theme-warning-unknown"
+                        >
+                          Pixel-perfect mode requires the generated theme to be installed and active on the target site.
+                          Use the Install/Activate Theme buttons above before pushing.
+                        </p>
+                      )}
+                    </CardContent>
+                  </Card>
+                ) : (
+                  <Card>
+                    <CardContent className="py-8 text-center text-sm text-muted-foreground">
+                      Configure WordPress credentials first to enable deployment.
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Deployment log */}
+                <Card className="h-[420px] flex flex-col overflow-hidden p-0 gap-0">
+                  <CardHeader className="py-3.5 px-4 border-b border-border bg-card">
+                    <CardTitle className="text-sm flex items-center justify-between">
+                      <span className="flex items-center gap-2">
+                        <span className="relative flex h-2 w-2">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                        </span>
+                        Deployment log
+                      </span>
+                      <span className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Live</span>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="flex-1 p-0 overflow-hidden bg-[#0b0d12] text-emerald-300 font-mono text-xs">
+                    <ScrollArea className="h-full w-full p-4">
+                      {(!project.pushLog || project.pushLog.length === 0) ? (
+                        <div className="text-emerald-400/40 italic">Waiting for deployment…</div>
+                      ) : (
+                        <div className="space-y-2">
+                          {project.pushLog.map((log, i) => (
+                            <div key={i} className="flex gap-3">
+                              <span className="text-emerald-400/40 shrink-0">[{new Date(log.createdAt).toLocaleTimeString()}]</span>
+                              <span className={`shrink-0 font-semibold ${log.status === 'error' ? 'text-red-400' : log.status === 'success' ? 'text-emerald-300' : 'text-amber-300'}`}>
+                                {log.status.toUpperCase()}
+                              </span>
+                              <span className="break-all text-emerald-100/90">{log.pageName} {log.error ? `— ${log.error}` : ''}</span>
+                              {log.wpUrl && (
+                                <a href={log.wpUrl} target="_blank" rel="noreferrer" className="text-sky-400 hover:underline shrink-0 flex items-center">
+                                  view <Globe className="h-3 w-3 ml-1" />
+                                </a>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </ScrollArea>
+                  </CardContent>
+                </Card>
+              </TabsContent>
+
+              {/* ─── Refine ───────────────────────────────────────────── */}
+              <TabsContent value="refine" className="mt-0">
+                {currentStep >= 2 && project.parsedSite ? (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2">
+                        <Sparkles className="h-5 w-5 text-primary" />
+                        Layout assistant
+                      </CardTitle>
+                      <CardDescription>
+                        Refine your parsed structure in plain English. Try things like
+                        <span className="italic"> "make the header sticky"</span>,
+                        <span className="italic"> "add a 3-column features section about pricing"</span>, or
+                        <span className="italic"> "remove the testimonials"</span>.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      {chatLog.length > 0 && (
+                        <ScrollArea className="h-72 rounded-lg border border-border bg-muted/30 p-3">
+                          <div className="space-y-2.5">
+                            {chatLog.map((m, i) => (
+                              <div
+                                key={i}
+                                className="text-sm flex gap-2"
+                                data-testid={`chat-message-${m.role}`}
+                              >
+                                <span className={`shrink-0 inline-flex h-5 px-1.5 items-center rounded text-[10px] font-semibold uppercase tracking-wider ${m.role === "user" ? "bg-muted text-muted-foreground" : "bg-primary/10 text-primary"}`}>
+                                  {m.role === "user" ? "you" : "ai"}
+                                </span>
+                                <span className="text-foreground">{m.text}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </ScrollArea>
+                      )}
+                      <div className="flex gap-2">
+                        <Input
+                          type="text"
+                          placeholder='e.g. "Change background to dark"'
+                          value={chatInput}
+                          onChange={(e) => setChatInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && !e.shiftKey) {
+                              e.preventDefault();
+                              sendChatMessage(chatInput);
+                            }
+                          }}
+                          disabled={chatBusy}
+                          data-testid="input-chat-instruction"
+                        />
+                        <Button
+                          type="button"
+                          onClick={() => sendChatMessage(chatInput)}
+                          disabled={chatBusy || chatInput.trim().length === 0}
+                          data-testid="button-chat-send"
+                        >
+                          {chatBusy ? "Thinking…" : "Send"}
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ) : (
+                  <Card>
+                    <CardContent className="py-8 text-center text-sm text-muted-foreground">
+                      Parse a source first to enable the refinement assistant.
+                    </CardContent>
+                  </Card>
+                )}
+              </TabsContent>
+            </div>
+          </Tabs>
+        </section>
       </div>
     </div>
   );
 }
+
 
