@@ -173,6 +173,50 @@ export function computeStyles(
   return own;
 }
 
+/**
+ * Cascade `:hover`-state declarations that apply to `el`. Mirrors
+ * `computeOwnStyles` but restricted to rules whose selector contains
+ * `:hover`. The pseudo-class is stripped out before matching against
+ * the (hover-less) DOM so JSDOM's `matches()` returns true for any
+ * rule that would fire while the user hovers `el` — including both
+ * self-hover (`.btn:hover`) and ancestor-hover (`.btn:hover .icon`)
+ * patterns. Returns the resolved property → value map; an empty
+ * object means the element has no authored hover state.
+ *
+ * Only public API consumed for now is the small set of properties the
+ * native Style tab surfaces as "*-hover" controls (background-color,
+ * color, fill, …) — but the function returns the full cascaded map
+ * so future hover controls can opt in without changing this code.
+ */
+export function computeHoverStyles(el: Element, sheet: ParsedSheet): Record<string, string> {
+  type Pick = { value: string; weight: number; order: number };
+  const winners = new Map<string, Pick>();
+  let order = 0;
+  for (const rule of sheet.rules) {
+    if (!/:hover\b/i.test(rule.selector)) continue;
+    const stripped = rule.selector.replace(/:hover\b/gi, "").trim();
+    if (!stripped) continue;
+    let matched = false;
+    try {
+      matched = (el as Element & { matches: (s: string) => boolean }).matches(stripped);
+    } catch {
+      matched = false;
+    }
+    if (!matched) continue;
+    for (const [prop, decl] of Object.entries(rule.declarations)) {
+      const weight = (decl.important ? TIER_IMPORTANT_AUTHOR : TIER_NORMAL_AUTHOR) + rule.specificity;
+      const cur = winners.get(prop);
+      if (!cur || weight > cur.weight || (weight === cur.weight && order >= cur.order)) {
+        winners.set(prop, { value: decl.value, weight, order });
+      }
+    }
+    order++;
+  }
+  const out: Record<string, string> = {};
+  for (const [k, v] of winners) out[k] = v.value;
+  return out;
+}
+
 /** Cascade declarations declared *on* the element only — no inheritance walk. */
 function computeOwnStyles(el: Element, sheet: ParsedSheet): Record<string, string> {
   type Pick = { value: string; weight: number; order: number };

@@ -653,16 +653,20 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
             );
             if ( ! empty( $defaults['background_color'] ) ) $bg_args['default'] = (string) $defaults['background_color'];
             $this->add_control( $g['id'] . '_native_bg', $bg_args );
-            $this->add_control( $g['id'] . '_native_bg_hover', array(
+            $bg_hover_args = array(
                 'label'     => esc_html__( 'Background Color (Hover)', 'wpb' ),
                 'type'      => \\Elementor\\Controls_Manager::COLOR,
                 'selectors' => array( $sel . ':hover' => 'background-color: {{VALUE}};' ),
-            ) );
-            $this->add_control( $g['id'] . '_native_color_hover', array(
+            );
+            if ( ! empty( $defaults['background_color_hover'] ) ) $bg_hover_args['default'] = (string) $defaults['background_color_hover'];
+            $this->add_control( $g['id'] . '_native_bg_hover', $bg_hover_args );
+            $color_hover_args = array(
                 'label'     => esc_html__( 'Text Color (Hover)', 'wpb' ),
                 'type'      => \\Elementor\\Controls_Manager::COLOR,
                 'selectors' => array( $sel . ':hover' => 'color: {{VALUE}};' ),
-            ) );
+            );
+            if ( ! empty( $defaults['color_hover'] ) ) $color_hover_args['default'] = (string) $defaults['color_hover'];
+            $this->add_control( $g['id'] . '_native_color_hover', $color_hover_args );
             if ( class_exists( '\\Elementor\\Group_Control_Border' ) ) {
                 $border_args = array(
                     'name'     => $g['id'] . '_native_border',
@@ -771,11 +775,13 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
             );
             if ( ! empty( $defaults['color'] ) ) $icon_color_args['default'] = (string) $defaults['color'];
             $this->add_control( $g['id'] . '_native_icon_color', $icon_color_args );
-            $this->add_control( $g['id'] . '_native_icon_color_hover', array(
+            $icon_color_hover_args = array(
                 'label'     => esc_html__( 'Icon Color (Hover)', 'wpb' ),
                 'type'      => \\Elementor\\Controls_Manager::COLOR,
                 'selectors' => array( $sel . ':hover' => 'color: {{VALUE}}; fill: {{VALUE}};' ),
-            ) );
+            );
+            if ( ! empty( $defaults['color_hover'] ) ) $icon_color_hover_args['default'] = (string) $defaults['color_hover'];
+            $this->add_control( $g['id'] . '_native_icon_color_hover', $icon_color_hover_args );
             $icon_size_args = array(
                 'label'      => esc_html__( 'Size', 'wpb' ),
                 'type'       => \\Elementor\\Controls_Manager::SLIDER,

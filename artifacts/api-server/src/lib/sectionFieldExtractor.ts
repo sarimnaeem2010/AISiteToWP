@@ -4,6 +4,7 @@ import { decomposeSectionToNative } from "./nativeElementorDecomposer";
 import {
   parseStylesheet,
   computeStyles,
+  computeHoverStyles,
   buildTypography,
   parseDimensions,
   parseLength,
@@ -504,6 +505,23 @@ function resolveLeafDefaults(
   // ---- background (button: normal + hover; image/icon: normal) ----
   if (styles["background-color"] && styles["background-color"] !== "transparent") {
     out.background_color = styles["background-color"].trim();
+  }
+
+  // ---- :hover-state defaults ----
+  // Resolve hover declarations once per leaf and surface the small
+  // subset the native Style tab exposes as "*-hover" controls. We
+  // intentionally ignore "transparent" backgrounds so a default-styled
+  // button doesn't get its hover swatch pre-filled with a value the
+  // user can't visually distinguish from "unset".
+  const hover = computeHoverStyles(el, sheet);
+  if (hover["color"]) out.color_hover = hover["color"].trim();
+  if (hover["background-color"] && hover["background-color"] !== "transparent") {
+    out.background_color_hover = hover["background-color"].trim();
+  }
+  // Icon glyphs use `fill` (SVG) more often than `color`; fall back to
+  // it so the icon hover swatch matches the live page.
+  if (kind === "icon" && !out.color_hover && hover["fill"]) {
+    out.color_hover = hover["fill"].trim();
   }
 
   // ---- padding (button, image, icon — universal-enough to always emit) ----
