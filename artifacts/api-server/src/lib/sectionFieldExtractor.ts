@@ -7,6 +7,7 @@ import {
   buildTypography,
   parseDimensions,
   parseLength,
+  expandBorderShorthand,
   type ParsedSheet,
 } from "./cssStyleResolver";
 
@@ -469,8 +470,14 @@ function resolveLeafDefaults(
   kind: NativeWidgetKind,
 ): NativeDefaultStyles | undefined {
   if (!sheet) return undefined;
-  const styles = computeStyles(el, sheet);
-  if (!styles || Object.keys(styles).length === 0) return undefined;
+  const raw = computeStyles(el, sheet);
+  if (!raw || Object.keys(raw).length === 0) return undefined;
+  // Expand `border:` shorthand into width/style/color longhands so the
+  // border parser below picks up the very common authored pattern
+  // `border: 1px solid #ccc`. computeStyles preserves declarations
+  // as-authored, so without this step shorthand-only borders would
+  // never reach the Style tab as defaults.
+  const styles = expandBorderShorthand(raw);
 
   const out: NativeDefaultStyles = {};
 
@@ -618,6 +625,12 @@ function buildSectionTemplate(
     // ---- IMAGE ----
     if (tag === "IMG") {
       const gid = nextGroupId();
+      // Resolve cascaded style defaults BEFORE any DOM mutation so the
+      // selector engine sees the element exactly as the source page
+      // authored it. Class injection (tagLeaf) and placeholder text
+      // substitution would otherwise risk skewing edge-case attribute
+      // selectors like `[class="foo"]` (exact match).
+      const defaultStyles = resolveLeafDefaults(el, opts.sheet, "image");
       const leafClass = tagLeaf(el, gid);
       const srcKey = `${gid}_image`;
       const altKey = `${gid}_alt`;
@@ -646,7 +659,7 @@ function buildSectionTemplate(
         controls,
         nativeWidget: "image",
         leafClass,
-        defaultStyles: resolveLeafDefaults(el, opts.sheet, "image"),
+        defaultStyles,
       });
       continue;
     }
@@ -654,6 +667,7 @@ function buildSectionTemplate(
     // ---- HEADING ----
     if (HEADING_TAGS.has(tag)) {
       const gid = nextGroupId();
+      const defaultStyles = resolveLeafDefaults(el, opts.sheet, "heading");
       const leafClass = tagLeaf(el, gid);
       const textKey = `${gid}_text`;
       const tagKey = `${gid}_tag`;
@@ -701,7 +715,7 @@ function buildSectionTemplate(
         ],
         nativeWidget: "heading",
         leafClass,
-        defaultStyles: resolveLeafDefaults(el, opts.sheet, "heading"),
+        defaultStyles,
       });
       continue;
     }
@@ -709,6 +723,7 @@ function buildSectionTemplate(
     // ---- LIST ----
     if (tag === "UL" || tag === "OL") {
       const gid = nextGroupId();
+      const defaultStyles = resolveLeafDefaults(el, opts.sheet, "icon-list");
       const leafClass = tagLeaf(el, gid);
       const itemsKey = `${gid}_items`;
       const items = Array.from(el.children)
@@ -741,7 +756,7 @@ function buildSectionTemplate(
         ],
         nativeWidget: "icon-list",
         leafClass,
-        defaultStyles: resolveLeafDefaults(el, opts.sheet, "icon-list"),
+        defaultStyles,
       });
       continue;
     }
@@ -749,6 +764,7 @@ function buildSectionTemplate(
     // ---- ICON ----
     if (isIconLeaf(el)) {
       const gid = nextGroupId();
+      const defaultStyles = resolveLeafDefaults(el, opts.sheet, "icon");
       const leafClass = tagLeaf(el, gid);
       const classKey = `${gid}_icon_class`;
       const altKey = `${gid}_icon_alt`;
@@ -786,7 +802,7 @@ function buildSectionTemplate(
         ],
         nativeWidget: "icon",
         leafClass,
-        defaultStyles: resolveLeafDefaults(el, opts.sheet, "icon"),
+        defaultStyles,
       });
       continue;
     }
@@ -794,6 +810,7 @@ function buildSectionTemplate(
     // ---- BUTTON / LINK ----
     if (tag === "BUTTON" || tag === "A") {
       const gid = nextGroupId();
+      const defaultStyles = resolveLeafDefaults(el, opts.sheet, "button");
       const leafClass = tagLeaf(el, gid);
       const textKey = `${gid}_text`;
       const text = takeText(el, textKey);
@@ -853,7 +870,7 @@ function buildSectionTemplate(
         // ship a "link" widget — the closest match is Button.
         nativeWidget: "button",
         leafClass,
-        defaultStyles: resolveLeafDefaults(el, opts.sheet, "button"),
+        defaultStyles,
       });
       continue;
     }
@@ -861,6 +878,7 @@ function buildSectionTemplate(
     // ---- PLAIN TEXT ----
     if (TEXT_PARENTS.has(tag)) {
       const gid = nextGroupId();
+      const defaultStyles = resolveLeafDefaults(el, opts.sheet, "text-editor");
       const leafClass = tagLeaf(el, gid);
       const textKey = `${gid}_text`;
       const text = takeText(el, textKey);
@@ -886,7 +904,7 @@ function buildSectionTemplate(
         // paragraph or label expects.
         nativeWidget: "text-editor",
         leafClass,
-        defaultStyles: resolveLeafDefaults(el, opts.sheet, "text-editor"),
+        defaultStyles,
       });
     }
   }

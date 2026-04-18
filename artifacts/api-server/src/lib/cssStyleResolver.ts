@@ -383,6 +383,84 @@ function assembleLonghand(
   };
 }
 
+/**
+ * Expand the CSS `border` shorthand into width/style/color longhands and
+ * fill in any of those longhands that aren't already present in the
+ * styles map. Mutates a returned copy so callers don't have to know
+ * about cascade order — the rule is that explicit longhand declarations
+ * win over the shorthand fallback (matching CSS authoring expectations
+ * and the way `computeStyles` already handles other shorthand cases is
+ * to leave them as-authored, so this helper opts in to expansion).
+ *
+ * Examples accepted:
+ *   "1px solid #ccc"   -> width=1px, style=solid, color=#ccc
+ *   "solid 2px"        -> width=2px, style=solid (no color)
+ *   "thin"             -> style=thin     (CSS line-width keyword; we
+ *                                          don't try to translate to px,
+ *                                          so the caller falls back to
+ *                                          UA defaults)
+ *   "rgb(0, 0, 0) 1px" -> color=rgb(...), width=1px
+ *   "none"             -> style=none     (signals "no border")
+ *
+ * Returns a NEW object — never mutates input.
+ */
+export function expandBorderShorthand(styles: Record<string, string>): Record<string, string> {
+  const out = { ...styles };
+  const sh = (out["border"] ?? "").trim();
+  if (!sh) return out;
+  // Tokenize while preserving function calls — rgb(...), hsl(...),
+  // var(--x), etc. need to stay intact even though they contain spaces
+  // and parens. A small depth counter does the trick.
+  const tokens: string[] = [];
+  let depth = 0;
+  let cur = "";
+  for (const ch of sh) {
+    if (ch === "(") {
+      depth++;
+      cur += ch;
+    } else if (ch === ")") {
+      depth = Math.max(0, depth - 1);
+      cur += ch;
+    } else if (/\s/.test(ch) && depth === 0) {
+      if (cur) {
+        tokens.push(cur);
+        cur = "";
+      }
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur) tokens.push(cur);
+  const styleKeywords = new Set([
+    "none",
+    "hidden",
+    "dotted",
+    "dashed",
+    "solid",
+    "double",
+    "groove",
+    "ridge",
+    "inset",
+    "outset",
+  ]);
+  for (const t of tokens) {
+    const lower = t.toLowerCase();
+    if (parseLength(t)) {
+      // Width — only fill if the longhand isn't already authored.
+      if (!out["border-width"]) out["border-width"] = t;
+      continue;
+    }
+    if (styleKeywords.has(lower)) {
+      if (!out["border-style"]) out["border-style"] = lower;
+      continue;
+    }
+    // Anything that wasn't a length or a style keyword is treated as a
+    // color (named, hex, rgb/hsl func, var(), currentColor, etc.).
+    if (!out["border-color"]) out["border-color"] = t;
+  }
+  return out;
+}
+
 export function buildBorder(styles: Record<string, string>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   const bw = parseDimensions(styles["border-width"]);
