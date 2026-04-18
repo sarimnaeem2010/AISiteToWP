@@ -3,7 +3,7 @@ import { Link, useParams, useLocation } from "wouter";
 import { z } from "zod";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Check, ChevronDown, Download, FileCode2, Globe, LayoutTemplate, Settings2, Trash2, Shield, UploadCloud, Eye, AlertCircle, Database, Layers, Sparkles, Palette, Ruler, Type as TypeIcon, CornerDownRight, RefreshCw, Send, Menu, MessageSquare, Image as ImageIcon, AlignLeft, Component, HelpCircle, DollarSign, Users } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Download, FileCode2, Globe, LayoutTemplate, Settings2, Trash2, Shield, UploadCloud, Eye, AlertCircle, Database, Layers, Sparkles, Palette, Ruler, Type as TypeIcon, CornerDownRight, RefreshCw, Send, Image as ImageIcon, AlignLeft, Component, HelpCircle, DollarSign, Users, Link as LinkIcon, ClipboardPaste } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -18,7 +18,6 @@ import { useToast } from "@/hooks/use-toast";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 
 // Map common section type strings to a representative lucide icon for the
 // left-rail "Detected sections" list. Falls back to Component for unknown types.
@@ -591,16 +590,30 @@ export default function ProjectWorkspace() {
     reason: string | null;
   } | null>(null);
   const [pushing, setPushing] = useState(false);
-  const [activeTab, setActiveTab] = useState<string>("overview");
+  // Active step in the new step-flow: source / sections / mapping / design / wp / deploy.
+  // Defaults to "source" but jumps to "sections" once the project has a parsed
+  // structure (handled in the init effect below) so returning users land on
+  // the most useful view.
+  const [activeTab, setActiveTab] = useState<string>("source");
+  const [tabInitialized, setTabInitialized] = useState(false);
   const [activeSection, setActiveSection] = useState<number>(0);
-  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
-  // Scroll-linked active section: keep the left-rail highlight in sync with
-  // the section card the user is currently viewing inside the Overview tab.
-  // Re-runs whenever the section count or the active tab changes.
+  // First-load initial step: if the project is already parsed, land on the
+  // Sections step; otherwise stay on Source. Runs once per mount.
+  useEffect(() => {
+    if (!project || tabInitialized) return;
+    if (project.parsedSite && project.parsedSite.pages?.length) {
+      setActiveTab("sections");
+    }
+    setTabInitialized(true);
+  }, [project, tabInitialized]);
+
+  // Scroll-linked active section: keep the in-step section nav highlight
+  // in sync with the section card the user is currently viewing inside the
+  // Sections step. Re-runs whenever the section count or the active step changes.
   const sectionCount = project?.parsedSite?.pages?.[0]?.sections?.length ?? 0;
   useEffect(() => {
-    if (activeTab !== "overview" || sectionCount === 0) return;
+    if (activeTab !== "sections" || sectionCount === 0) return;
     const els: HTMLElement[] = [];
     for (let i = 0; i < sectionCount; i += 1) {
       const el = document.getElementById(`section-${i}`);
@@ -996,14 +1009,13 @@ export default function ProjectWorkspace() {
   const tokenCount = tokenColors.length;
   const isParsed = currentStep >= 2 && !!project.parsedSite;
 
-  // Smooth-scroll to a section anchor in the Overview tab. If the user
-  // clicked a section while a different tab was open, switch back first.
+  // Smooth-scroll to a section anchor inside the Sections step. If the user
+  // clicked a section while a different step was open, switch back first.
   const jumpToSection = (idx: number) => {
     setActiveSection(idx);
-    setMobileNavOpen(false);
-    if (activeTab !== "overview") {
-      setActiveTab("overview");
-      // Wait a frame for the Overview tab to mount before scrolling.
+    if (activeTab !== "sections") {
+      setActiveTab("sections");
+      // Wait a frame for the Sections step to mount before scrolling.
       requestAnimationFrame(() => {
         const el = document.getElementById(`section-${idx}`);
         if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -1017,437 +1029,534 @@ export default function ProjectWorkspace() {
   const statusLabel = (project.status || "").toUpperCase();
   const isDeployable = currentStep >= 3;
 
-  // Left-rail content (used both in desktop sidebar and mobile sheet).
-  const RailContent = () => (
-    <div className="flex h-full flex-col gap-6 p-5">
-      <div className="space-y-2 min-w-0">
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-          Project
-        </div>
-        <button
-          type="button"
-          onClick={() => { setActiveTab("overview"); setMobileNavOpen(false); }}
-          className="flex w-full items-center gap-2 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2.5 text-left text-sm font-medium text-foreground transition-colors hover:bg-primary/10"
-          data-testid="rail-source-file"
-        >
-          <FileCode2 className="h-4 w-4 text-primary shrink-0" />
-          <span className="truncate font-mono text-[12px]">{sourceFileName}</span>
-        </button>
-        <p className="px-1 text-[11px] text-muted-foreground truncate" title={project.name}>
-          {project.name}
-        </p>
-      </div>
-
-      {railSections.length > 0 && (
-        <div className="space-y-2 min-w-0">
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Detected sections
-          </div>
-          <nav className="space-y-0.5">
-            {railSections.map((s, i) => {
-              const Icon = sectionIconFor(s.type);
-              const active = activeSection === i && activeTab === "overview";
-              return (
-                <button
-                  key={i}
-                  type="button"
-                  onClick={() => jumpToSection(i)}
-                  aria-current={active ? "true" : undefined}
-                  className={`group flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm transition-colors ${
-                    active
-                      ? "bg-muted text-foreground font-medium"
-                      : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-                  }`}
-                  data-testid={`rail-section-${i}`}
-                >
-                  <Icon className={`h-4 w-4 shrink-0 ${active ? "text-primary" : "text-muted-foreground group-hover:text-foreground"}`} />
-                  <span className="truncate">{prettyType(s.type)}</span>
-                </button>
-              );
-            })}
-          </nav>
-        </div>
-      )}
-
-      <div className="mt-auto space-y-1">
-        <Link href={`/projects/${id}/preview`}>
-          <Button variant="outline" size="sm" className="w-full justify-start">
-            <Eye className="h-3.5 w-3.5" />
-            Preview
-          </Button>
-        </Link>
-        <Link href="/app">
-          <Button variant="ghost" size="sm" className="w-full justify-start text-muted-foreground">
-            ← All projects
-          </Button>
-        </Link>
-      </div>
-    </div>
-  );
+  // ── Step-flow definitions ────────────────────────────────────────────
+  // The 6 user-facing steps. "refine" is intentionally hidden from the bar
+  // (the chat code is preserved below for future re-enablement).
+  const STEPS: Array<{ key: string; label: string; icon: typeof FileCode2 }> = [
+    { key: "source",   label: "Source",    icon: FileCode2 },
+    { key: "sections", label: "Sections",  icon: LayoutTemplate },
+    { key: "mapping",  label: "Mapping",   icon: Layers },
+    { key: "design",   label: "Design",    icon: Palette },
+    { key: "wp",       label: "WP Target", icon: Settings2 },
+    { key: "deploy",   label: "Deploy",    icon: UploadCloud },
+  ];
+  const stepIndex = Math.max(0, STEPS.findIndex((s) => s.key === activeTab));
+  const isStepDone = (key: string): boolean => {
+    switch (key) {
+      case "source":   return !!(proj.sourceHtml || proj.uploadedFiles || proj.parsedSite);
+      case "sections": return !!project.parsedSite;
+      case "mapping":  return !!project.parsedSite;
+      case "design":   return !!project.parsedSite && (project.designSystem?.colors?.length ?? 0) > 0;
+      case "wp":       return !!project.wpConfig?.wpUrl;
+      case "deploy":   return project.status === "pushed";
+      default:         return false;
+    }
+  };
 
   return (
-    <div className="-mx-4 sm:-mx-6 lg:-mx-10 -my-8 min-h-[calc(100vh-0px)] bg-background animate-in fade-in duration-500">
-      <div className="grid grid-cols-1 lg:grid-cols-[260px_1fr]">
-        {/* Left rail — desktop */}
-        <aside className="hidden lg:block border-r border-border bg-muted/20 sticky top-0 self-start h-screen overflow-y-auto">
-          <RailContent />
-        </aside>
-
-        {/* Right pane */}
-        <section className="min-w-0 flex flex-col">
-          {/* Sticky header — status + meta + primary CTA */}
-          <header className="sticky top-0 z-20 border-b border-border bg-background/85 backdrop-blur-md">
-            <div className="flex items-center gap-3 px-4 sm:px-6 lg:px-8 py-3">
-              {/* Mobile rail toggle */}
-              <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
-                <SheetTrigger asChild>
-                  <Button variant="ghost" size="icon" className="lg:hidden -ml-2 h-8 w-8" aria-label="Open project navigation">
-                    <Menu className="h-4 w-4" />
-                  </Button>
-                </SheetTrigger>
-                <SheetContent side="left" className="p-0 w-72">
-                  <RailContent />
-                </SheetContent>
-              </Sheet>
-
-              <div className="flex items-center gap-2 min-w-0 flex-1">
+    <div className="-mx-4 sm:-mx-6 lg:-mx-10 -my-8 min-h-screen bg-background animate-in fade-in duration-500">
+      {/* ── Sticky top header strip ──────────────────────────────────── */}
+      <header className="sticky top-0 z-30 border-b border-border bg-background/90 backdrop-blur-md">
+        <div className="px-4 sm:px-6 lg:px-10 py-3 flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-3 min-w-0">
+            <Link href="/app">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 -ml-2 text-muted-foreground"
+                data-testid="link-all-projects"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">All projects</span>
+              </Button>
+            </Link>
+            <div className="hidden sm:block h-6 w-px bg-border" />
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <h1 className="text-[15px] font-semibold truncate" title={project.name} data-testid="project-name">
+                  {project.name}
+                </h1>
                 <span
-                  className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium ${
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-medium shrink-0 ${
                     statusBadgeClass[project.status] || statusBadgeClass.created
                   }`}
                   data-testid="status-pill"
                 >
-                  <span className={`h-1.5 w-1.5 rounded-full ${
-                    project.status === "pushed" ? "bg-emerald-500" :
-                    project.status === "configured" ? "bg-amber-500" :
-                    project.status === "parsed" ? "bg-blue-500" :
-                    project.status === "error" ? "bg-destructive" :
-                    "bg-muted-foreground"
-                  }`} />
+                  <span
+                    className={`h-1.5 w-1.5 rounded-full ${
+                      project.status === "pushed" ? "bg-emerald-500" :
+                      project.status === "configured" ? "bg-amber-500" :
+                      project.status === "parsed" ? "bg-blue-500" :
+                      project.status === "error" ? "bg-destructive" :
+                      "bg-muted-foreground"
+                    }`}
+                  />
                   {prettyType(statusLabel)}
                 </span>
-                {isParsed && (
-                  <span className="hidden sm:inline text-[12px] text-muted-foreground truncate">
-                    {widgetCount} {widgetCount === 1 ? "widget" : "widgets"}
-                    {tokenCount > 0 ? ` · ${tokenCount} tokens` : ""}
-                  </span>
-                )}
-                <div className="hidden md:flex items-center gap-2 ml-1">
-                  <ProjectAiStatusPill projectId={id!} refreshSignal={aiStatusRefreshTick} />
-                </div>
               </div>
-
-              <div className="flex items-center gap-1.5 shrink-0">
-                {project.status !== "created" && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="hidden sm:inline-flex h-8"
-                    onClick={() => {
-                      const base = import.meta.env.BASE_URL;
-                      window.location.href = `${base}api/projects/${id}/astro-export`;
-                    }}
-                    data-testid="header-export-astro"
-                  >
-                    <FileCode2 className="h-3.5 w-3.5" />
-                    Astro
-                  </Button>
+              <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground mt-0.5 min-w-0">
+                <FileCode2 className="h-3 w-3 shrink-0 text-primary/70" />
+                <span className="font-mono truncate" data-testid="header-source-file">{sourceFileName}</span>
+                {project.wpConfig?.wpUrl && (
+                  <>
+                    <span className="text-border">·</span>
+                    <Globe className="h-3 w-3 shrink-0" />
+                    <span className="truncate">{project.wpConfig.wpUrl}</span>
+                  </>
                 )}
-                <Link href={`/projects/${id}/plugin`} className="hidden sm:inline-block">
-                  <Button variant="ghost" size="sm" className="h-8">
-                    <Download className="h-3.5 w-3.5" />
-                    Plugin
-                  </Button>
-                </Link>
-                <AlertDialog>
-                  <AlertDialogTrigger asChild>
-                    <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" aria-label="Delete project">
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>Delete project</AlertDialogTitle>
-                      <AlertDialogDescription>
-                        Are you sure you want to delete this conversion project? This cannot be undone.
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Cancel</AlertDialogCancel>
-                      <AlertDialogAction onClick={onDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
-                        Delete
-                      </AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1.5 shrink-0">
+            <div className="hidden md:flex items-center gap-2 mr-1">
+              <ProjectAiStatusPill projectId={id!} refreshSignal={aiStatusRefreshTick} />
+            </div>
+            {project.status !== "created" && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="hidden md:inline-flex h-8"
+                onClick={() => {
+                  const base = import.meta.env.BASE_URL;
+                  window.location.href = `${base}api/projects/${id}/astro-export`;
+                }}
+                data-testid="header-export-astro"
+              >
+                <FileCode2 className="h-3.5 w-3.5" />
+                Astro
+              </Button>
+            )}
+            <Link href={`/projects/${id}/plugin`} className="hidden md:inline-block">
+              <Button variant="ghost" size="sm" className="h-8">
+                <Download className="h-3.5 w-3.5" />
+                Plugin
+              </Button>
+            </Link>
+            <Link href={`/projects/${id}/preview`} className="hidden sm:inline-block">
+              <Button variant="outline" size="sm" className="h-8" data-testid="header-preview">
+                <Eye className="h-3.5 w-3.5" />
+                Preview
+              </Button>
+            </Link>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
                 <Button
-                  size="sm"
-                  className="h-8"
-                  onClick={onPush}
-                  disabled={pushing || !isDeployable}
-                  title={isDeployable ? "Push project to WordPress" : "Configure WordPress target first"}
-                  data-testid="header-push-button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                  aria-label="Delete project"
                 >
-                  <Send className="h-3.5 w-3.5" />
-                  {pushing ? "Pushing…" : "Push to WordPress"}
+                  <Trash2 className="h-3.5 w-3.5" />
                 </Button>
-              </div>
-            </div>
-            {/* Sub-header: project name */}
-            <div className="px-4 sm:px-6 lg:px-8 pb-3 -mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-              <Globe className="h-3 w-3 shrink-0" />
-              <span className="truncate">{project.wpConfig?.wpUrl || "No target URL configured"}</span>
-              <span className="mx-1 text-border">·</span>
-              <span className="font-mono text-[10px] truncate">id {project.id.slice(0, 8)}</span>
-            </div>
-          </header>
-
-          {/* Tabs */}
-          <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1">
-            <div className="border-b border-border bg-background px-4 sm:px-6 lg:px-8">
-              <TabsList className="h-10 w-full justify-start gap-1 rounded-none bg-transparent p-0 overflow-x-auto">
-                {[
-                  { v: "overview",  label: "Overview" },
-                  { v: "source",    label: "Source" },
-                  { v: "mapping",   label: "Mapping" },
-                  { v: "design",    label: "Design" },
-                  { v: "wordpress", label: "WordPress" },
-                  { v: "deploy",    label: "Deploy" },
-                  { v: "refine",    label: "Refine" },
-                ].map((t) => (
-                  <TabsTrigger
-                    key={t.v}
-                    value={t.v}
-                    className="relative h-10 rounded-none border-b-2 border-transparent bg-transparent px-3 text-[13px] font-medium text-muted-foreground shadow-none data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
-                    data-testid={`tab-${t.v}`}
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete project</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Are you sure you want to delete this conversion project? This cannot be undone.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={onDelete}
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                   >
-                    {t.label}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-            </div>
+                    Delete
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+            <Button
+              size="sm"
+              className="h-8"
+              onClick={onPush}
+              disabled={pushing || !isDeployable}
+              title={isDeployable ? "Push project to WordPress" : "Configure WordPress target first"}
+              data-testid="header-push-button"
+            >
+              <Send className="h-3.5 w-3.5" />
+              {pushing ? "Pushing…" : "Push to WordPress"}
+            </Button>
+          </div>
+        </div>
 
-            <div className="px-4 sm:px-6 lg:px-8 py-6 max-w-5xl">
-              {/* ─── Overview ─────────────────────────────────────────── */}
-              <TabsContent value="overview" className="mt-0 space-y-4">
-                {project.status === "created" && (
-                  <Card>
-                    <CardHeader>
-                      <CardTitle>Waiting for structure</CardTitle>
-                      <CardDescription>Parse a source to continue.</CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <Link href="/projects/new">
-                        <Button>Go to parse step</Button>
-                      </Link>
-                    </CardContent>
-                  </Card>
-                )}
-
-                {isParsed && project.parsedSite!.pages.flatMap((p) => p.sections).map((section, idx) => {
-                  const isHero = idx === 0;
-                  const Icon = sectionIconFor(section.type);
-                  return (
-                    <div
-                      key={idx}
-                      id={`section-${idx}`}
-                      className={`rounded-xl border-2 px-5 py-5 transition-colors ${
-                        isHero
-                          ? "border-dashed border-primary/40 bg-primary/5"
-                          : "border-border bg-card"
+        {/* ── Stepper bar ──────────────────────────────────────────── */}
+        <div className="border-t border-border bg-muted/20">
+          <div className="px-4 sm:px-6 lg:px-10 py-3">
+            {/* Desktop: horizontal numbered stepper */}
+            <ol className="hidden md:flex items-center gap-1" data-testid="step-bar">
+              {STEPS.map((s, i) => {
+                const done = isStepDone(s.key);
+                const current = activeTab === s.key;
+                const Icon = s.icon;
+                return (
+                  <li key={s.key} className="flex items-center flex-1 last:flex-none min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab(s.key)}
+                      aria-current={current ? "step" : undefined}
+                      className={`group flex items-center gap-2.5 rounded-md px-2.5 py-1.5 transition-colors min-w-0 ${
+                        current
+                          ? "bg-primary/10 text-foreground"
+                          : "hover:bg-muted text-muted-foreground hover:text-foreground"
                       }`}
-                      data-testid={`overview-section-${idx}`}
+                      data-testid={`step-${s.key}`}
                     >
-                      <div className="flex items-center justify-between gap-3 mb-4">
-                        <div className="flex items-center gap-2">
-                          <Icon className={`h-4 w-4 ${isHero ? "text-primary" : "text-muted-foreground"}`} />
-                          <span className={`text-[11px] font-semibold uppercase tracking-wider ${isHero ? "text-primary" : "text-muted-foreground"}`}>
-                            {prettyType(section.type)}
-                            {isHero ? " · Elementor section" : ""}
-                          </span>
-                        </div>
-                        <span className="font-mono text-[10px] text-muted-foreground">
-                          section-{String(idx + 1).padStart(2, "0")}
-                        </span>
-                      </div>
-                      <div className="space-y-2.5">
-                        <div className="h-3 w-full rounded bg-foreground/80" />
-                        <div className="h-2 w-3/4 rounded bg-muted-foreground/40" />
-                      </div>
-                      {isHero && (
-                        <div className="mt-4 flex items-center gap-2">
-                          <div className="h-7 w-24 rounded-md bg-primary" />
-                          <div className="h-7 w-20 rounded-md border border-border bg-card" />
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+                      <span
+                        className={`h-7 w-7 rounded-full flex items-center justify-center text-[11px] font-semibold shrink-0 ${
+                          done
+                            ? "bg-primary text-primary-foreground"
+                            : current
+                              ? "bg-background border-2 border-primary text-primary"
+                              : "bg-muted border border-border text-muted-foreground"
+                        }`}
+                      >
+                        {done ? <Check className="h-3.5 w-3.5" /> : i + 1}
+                      </span>
+                      <span className={`text-[12px] font-medium truncate hidden lg:inline ${current ? "text-foreground" : ""}`}>
+                        {s.label}
+                      </span>
+                      <Icon className="h-3.5 w-3.5 shrink-0 lg:hidden" />
+                    </button>
+                    {i < STEPS.length - 1 && (
+                      <div
+                        className={`flex-1 h-px mx-1.5 ${done ? "bg-primary/40" : "bg-border"}`}
+                        aria-hidden
+                      />
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
 
-                {isParsed && tokenColors.length > 0 && (
-                  <div className="rounded-xl border border-border bg-card px-5 py-3.5 flex items-center gap-3 flex-wrap">
-                    <Palette className="h-4 w-4 text-muted-foreground shrink-0" />
-                    <div className="flex items-center gap-1.5">
-                      {tokenColors.map((c, i) => (
-                        <span
-                          key={i}
-                          className="h-5 w-5 rounded-full border border-border shadow-xs"
-                          style={{ backgroundColor: c }}
-                          title={c}
-                        />
-                      ))}
-                    </div>
-                    <span className="text-[12px] text-muted-foreground">Design tokens extracted</span>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 ml-auto text-xs"
-                      onClick={() => setActiveTab("design")}
-                    >
-                      Edit tokens →
-                    </Button>
+            {/* Mobile: dropdown + prev/next */}
+            <div className="md:hidden flex items-center gap-2">
+              <select
+                value={activeTab}
+                onChange={(e) => setActiveTab(e.target.value)}
+                className="flex-1 h-9 rounded-md border border-border bg-background px-3 text-sm font-medium"
+                data-testid="step-select"
+              >
+                {STEPS.map((s, i) => (
+                  <option key={s.key} value={s.key}>
+                    Step {i + 1} of {STEPS.length} — {s.label}{isStepDone(s.key) ? " ✓" : ""}
+                  </option>
+                ))}
+              </select>
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-9 w-9"
+                onClick={() => setActiveTab(STEPS[Math.max(0, stepIndex - 1)].key)}
+                disabled={stepIndex === 0}
+                aria-label="Previous step"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-9 w-9"
+                onClick={() => setActiveTab(STEPS[Math.min(STEPS.length - 1, stepIndex + 1)].key)}
+                disabled={stepIndex === STEPS.length - 1}
+                aria-label="Next step"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {/* ── Step content ────────────────────────────────────────────── */}
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1">
+        <div className="px-4 sm:px-6 lg:px-10 py-6 max-w-6xl mx-auto">
+          {/* ─── Sections ──────────────────────────────────────────── */}
+          <TabsContent value="sections" className="mt-0">
+            {!isParsed ? (
+              <Card>
+                <CardHeader>
+                  <CardTitle>Waiting for structure</CardTitle>
+                  <CardDescription>Add a source on the previous step to continue.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <Button onClick={() => setActiveTab("source")} data-testid="sections-empty-go-source">
+                    <ChevronLeft className="h-3.5 w-3.5" />
+                    Back to Source
+                  </Button>
+                </CardContent>
+              </Card>
+            ) : (
+              <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-6">
+                {/* In-step sections nav (was the page-level rail) */}
+                <aside className="lg:sticky lg:top-[180px] lg:self-start lg:max-h-[calc(100vh-200px)] lg:overflow-y-auto">
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">
+                    Detected sections
                   </div>
-                )}
+                  {railSections.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No sections detected on the first page.</p>
+                  ) : (
+                    <nav className="space-y-0.5" aria-label="Detected sections">
+                      {railSections.map((s, i) => {
+                        const Icon = sectionIconFor(s.type);
+                        const active = activeSection === i;
+                        return (
+                          <button
+                            key={i}
+                            type="button"
+                            onClick={() => jumpToSection(i)}
+                            aria-current={active ? "true" : undefined}
+                            className={`group flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors ${
+                              active
+                                ? "bg-muted text-foreground font-medium"
+                                : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                            }`}
+                            data-testid={`section-nav-${i}`}
+                          >
+                            <Icon className={`h-4 w-4 shrink-0 ${active ? "text-primary" : "text-muted-foreground group-hover:text-foreground"}`} />
+                            <span className="truncate">{prettyType(s.type)}</span>
+                          </button>
+                        );
+                      })}
+                    </nav>
+                  )}
+                </aside>
 
-                {/* Slim stepper at the bottom of overview for context */}
-                <div className="rounded-xl border border-border bg-muted/20 p-4 mt-2">
-                  <div className="flex items-center justify-between">
-                    {[
-                      { step: 1, label: "Source", icon: FileCode2 },
-                      { step: 2, label: "Parse", icon: LayoutTemplate },
-                      { step: 3, label: "Config", icon: Settings2 },
-                      { step: 4, label: "Deploy", icon: UploadCloud },
-                    ].map((s, i, arr) => {
-                      const done = currentStep > s.step;
-                      const active = currentStep === s.step;
-                      return (
-                        <div key={s.step} className="flex items-center flex-1 last:flex-none">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <div className={`h-7 w-7 rounded-full flex items-center justify-center text-xs ${
-                              done
-                                ? "bg-primary text-primary-foreground"
-                                : active
-                                  ? "bg-primary/10 text-primary border border-primary/30"
-                                  : "bg-muted text-muted-foreground"
-                            }`}>
-                              {done ? <Check className="h-3.5 w-3.5" /> : <s.icon className="h-3.5 w-3.5" />}
-                            </div>
-                            <span className={`text-[11px] font-medium ${active || done ? "text-foreground" : "text-muted-foreground"}`}>{s.label}</span>
+                {/* Section preview cards */}
+                <div className="space-y-4 min-w-0">
+                  {isParsed && (
+                    <div className="text-xs text-muted-foreground">
+                      {widgetCount} {widgetCount === 1 ? "widget" : "widgets"}
+                      {tokenCount > 0 ? ` · ${tokenCount} design tokens` : ""}
+                    </div>
+                  )}
+                  {project.parsedSite!.pages.flatMap((p) => p.sections).map((section, idx) => {
+                    const isHero = idx === 0;
+                    const Icon = sectionIconFor(section.type);
+                    return (
+                      <div
+                        key={idx}
+                        id={`section-${idx}`}
+                        className={`rounded-xl border-2 px-5 py-5 transition-colors ${
+                          isHero
+                            ? "border-dashed border-primary/40 bg-primary/5"
+                            : "border-border bg-card"
+                        }`}
+                        data-testid={`overview-section-${idx}`}
+                      >
+                        <div className="flex items-center justify-between gap-3 mb-4">
+                          <div className="flex items-center gap-2">
+                            <Icon className={`h-4 w-4 ${isHero ? "text-primary" : "text-muted-foreground"}`} />
+                            <span className={`text-[11px] font-semibold uppercase tracking-wider ${isHero ? "text-primary" : "text-muted-foreground"}`}>
+                              {prettyType(section.type)}
+                              {isHero ? " · Elementor section" : ""}
+                            </span>
                           </div>
-                          {i < arr.length - 1 && (
-                            <div className={`flex-1 h-px mx-2 ${done ? "bg-primary/40" : "bg-border"}`} />
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </TabsContent>
-
-              {/* ─── Source ───────────────────────────────────────────── */}
-              <TabsContent value="source" className="mt-0">
-                {currentStep >= 2 ? (
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="flex items-center gap-2">
-                        <FileCode2 className="h-5 w-5 text-primary" />
-                        Source files
-                      </CardTitle>
-                      <CardDescription>
-                        Re-upload a ZIP or paste source HTML to refresh the parsed structure and regenerate the per-section Elementor widgets.
-                      </CardDescription>
-                    </CardHeader>
-                    <CardContent className="space-y-5">
-                      <div className="flex items-center gap-3 flex-wrap">
-                        <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium ${
-                          proj.sourceHtml || proj.uploadedFiles
-                            ? "bg-emerald-50 text-emerald-700 border-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-900"
-                            : "bg-muted text-muted-foreground border-border"
-                        }`}>
-                          {proj.sourceHtml ? "Source HTML stored" : proj.uploadedFiles ? "ZIP files stored" : "No source on file"}
-                        </span>
-                        {!proj.sourceHtml && (
-                          <span className="text-xs text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
-                            <AlertCircle className="h-3.5 w-3.5" />
-                            Re-upload required to regenerate the Elementor widgets.
+                          <span className="font-mono text-[10px] text-muted-foreground">
+                            section-{String(idx + 1).padStart(2, "0")}
                           </span>
+                        </div>
+                        <div className="space-y-2.5">
+                          <div className="h-3 w-full rounded bg-foreground/80" />
+                          <div className="h-2 w-3/4 rounded bg-muted-foreground/40" />
+                        </div>
+                        {isHero && (
+                          <div className="mt-4 flex items-center gap-2">
+                            <div className="h-7 w-24 rounded-md bg-primary" />
+                            <div className="h-7 w-20 rounded-md border border-border bg-card" />
+                          </div>
                         )}
                       </div>
-                      <div className="grid gap-4 md:grid-cols-2">
-                        <div className="space-y-1.5">
-                          <Label className="text-xs">Re-upload ZIP</Label>
-                          <Input
-                            type="file"
-                            accept=".zip,application/zip"
-                            className="text-xs"
-                            onChange={(e) => {
-                              const f = e.target.files?.[0];
-                              if (f) reuploadZip(f);
-                              e.currentTarget.value = "";
-                            }}
-                            disabled={reparsing}
-                            data-testid="input-reupload-zip"
+                    );
+                  })}
+
+                  {tokenColors.length > 0 && (
+                    <div className="rounded-xl border border-border bg-card px-5 py-3.5 flex items-center gap-3 flex-wrap">
+                      <Palette className="h-4 w-4 text-muted-foreground shrink-0" />
+                      <div className="flex items-center gap-1.5">
+                        {tokenColors.map((c, i) => (
+                          <span
+                            key={i}
+                            className="h-5 w-5 rounded-full border border-border shadow-xs"
+                            style={{ backgroundColor: c }}
+                            title={c}
                           />
-                        </div>
-                        <div className="space-y-1.5">
-                          <Label className="text-xs">Or paste HTML</Label>
-                          <div className="flex gap-2">
-                            <Input
-                              type="text"
-                              placeholder="<html>…</html>"
-                              className="font-mono text-xs"
-                              value={pastedHtml}
-                              onChange={(e) => setPastedHtml(e.target.value)}
-                              disabled={reparsing}
-                              data-testid="input-paste-html"
-                            />
-                            <Button
-                              type="button"
-                              variant="outline"
-                              onClick={() => reparseHtml(pastedHtml)}
-                              disabled={reparsing || pastedHtml.trim().length === 0}
-                              data-testid="button-reparse-html"
-                            >
-                              {reparsing ? "Parsing…" : "Re-parse"}
-                            </Button>
-                          </div>
-                        </div>
-                        <div className="md:col-span-2 space-y-1.5">
-                          <Label className="text-xs">Or fetch from a live URL</Label>
-                          <div className="flex gap-2">
-                            <Input
-                              type="url"
-                              placeholder="https://example.com"
-                              value={scrapeUrlInput}
-                              onChange={(e) => setScrapeUrlInput(e.target.value)}
-                              disabled={reparsing}
-                              data-testid="input-scrape-url"
-                            />
-                            <Button
-                              type="button"
-                              variant="outline"
-                              onClick={() => scrapeFromUrl(scrapeUrlInput)}
-                              disabled={reparsing || scrapeUrlInput.trim().length === 0}
-                              data-testid="button-scrape-url"
-                            >
-                              <Globe className="h-3.5 w-3.5" />
-                              {reparsing ? "Fetching…" : "Scrape"}
-                            </Button>
-                          </div>
-                          <p className="text-[11px] text-muted-foreground mt-1">
-                            Public http(s) URLs only. Private/loopback addresses are blocked.
-                          </p>
-                        </div>
+                        ))}
                       </div>
-                    </CardContent>
-                  </Card>
-                ) : (
+                      <span className="text-[12px] text-muted-foreground">Design tokens extracted</span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 ml-auto text-xs"
+                        onClick={() => setActiveTab("design")}
+                      >
+                        Edit tokens →
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </TabsContent>
+
+              {/* ─── Source ───────────────────────────────────────────── */}
+              <TabsContent value="source" className="mt-0 space-y-4">
+                {/* Source summary — always visible so users know what's on file */}
+                <Card>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <FileCode2 className="h-4 w-4 text-primary" />
+                      Source on file
+                    </CardTitle>
+                    <CardDescription>
+                      {isParsed
+                        ? "Pick up where you left off, or import a fresh source below to regenerate the Elementor widgets."
+                        : "Pick how you'd like to bring your site into WP Bridge — upload, paste, or scrape."}
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium ${
+                        proj.sourceHtml || proj.uploadedFiles
+                          ? "bg-emerald-50 text-emerald-700 border-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-900"
+                          : "bg-muted text-muted-foreground border-border"
+                      }`}>
+                        <FileCode2 className="h-3 w-3" />
+                        {proj.sourceHtml ? "Source HTML stored" : proj.uploadedFiles ? "ZIP files stored" : "No source on file"}
+                      </span>
+                      {sourceFileName && (proj.sourceHtml || proj.uploadedFiles || isParsed) && (
+                        <span className="font-mono text-[12px] text-muted-foreground truncate" data-testid="source-filename">
+                          {sourceFileName}
+                        </span>
+                      )}
+                      {isParsed && (
+                        <span className="text-xs text-muted-foreground ml-auto">
+                          {widgetCount} {widgetCount === 1 ? "section" : "sections"} parsed
+                        </span>
+                      )}
+                    </div>
+                    {isParsed && (
+                      <div className="mt-3 pt-3 border-t border-border flex items-center justify-between flex-wrap gap-2">
+                        <span className="text-xs text-muted-foreground">Ready for the next step.</span>
+                        <Button size="sm" onClick={() => setActiveTab("sections")} data-testid="source-continue">
+                          Continue to Sections
+                          <ChevronRight className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    )}
+                    {!isParsed && (
+                      <p className="text-xs text-amber-700 dark:text-amber-400 mt-3 flex items-center gap-1.5">
+                        <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                        Add a source below to parse the structure and unlock the rest of the steps.
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* Three import options as side-by-side picker cards */}
+                <div className="grid gap-4 md:grid-cols-3">
+                  {/* URL */}
                   <Card>
-                    <CardContent className="py-8 text-center text-sm text-muted-foreground">
-                      Parse a source first to enable re-imports.
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm flex items-center gap-2">
+                        <LinkIcon className="h-4 w-4 text-primary" />
+                        Fetch a URL
+                      </CardTitle>
+                      <CardDescription className="text-xs">
+                        Best for live sites. Public http(s) only.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-2">
+                      <Input
+                        type="url"
+                        placeholder="https://example.com"
+                        value={scrapeUrlInput}
+                        onChange={(e) => setScrapeUrlInput(e.target.value)}
+                        disabled={reparsing}
+                        data-testid="input-scrape-url"
+                      />
+                      <Button
+                        type="button"
+                        className="w-full"
+                        onClick={() => scrapeFromUrl(scrapeUrlInput)}
+                        disabled={reparsing || scrapeUrlInput.trim().length === 0}
+                        data-testid="button-scrape-url"
+                      >
+                        <Globe className="h-3.5 w-3.5" />
+                        {reparsing ? "Fetching…" : isParsed ? "Re-scrape URL" : "Scrape site"}
+                      </Button>
                     </CardContent>
                   </Card>
-                )}
+
+                  {/* ZIP */}
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm flex items-center gap-2">
+                        <UploadCloud className="h-4 w-4 text-primary" />
+                        Upload a ZIP
+                      </CardTitle>
+                      <CardDescription className="text-xs">
+                        Multi-page sites with assets bundled.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <label className="block">
+                        <span className="sr-only">Re-upload ZIP</span>
+                        <Input
+                          type="file"
+                          accept=".zip,application/zip"
+                          className="text-xs"
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (f) reuploadZip(f);
+                            e.currentTarget.value = "";
+                          }}
+                          disabled={reparsing}
+                          data-testid="input-reupload-zip"
+                        />
+                      </label>
+                      <p className="text-[11px] text-muted-foreground mt-2">
+                        Drop a .zip; we'll find index.html automatically.
+                      </p>
+                    </CardContent>
+                  </Card>
+
+                  {/* Paste HTML */}
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm flex items-center gap-2">
+                        <ClipboardPaste className="h-4 w-4 text-primary" />
+                        Paste HTML
+                      </CardTitle>
+                      <CardDescription className="text-xs">
+                        Quick single-page experiments.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-2">
+                      <Input
+                        type="text"
+                        placeholder="<html>…</html>"
+                        className="font-mono text-xs"
+                        value={pastedHtml}
+                        onChange={(e) => setPastedHtml(e.target.value)}
+                        disabled={reparsing}
+                        data-testid="input-paste-html"
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full"
+                        onClick={() => reparseHtml(pastedHtml)}
+                        disabled={reparsing || pastedHtml.trim().length === 0}
+                        data-testid="button-reparse-html"
+                      >
+                        {reparsing ? "Parsing…" : "Parse HTML"}
+                      </Button>
+                    </CardContent>
+                  </Card>
+                </div>
               </TabsContent>
 
               {/* ─── Mapping ──────────────────────────────────────────── */}
@@ -1530,8 +1639,8 @@ export default function ProjectWorkspace() {
                 )}
               </TabsContent>
 
-              {/* ─── WordPress ────────────────────────────────────────── */}
-              <TabsContent value="wordpress" className="mt-0">
+              {/* ─── WP Target ────────────────────────────────────────── */}
+              <TabsContent value="wp" className="mt-0">
                 {currentStep >= 2 ? (
                   <Card>
                     <CardHeader>
@@ -1976,10 +2085,8 @@ export default function ProjectWorkspace() {
                   </Card>
                 )}
               </TabsContent>
-            </div>
-          </Tabs>
-        </section>
-      </div>
+        </div>
+      </Tabs>
     </div>
   );
 }
