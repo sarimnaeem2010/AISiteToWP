@@ -494,6 +494,49 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
     }
 
     /**
+     * Singular/plural display name for a leaf bucket. Bucket labels are
+     * intentionally short and content-free — they never embed the user-
+     * editable text of any individual leaf, so renaming a heading or
+     * button label inside the editor cannot change the section title.
+     */
+    private function wpb_kind_name( $kind, $plural ) {
+        $map = array(
+            'heading'     => array( 'Heading',   'Headings' ),
+            'text-editor' => array( 'Paragraph', 'Paragraphs' ),
+            'text'        => array( 'Text',      'Text' ),
+            'button'      => array( 'Button',    'Buttons' ),
+            'link'        => array( 'Link',      'Links' ),
+            'image'       => array( 'Image',     'Images' ),
+            'icon'        => array( 'Icon',      'Icons' ),
+            'icon-list'   => array( 'List',      'Lists' ),
+            'list'        => array( 'List',      'Lists' ),
+        );
+        if ( isset( $map[ $kind ] ) ) return $plural ? $map[ $kind ][1] : $map[ $kind ][0];
+        $fallback = ucwords( str_replace( '-', ' ', (string) $kind ) );
+        return $fallback === '' ? ( $plural ? 'Items' : 'Item' ) : $fallback;
+    }
+
+    /**
+     * "Headings", "Buttons (4)", "Image" — the section title shown in
+     * the Elementor sidebar. Pluralised + count-suffixed when the bucket
+     * has more than one leaf, so the user knows at a glance how many
+     * items hide inside that accordion before opening it.
+     */
+    private function wpb_bucket_label( $kind, $count ) {
+        if ( $count <= 1 ) return $this->wpb_kind_name( $kind, false );
+        return sprintf( '%s (%d)', $this->wpb_kind_name( $kind, true ), $count );
+    }
+
+    /**
+     * "Heading 1", "Button 2" — a content-free divider rendered above
+     * each leaf inside a multi-leaf bucket. The actual user-editable
+     * text never appears here; it lives only in the field below.
+     */
+    private function wpb_leaf_sub_label( $kind, $idx ) {
+        return $this->wpb_kind_name( $kind, false ) . ' ' . (int) $idx;
+    }
+
+    /**
      * Resolve the CSS selector for a group's leaf element. The extractor
      * tags every leaf with a stable 'wpb-leaf-{gid}' class in
      * 'legacy_native' mode; this helper returns the Elementor-style
@@ -892,82 +935,116 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
         // Falls back to the old flat fields[] list when groups are empty
         // (legacy theme upgrade path).
         if ( is_array( $this->wpb_groups ) && count( $this->wpb_groups ) > 0 ) {
+            // Bucket leaves by their semantic role (nativeWidget when
+            // available, otherwise group kind) so the Content tab shows
+            // a small number of clean sections — "Headings", "Buttons
+            // (4)", "Images" — instead of one accordion per leaf with
+            // the actual user text dumped into the section header.
+            // Order is preserved: each bucket appears the first time
+            // its kind is encountered in document order, and leaves
+            // inside a bucket stay in source order.
+            $buckets       = array();
+            $bucket_order  = array();
             foreach ( $this->wpb_groups as $g ) {
-                $section_id = 'wpb_grp_' . preg_replace( '/[^a-zA-Z0-9_]/', '_', $g['id'] ?? 'g' );
+                $kind = isset( $g['nativeWidget'] ) && $g['nativeWidget'] !== ''
+                    ? (string) $g['nativeWidget']
+                    : ( isset( $g['kind'] ) ? (string) $g['kind'] : 'item' );
+                if ( ! isset( $buckets[ $kind ] ) ) {
+                    $buckets[ $kind ]  = array();
+                    $bucket_order[]    = $kind;
+                }
+                $buckets[ $kind ][] = $g;
+            }
+            foreach ( $bucket_order as $kind ) {
+                $leaves = $buckets[ $kind ];
+                $count  = count( $leaves );
+                $section_id = 'wpb_bucket_' . preg_replace( '/[^a-zA-Z0-9_]/', '_', $kind );
+                $bucket_label = $this->wpb_bucket_label( $kind, $count );
                 $this->start_controls_section( $section_id, array(
-                    'label' => esc_html( $g['label'] ?? 'Section' ),
+                    'label' => esc_html( $bucket_label ),
                     'tab'   => \\Elementor\\Controls_Manager::TAB_CONTENT,
                 ) );
-                foreach ( ($g['controls'] ?? array()) as $c ) {
-                    $type = $this->wpb_control_type( $c['type'] ?? 'text' );
-                    $args = array(
-                        'label'       => esc_html( $c['label'] ?? $c['key'] ),
-                        'type'        => $type,
-                        'label_block' => true,
-                    );
-                    if ( $type === \\Elementor\\Controls_Manager::URL ) {
-                        $args['default'] = array(
-                            'url'         => $c['default'] ?? '',
-                            'is_external' => false,
-                            'nofollow'    => false,
+                $idx = 0;
+                foreach ( $leaves as $g ) {
+                    $idx++;
+                    // For multi-leaf buckets emit a small HEADING-type
+                    // sub-divider so the user can visually scan
+                    // "Heading 1 / Heading 2 / Heading 3" inside the
+                    // bucket. Single-leaf buckets skip the divider —
+                    // the bucket label itself ("Image") already says
+                    // exactly what the one control is.
+                    if ( $count > 1 ) {
+                        $sub_label = $this->wpb_leaf_sub_label( $kind, $idx );
+                        $this->add_control(
+                            'wpb_div_' . preg_replace( '/[^a-zA-Z0-9_]/', '_', $g['id'] ?? ( 'g' . $idx ) ),
+                            array(
+                                'label'     => esc_html( $sub_label ),
+                                'type'      => \\Elementor\\Controls_Manager::HEADING,
+                                'separator' => $idx > 1 ? 'before' : 'default',
+                            )
                         );
-                    } elseif ( $type === \\Elementor\\Controls_Manager::MEDIA ) {
-                        $args['default'] = array(
-                            'url' => $c['default'] ?? '',
-                        );
-                    } elseif ( $type === \\Elementor\\Controls_Manager::ICONS ) {
-                        // ICONS control: default value carries the
-                        // original icon-font class string and we tag it
-                        // as a Font Awesome library entry. Customers can
-                        // also swap to an SVG upload via the attached
-                        // MEDIA picker — that case is handled by the
-                        // wpb_settings_to_attrs reduction at render time.
-                        $args['default'] = array(
-                            'value'   => $c['default'] ?? '',
-                            'library' => 'fa-solid',
-                        );
-                    } elseif ( $type === \\Elementor\\Controls_Manager::CHOOSE ) {
-                        $opts = isset( $c['options'] ) && is_array( $c['options'] ) ? $c['options'] : array();
-                        $args['options']     = $this->wpb_choose_options( $opts );
-                        $args['default']     = $c['default'] ?? ( $opts[0] ?? '' );
-                        $args['toggle']      = false;
-                    } elseif ( $type === \\Elementor\\Controls_Manager::REPEATER ) {
-                        // Build a single-field repeater: each row carries an
-                        // "item" TEXT field that maps back to one <li>.
-                        // Defaults are seeded from the textarea-style
-                        // newline-joined string the extractor stored.
-                        $repeater = new \\Elementor\\Repeater();
-                        $repeater->add_control( 'item', array(
-                            'label'       => esc_html__( 'Item', 'wpb' ),
-                            'type'        => \\Elementor\\Controls_Manager::TEXT,
-                            'default'     => '',
-                            'label_block' => true,
-                        ) );
-                        $args['fields']  = $repeater->get_controls();
-                        $args['default'] = array();
-                        $seed = is_string( $c['default'] ?? '' ) ? (string) $c['default'] : '';
-                        if ( $seed !== '' ) {
-                            foreach ( preg_split( '/\\r?\\n/', $seed ) as $row ) {
-                                $row = trim( $row );
-                                if ( $row === '' ) continue;
-                                $args['default'][] = array( 'item' => $row );
-                            }
-                        }
-                        $args['title_field'] = '{{{ item }}}';
-                    } else {
-                        $args['default'] = $c['default'] ?? '';
                     }
-                    $this->add_control( $c['key'], $args );
+                    foreach ( ($g['controls'] ?? array()) as $c ) {
+                        $type = $this->wpb_control_type( $c['type'] ?? 'text' );
+                        $args = array(
+                            'label'       => esc_html( $c['label'] ?? $c['key'] ),
+                            'type'        => $type,
+                            'label_block' => true,
+                        );
+                        if ( $type === \\Elementor\\Controls_Manager::URL ) {
+                            $args['default'] = array(
+                                'url'         => $c['default'] ?? '',
+                                'is_external' => false,
+                                'nofollow'    => false,
+                            );
+                        } elseif ( $type === \\Elementor\\Controls_Manager::MEDIA ) {
+                            $args['default'] = array(
+                                'url' => $c['default'] ?? '',
+                            );
+                        } elseif ( $type === \\Elementor\\Controls_Manager::ICONS ) {
+                            $args['default'] = array(
+                                'value'   => $c['default'] ?? '',
+                                'library' => 'fa-solid',
+                            );
+                        } elseif ( $type === \\Elementor\\Controls_Manager::CHOOSE ) {
+                            $opts = isset( $c['options'] ) && is_array( $c['options'] ) ? $c['options'] : array();
+                            $args['options']     = $this->wpb_choose_options( $opts );
+                            $args['default']     = $c['default'] ?? ( $opts[0] ?? '' );
+                            $args['toggle']      = false;
+                        } elseif ( $type === \\Elementor\\Controls_Manager::REPEATER ) {
+                            $repeater = new \\Elementor\\Repeater();
+                            $repeater->add_control( 'item', array(
+                                'label'       => esc_html__( 'Item', 'wpb' ),
+                                'type'        => \\Elementor\\Controls_Manager::TEXT,
+                                'default'     => '',
+                                'label_block' => true,
+                            ) );
+                            $args['fields']  = $repeater->get_controls();
+                            $args['default'] = array();
+                            $seed = is_string( $c['default'] ?? '' ) ? (string) $c['default'] : '';
+                            if ( $seed !== '' ) {
+                                foreach ( preg_split( '/\\r?\\n/', $seed ) as $row ) {
+                                    $row = trim( $row );
+                                    if ( $row === '' ) continue;
+                                    $args['default'][] = array( 'item' => $row );
+                                }
+                            }
+                            $args['title_field'] = '{{{ item }}}';
+                        } else {
+                            $args['default'] = $c['default'] ?? '';
+                        }
+                        $this->add_control( $c['key'], $args );
+                    }
                 }
                 $this->end_controls_section();
-                // legacy_native: tack a Style-tab section onto every
-                // group whose controls mirror the matching native
-                // Elementor widget (Group_Control_Typography + Text
-                // Color + Border / Background for buttons, etc.). The
-                // controls bind to {{WRAPPER}} .wpb-leaf-{gid} so the
-                // edits land on the original markup wrapper without
-                // changing the render path.
-                if ( $this->wpb_native_ui ) {
+            }
+            // Style tab is INTENTIONALLY left one-section-per-leaf.
+            // Each leaf's style controls (typography, color, border,
+            // padding, …) are leaf-specific and bind to that leaf's
+            // own {{WRAPPER}} .wpb-leaf-{gid} selector — there's no
+            // sensible way to merge them into a bucketed section.
+            if ( $this->wpb_native_ui ) {
+                foreach ( $this->wpb_groups as $g ) {
                     $this->wpb_register_native_style( $g );
                 }
             }
