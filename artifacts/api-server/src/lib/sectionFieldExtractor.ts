@@ -135,8 +135,28 @@ export interface NativeDefaultStyles {
     width?: { top: string; right: string; bottom: string; left: string; unit: string; isLinked: boolean };
     color?: string;
   };
+  /** Hover-state Group_Control_Border defaults — same shape as `border`. */
+  border_hover?: {
+    border: string;
+    width?: { top: string; right: string; bottom: string; left: string; unit: string; isLinked: boolean };
+    color?: string;
+  };
+  /** Hover-state border-radius — Elementor DIMENSIONS shape. */
+  border_radius_hover?: { top: string; right: string; bottom: string; left: string; unit: string; isLinked: boolean };
+  /** Hover-state padding — Elementor DIMENSIONS shape. */
+  padding_hover?: { top: string; right: string; bottom: string; left: string; unit: string; isLinked: boolean };
   /** Group_Control_Typography defaults; values mirror Elementor's per-field shape. */
   typography?: {
+    font_family?: string;
+    font_size?: { unit: string; size: number; sizes: [] };
+    font_weight?: string;
+    font_style?: string;
+    text_transform?: string;
+    line_height?: { unit: string; size: number; sizes: [] };
+    letter_spacing?: { unit: string; size: number; sizes: [] };
+  };
+  /** Hover-state Group_Control_Typography defaults — same shape as `typography`. */
+  typography_hover?: {
     font_family?: string;
     font_size?: { unit: string; size: number; sizes: [] };
     font_weight?: string;
@@ -522,6 +542,61 @@ function resolveLeafDefaults(
   // it so the icon hover swatch matches the live page.
   if (kind === "icon" && !out.color_hover && hover["fill"]) {
     out.color_hover = hover["fill"].trim();
+  }
+  // Expand hover border shorthand for the same reason as the normal
+  // state: pages routinely author `:hover { border: 1px solid #fff }`
+  // and we'd otherwise miss the longhand width/style/color values.
+  const hoverStyles = Object.keys(hover).length > 0 ? expandBorderShorthand(hover) : hover;
+
+  // Hover typography: same key-rename pass as the normal state, just
+  // emitted under `typography_hover` so the matching `*_native_typo_hover`
+  // group control gets pre-filled.
+  if (Object.keys(hoverStyles).length > 0) {
+    const hoverTypo = buildTypography(hoverStyles, "typography");
+    const hoverTypoOut: NativeDefaultStyles["typography_hover"] = {};
+    let hoverTypoHasAny = false;
+    for (const [k, v] of Object.entries(hoverTypo)) {
+      if (k === "typography_typography") continue;
+      const bare = k.replace(/^typography_/, "") as keyof NonNullable<NativeDefaultStyles["typography_hover"]>;
+      (hoverTypoOut as Record<string, unknown>)[bare] = v;
+      hoverTypoHasAny = true;
+    }
+    if (hoverTypoHasAny) out.typography_hover = hoverTypoOut;
+
+    // Hover padding (full shorthand or per-side longhand).
+    const hPad =
+      parseDimensions(hoverStyles["padding"]) ?? assemblePaddingLonghand(hoverStyles);
+    if (hPad) out.padding_hover = hPad;
+
+    // Hover border — mirrors the normal-state branch above.
+    const hbw = parseDimensions(hoverStyles["border-width"]);
+    if (hbw) {
+      out.border_hover = {
+        border: (hoverStyles["border-style"] ?? "solid").trim(),
+        width: hbw,
+      };
+      if (hoverStyles["border-color"]) out.border_hover.color = hoverStyles["border-color"].trim();
+    } else if (
+      hoverStyles["border-color"] &&
+      hoverStyles["border-style"] &&
+      hoverStyles["border-style"] !== "none"
+    ) {
+      out.border_hover = {
+        border: hoverStyles["border-style"].trim(),
+        color: hoverStyles["border-color"].trim(),
+      };
+    } else if (hoverStyles["border-color"]) {
+      // Common pattern: `.cta:hover { border-color: #fff }` re-uses
+      // the base style/width. Surface it as a color-only override so
+      // the swatch is pre-populated and the visible hover effect
+      // survives any subsequent edit.
+      out.border_hover = {
+        border: (styles["border-style"] ?? "solid").trim(),
+        color: hoverStyles["border-color"].trim(),
+      };
+    }
+    const hbr = parseDimensions(hoverStyles["border-radius"]);
+    if (hbr) out.border_radius_hover = hbr;
   }
 
   // ---- padding (button, image, icon — universal-enough to always emit) ----

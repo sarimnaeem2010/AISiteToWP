@@ -707,6 +707,70 @@ class WPB_Widget_Base extends \\Elementor\\Widget_Base {
                 $padding_args['default'] = $defaults['padding'];
             }
             $this->add_responsive_control( $g['id'] . '_native_padding', $padding_args );
+            // Hover-state mirrors of Border / Border Radius / Padding /
+            // Typography. Many real-world CTAs change more than just
+            // background+text colour on hover (e.g. border-color flip,
+            // padding nudge, font-weight bump). Surfacing them as
+            // dedicated controls — pre-populated from the source page's
+            // :hover declarations — keeps the visible effect intact when
+            // the customer touches an unrelated control.
+            if ( class_exists( '\\Elementor\\Group_Control_Border' ) ) {
+                $border_hover_args = array(
+                    'name'     => $g['id'] . '_native_border_hover',
+                    'selector' => $sel . ':hover',
+                );
+                if ( isset( $defaults['border_hover'] ) && is_array( $defaults['border_hover'] ) ) {
+                    $bhf = array( 'border' => array( 'default' => isset( $defaults['border_hover']['border'] ) ? (string) $defaults['border_hover']['border'] : 'solid' ) );
+                    if ( isset( $defaults['border_hover']['width'] ) && is_array( $defaults['border_hover']['width'] ) ) {
+                        $bhf['width'] = array( 'default' => $defaults['border_hover']['width'] );
+                    }
+                    if ( ! empty( $defaults['border_hover']['color'] ) ) {
+                        $bhf['color'] = array( 'default' => (string) $defaults['border_hover']['color'] );
+                    }
+                    $border_hover_args['fields_options'] = $bhf;
+                }
+                $this->add_group_control(
+                    \\Elementor\\Group_Control_Border::get_type(),
+                    $border_hover_args
+                );
+            }
+            $radius_hover_args = array(
+                'label'      => esc_html__( 'Border Radius (Hover)', 'wpb' ),
+                'type'       => \\Elementor\\Controls_Manager::DIMENSIONS,
+                'size_units' => array( 'px', '%', 'em' ),
+                'selectors'  => array( $sel . ':hover' => 'border-radius: {{TOP}}{{UNIT}} {{RIGHT}}{{UNIT}} {{BOTTOM}}{{UNIT}} {{LEFT}}{{UNIT}};' ),
+            );
+            if ( isset( $defaults['border_radius_hover'] ) && is_array( $defaults['border_radius_hover'] ) ) {
+                $radius_hover_args['default'] = $defaults['border_radius_hover'];
+            }
+            $this->add_responsive_control( $g['id'] . '_native_radius_hover', $radius_hover_args );
+            $padding_hover_args = array(
+                'label'      => esc_html__( 'Padding (Hover)', 'wpb' ),
+                'type'       => \\Elementor\\Controls_Manager::DIMENSIONS,
+                'size_units' => array( 'px', '%', 'em' ),
+                'selectors'  => array( $sel . ':hover' => 'padding: {{TOP}}{{UNIT}} {{RIGHT}}{{UNIT}} {{BOTTOM}}{{UNIT}} {{LEFT}}{{UNIT}};' ),
+            );
+            if ( isset( $defaults['padding_hover'] ) && is_array( $defaults['padding_hover'] ) ) {
+                $padding_hover_args['default'] = $defaults['padding_hover'];
+            }
+            $this->add_responsive_control( $g['id'] . '_native_padding_hover', $padding_hover_args );
+            if ( class_exists( '\\Elementor\\Group_Control_Typography' ) ) {
+                $typo_hover_args = array(
+                    'name'     => $g['id'] . '_native_typo_hover',
+                    'selector' => $sel . ':hover',
+                );
+                if ( isset( $defaults['typography_hover'] ) && is_array( $defaults['typography_hover'] ) && count( $defaults['typography_hover'] ) > 0 ) {
+                    $fields_options = array( 'typography' => array( 'default' => 'custom' ) );
+                    foreach ( $defaults['typography_hover'] as $fkey => $fval ) {
+                        $fields_options[ $fkey ] = array( 'default' => $fval );
+                    }
+                    $typo_hover_args['fields_options'] = $fields_options;
+                }
+                $this->add_group_control(
+                    \\Elementor\\Group_Control_Typography::get_type(),
+                    $typo_hover_args
+                );
+            }
         }
 
         if ( $native === 'image' ) {
