@@ -3,7 +3,7 @@ import { Link, useParams, useLocation } from "wouter";
 import { z } from "zod";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Check, ChevronDown, Download, FileCode2, Globe, LayoutTemplate, Settings2, Trash2, Shield, UploadCloud, Eye, AlertCircle, Database, Layers, Sparkles, Palette, Ruler, Type as TypeIcon, CornerDownRight } from "lucide-react";
+import { Check, ChevronDown, Download, FileCode2, Globe, LayoutTemplate, Settings2, Trash2, Shield, UploadCloud, Eye, AlertCircle, Database, Layers, Sparkles, Palette, Ruler, Type as TypeIcon, CornerDownRight, RefreshCw } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -96,19 +96,63 @@ function relativeTime(iso: string | null): string {
  */
 function ProjectAiStatusPill({ projectId }: { projectId: string }) {
   const apiBase = import.meta.env.BASE_URL;
+  const { toast } = useToast();
   const [status, setStatus] = useState<AiPublicStatus | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [reanalyzing, setReanalyzing] = useState(false);
+
+  const loadStatus = async (signal?: { cancelled: boolean }) => {
+    try {
+      const res = await fetch(`${apiBase}api/projects/${projectId}/ai-status`);
+      if (!res.ok) return;
+      const body = (await res.json()) as AiPublicStatus;
+      if (!signal?.cancelled) setStatus(body);
+    } catch { /* silent — status is informational only */ }
+  };
+
   useEffect(() => {
-    let cancelled = false;
+    const signal = { cancelled: false };
+    loadStatus(signal);
+    // Probe admin session silently. Non-admins (401/403) just don't see
+    // the Re-analyze button — no redirect, no toast.
     (async () => {
       try {
-        const res = await fetch(`${apiBase}api/projects/${projectId}/ai-status`);
-        if (!res.ok) return;
-        const body = (await res.json()) as AiPublicStatus;
-        if (!cancelled) setStatus(body);
-      } catch { /* silent — status is informational only */ }
+        const res = await fetch(`${apiBase}api/admin/me`, { credentials: "include" });
+        if (signal.cancelled) return;
+        if (res.ok) {
+          const body = await res.json().catch(() => ({}));
+          if (body?.user?.isAdmin) setIsAdmin(true);
+        }
+      } catch { /* not signed in — fine */ }
     })();
-    return () => { cancelled = true; };
+    return () => { signal.cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiBase, projectId]);
+
+  const onReanalyze = async () => {
+    setReanalyzing(true);
+    try {
+      const res = await fetch(`${apiBase}api/admin/projects/${projectId}/reanalyze`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error || `HTTP ${res.status}`);
+      }
+      toast({ title: "Re-analysis complete", description: "Cache cleared and engines re-ran." });
+      await loadStatus();
+    } catch (err) {
+      toast({
+        title: "Could not re-analyze",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setReanalyzing(false);
+    }
+  };
+
   if (!status) return null;
   const label = status.aiEnabled
     ? `AI on (${status.model}) · last run ${relativeTime(status.lastRunAt)}${status.cacheEntries > 0 ? ` · ${status.cacheEntries} cached` : ""}`
@@ -117,12 +161,28 @@ function ProjectAiStatusPill({ projectId }: { projectId: string }) {
     ? "bg-emerald-50 text-emerald-700 border-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-900"
     : "bg-muted text-muted-foreground border-border";
   return (
-    <span
-      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium ${cls}`}
-      title={status.lastRunAt ? `Last run: ${new Date(status.lastRunAt).toLocaleString()}` : "Not analyzed yet"}
-    >
-      {label}
-    </span>
+    <>
+      <span
+        className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium ${cls}`}
+        title={status.lastRunAt ? `Last run: ${new Date(status.lastRunAt).toLocaleString()}` : "Not analyzed yet"}
+      >
+        {label}
+      </span>
+      {isAdmin && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-7 px-2 text-[11px]"
+          onClick={onReanalyze}
+          disabled={reanalyzing}
+          title="Clear AI cache and re-run analysis engines (admin only)"
+        >
+          <RefreshCw className={`h-3 w-3 ${reanalyzing ? "animate-spin" : ""}`} />
+          {reanalyzing ? "Re-analyzing…" : "Re-analyze"}
+        </Button>
+      )}
+    </>
   );
 }
 
