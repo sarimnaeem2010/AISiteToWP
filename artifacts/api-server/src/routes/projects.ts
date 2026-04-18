@@ -16,7 +16,7 @@ import {
 } from "@workspace/api-zod";
 import { parseHtml, parseSingleHtmlPage, type ParsedPage, type ParsedSite, type DesignSystem } from "../lib/parser";
 import { mapToWordPress, type CustomPostTypeDef } from "../lib/wpMapper";
-import { testConnection, pushToWordPress, setAsHomepage, installTheme, activateTheme, getActiveTheme } from "../lib/wpSync";
+import { testConnection, pushToWordPress, setAsHomepage, installTheme, activateTheme, getActiveTheme, preflightApiKey } from "../lib/wpSync";
 import { extractSectionsFromPage, type ExtractedPage } from "../lib/sectionFieldExtractor";
 import { generateThemeZip } from "../lib/themeGenerator";
 import { extractDesignTokens, coerceTokens, DEFAULT_TOKENS, type DesignTokens } from "../lib/tokenExtractor";
@@ -717,28 +717,81 @@ router.post("/projects/:id/test-connection", async (req, res): Promise<void> => 
   }
 
   if (!project.wpUrl) {
-    res.json({ success: false, message: "WordPress URL not configured" });
+    res.json({ success: false, kind: "missing_credentials", message: "WordPress URL not configured" });
     return;
   }
   const authMode = (project.authMode === "api_key" ? "api_key" : "basic") as "basic" | "api_key";
   if (authMode === "basic" && (!project.wpUsername || !project.wpAppPassword)) {
-    res.json({ success: false, message: "WordPress username/app-password not configured" });
+    res.json({ success: false, kind: "missing_credentials", message: "WordPress username/app-password not configured" });
     return;
   }
   if (authMode === "api_key" && !project.wpApiKey) {
-    res.json({ success: false, message: "Plugin API key not configured" });
+    res.json({ success: false, kind: "missing_credentials", message: "Plugin API key not configured" });
     return;
   }
 
-  const result = await testConnection({
+  const cfg = {
     wpUrl: project.wpUrl,
     wpUsername: project.wpUsername,
     wpAppPassword: project.wpAppPassword,
     wpApiKey: project.wpApiKey,
     authMode,
-  });
+  };
 
+  // For api_key auth, run the explicit preflight first so a key
+  // mismatch is reported as a distinct case rather than a generic
+  // "auth failed". Falls through to the full testConnection on success.
+  if (authMode === "api_key") {
+    const pre = await preflightApiKey(cfg);
+    if (pre.kind === "api_key_mismatch") {
+      res.json({ success: false, kind: "api_key_mismatch", message: pre.message });
+      return;
+    }
+    if (pre.kind === "plugin_unreachable") {
+      res.json({ success: false, kind: "plugin_unreachable", message: pre.message });
+      return;
+    }
+  }
+
+  const result = await testConnection(cfg);
+  // Default kind so the UI can branch even if the helper didn't set one.
+  if (!result.kind) {
+    result.kind = result.success ? "ok" : "auth_failed";
+  }
   res.json(result);
+});
+
+/**
+ * Rotate this project's plugin API key. After this returns, the user
+ * MUST re-download the plugin ZIP (which now bakes the new key into
+ * WP_BRIDGE_API_KEY) and re-upload it to their WordPress site,
+ * otherwise install/activate/push will keep failing with 403.
+ */
+router.post("/projects/:id/regenerate-api-key", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const params = GetProjectParams.safeParse({ id: raw });
+  if (!params.success) {
+    res.status(400).json({ error: params.error.message });
+    return;
+  }
+  const [project] = await db
+    .select()
+    .from(projectsTable)
+    .where(eq(projectsTable.id, Number(params.data.id)));
+  if (!project) {
+    res.status(404).json({ error: "Project not found" });
+    return;
+  }
+  const newKey = generateApiKey();
+  await db
+    .update(projectsTable)
+    .set({ wpApiKey: newKey })
+    .where(eq(projectsTable.id, project.id));
+  res.json({
+    apiKey: newKey,
+    message:
+      "New API key generated. Re-download the plugin from the Plugin tab and re-upload it on your WordPress site.",
+  });
 });
 
 /**
@@ -1276,6 +1329,19 @@ router.post("/projects/:id/activate-theme", async (req, res): Promise<void> => {
     authMode: "api_key" as const,
     useAcf: project.useAcf === "true",
   };
+  // Preflight: catch api_key_mismatch *before* trying to activate so the
+  // UI can show a recovery callout instead of a raw 502.
+  const pre = await preflightApiKey(cfg);
+  if (pre.kind === "api_key_mismatch") {
+    res.status(409).json({
+      error: "api_key_mismatch",
+      message: pre.message,
+      stage: "activate",
+      themeSlug: projectSlug,
+      projectId: Number(params.data.id),
+    });
+    return;
+  }
   const result = await activateTheme(cfg, projectSlug);
   if (!result.success) {
     res.status(502).json({ stage: "activate", themeSlug: projectSlug, ...result });
@@ -1315,6 +1381,31 @@ router.post("/projects/:id/install-theme", async (req, res): Promise<void> => {
     res.status(422).json({ error: "Could not extract any sections from source HTML." });
     return;
   }
+  const cfgPre = {
+    wpUrl: project.wpUrl,
+    wpUsername: project.wpUsername,
+    wpAppPassword: project.wpAppPassword,
+    wpApiKey: project.wpApiKey,
+    authMode: "api_key" as const,
+    useAcf: project.useAcf === "true",
+  };
+  // Preflight: if the plugin on WP is using a different API key, fail
+  // fast with 409 so the UI can show a recovery callout pointing at the
+  // Plugin tab. Skipping this would surface the upstream 403 as a 502
+  // dump of raw forbidden JSON, which is what users were complaining
+  // about ("HTTP 403: {code:'forbidden',message:'Invalid API key'…}").
+  const pre = await preflightApiKey(cfgPre);
+  if (pre.kind === "api_key_mismatch") {
+    res.status(409).json({
+      error: "api_key_mismatch",
+      message: pre.message,
+      stage: "install",
+      themeSlug: projectSlug,
+      projectId: Number(params.data.id),
+    });
+    return;
+  }
+
   const sourceZip = (project.sourceZip as Buffer | null) ?? null;
   let combinedJs = "";
   if (sourceZip) {

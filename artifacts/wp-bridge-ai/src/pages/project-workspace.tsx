@@ -565,6 +565,7 @@ export default function ProjectWorkspace() {
   const [testResult, setTestResult] = useState<{
     success: boolean;
     message: string;
+    kind?: "ok" | "api_key_mismatch" | "plugin_unreachable" | "auth_failed" | "url_invalid" | "missing_credentials";
     pluginVersion?: string | null;
     expectedPluginVersion?: string | null;
     pluginOutdated?: boolean | null;
@@ -578,6 +579,11 @@ export default function ProjectWorkspace() {
   const [aiStatusRefreshTick, setAiStatusRefreshTick] = useState(0);
   const [scrapeUrlInput, setScrapeUrlInput] = useState("");
   const [chatInput, setChatInput] = useState("");
+  // Sticky recovery callout shown above the install/activate buttons
+  // when the WP plugin rejects our key. Cleared when the user opens the
+  // Plugin tab, regenerates the key, or successfully installs.
+  const [keyRecovery, setKeyRecovery] = useState<{ stage: "install" | "activate" | "test"; message: string } | null>(null);
+  const [regenerating, setRegenerating] = useState(false);
   const [chatBusy, setChatBusy] = useState(false);
   const [chatLog, setChatLog] = useState<Array<{ role: "user" | "ai"; text: string }>>([]);
   const [themeStatus, setThemeStatus] = useState<{
@@ -737,8 +743,11 @@ export default function ProjectWorkspace() {
       onSuccess: (res) => {
         setTestResult(res);
         if (res.success) {
+          setKeyRecovery(null);
           toast({ title: "Connection Successful", description: `Connected to ${res.siteTitle || "WordPress"}` });
           refetch();
+        } else if ((res as { kind?: string }).kind === "api_key_mismatch") {
+          setKeyRecovery({ stage: "test", message: res.message });
         }
       },
       onError: (err) => {
@@ -919,7 +928,16 @@ export default function ProjectWorkspace() {
     try {
       const res = await fetch(`${apiBase}api/projects/${id}/install-theme`, { method: "POST" });
       const data = await res.json().catch(() => ({}));
+      // 409 + error: "api_key_mismatch" means the plugin on WP is using
+      // an older/different baked-in key. Show a sticky callout instead
+      // of a toast and stop here — the user needs to take an action
+      // (re-download + re-upload) before retrying.
+      if (res.status === 409 && (data as { error?: string }).error === "api_key_mismatch") {
+        setKeyRecovery({ stage: "install", message: (data as { message?: string }).message || "API key mismatch with installed plugin." });
+        return;
+      }
       if (!res.ok) throw new Error((data as { message?: string; error?: string }).message || (data as { error?: string }).error || `HTTP ${res.status}`);
+      setKeyRecovery(null);
       toast({
         title: "Theme installed",
         description: `${(data as { blocksRegistered?: number }).blocksRegistered ?? 0} custom blocks bundled. Now click Activate to switch the site to this theme.`,
@@ -933,13 +951,41 @@ export default function ProjectWorkspace() {
     try {
       const res = await fetch(`${apiBase}api/projects/${id}/activate-theme`, { method: "POST" });
       const data = await res.json().catch(() => ({}));
+      if (res.status === 409 && (data as { error?: string }).error === "api_key_mismatch") {
+        setKeyRecovery({ stage: "activate", message: (data as { message?: string }).message || "API key mismatch with installed plugin." });
+        return;
+      }
       if (!res.ok) throw new Error((data as { message?: string; error?: string }).message || (data as { error?: string }).error || `HTTP ${res.status}`);
+      setKeyRecovery(null);
       toast({
         title: "Theme activated",
         description: `${(data as { themeSlug?: string }).themeSlug ?? "Theme"} is now the active theme on your site.`,
       });
     } catch (err) {
       toast({ title: "Activation failed", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    }
+  };
+
+  /**
+   * Rotate the project's plugin API key on the server. The old plugin
+   * installed on WP becomes invalid until the user re-downloads + re-uploads.
+   */
+  const regenerateApiKey = async () => {
+    setRegenerating(true);
+    try {
+      const res = await fetch(`${apiBase}api/projects/${id}/regenerate-api-key`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data as { message?: string; error?: string }).message || (data as { error?: string }).error || `HTTP ${res.status}`);
+      toast({
+        title: "API key regenerated",
+        description: "Re-download the plugin from the Plugin tab and re-upload it on your WordPress site.",
+      });
+      setKeyRecovery(null);
+      refetch();
+    } catch (err) {
+      toast({ title: "Could not regenerate key", description: err instanceof Error ? err.message : String(err), variant: "destructive" });
+    } finally {
+      setRegenerating(false);
     }
   };
 
@@ -1777,6 +1823,35 @@ export default function ProjectWorkspace() {
                                   </FormControl>
                                   <FormDescription className="text-[11px]">Generated and embedded by the bridge plugin PHP file (see Get Plugin).</FormDescription>
                                   <FormMessage />
+                                  <div className="flex items-center gap-2 pt-1.5">
+                                    <AlertDialog>
+                                      <AlertDialogTrigger asChild>
+                                        <Button type="button" variant="outline" size="sm" className="h-7 text-[11px]" disabled={regenerating} data-testid="button-regenerate-api-key">
+                                          <RefreshCw className={`h-3 w-3 ${regenerating ? "animate-spin" : ""}`} />
+                                          {regenerating ? "Regenerating…" : "Regenerate API key"}
+                                        </Button>
+                                      </AlertDialogTrigger>
+                                      <AlertDialogContent>
+                                        <AlertDialogHeader>
+                                          <AlertDialogTitle>Regenerate plugin API key?</AlertDialogTitle>
+                                          <AlertDialogDescription>
+                                            A new key will be generated and stored on this project. The plugin currently
+                                            installed on your WordPress site will stop accepting requests until you
+                                            re-download the plugin from the Plugin tab and re-upload it.
+                                          </AlertDialogDescription>
+                                        </AlertDialogHeader>
+                                        <AlertDialogFooter>
+                                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                          <AlertDialogAction onClick={regenerateApiKey} data-testid="button-confirm-regenerate-api-key">
+                                            Regenerate
+                                          </AlertDialogAction>
+                                        </AlertDialogFooter>
+                                      </AlertDialogContent>
+                                    </AlertDialog>
+                                    <Link href={`/projects/${id}/plugin`} className="text-[11px] text-primary hover:underline">
+                                      Open Plugin tab
+                                    </Link>
+                                  </div>
                                 </FormItem>
                               )}
                             />
@@ -1797,6 +1872,32 @@ export default function ProjectWorkspace() {
                                 site first, then push your pages.
                               </div>
                             </div>
+                            {keyRecovery && (
+                              <div
+                                className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/40 dark:border-amber-900 p-3.5 text-sm space-y-2"
+                                data-testid="key-mismatch-callout"
+                              >
+                                <div className="flex items-start gap-2.5 text-amber-900 dark:text-amber-200">
+                                  <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+                                  <div>
+                                    <div className="font-semibold">
+                                      API key mismatch ({keyRecovery.stage === "install" ? "Install" : keyRecovery.stage === "activate" ? "Activate" : "Test"})
+                                    </div>
+                                    <div className="opacity-90 mt-0.5">{keyRecovery.message}</div>
+                                  </div>
+                                </div>
+                                <div className="flex flex-wrap gap-2 pl-7">
+                                  <Link href={`/projects/${id}/plugin`}>
+                                    <Button type="button" variant="default" size="sm" className="h-7 text-[11px]" data-testid="key-mismatch-open-plugin">
+                                      <Download className="h-3 w-3" /> Open Plugin tab
+                                    </Button>
+                                  </Link>
+                                  <Button type="button" variant="ghost" size="sm" className="h-7 text-[11px]" onClick={() => setKeyRecovery(null)} data-testid="key-mismatch-dismiss">
+                                    Dismiss
+                                  </Button>
+                                </div>
+                              </div>
+                            )}
                             {renderer === "pixel_perfect" && (
                               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-2">
                                 <Button
@@ -1860,17 +1961,46 @@ export default function ProjectWorkspace() {
 
                           {testResult && (
                             <div className="space-y-2 mt-4">
-                              <div className={`p-3.5 rounded-lg text-sm flex items-start gap-2.5 border ${
-                                testResult.success
+                              {(() => {
+                                // Three-way classification controls colour + headline so users
+                                // can immediately tell "I'm done" vs "fix my key" vs "plugin missing".
+                                const kind = (testResult as { kind?: string }).kind;
+                                const isMismatch = kind === "api_key_mismatch";
+                                const isUnreachable = kind === "plugin_unreachable";
+                                const isAmber = isMismatch || isUnreachable;
+                                const wrap = testResult.success
                                   ? "bg-emerald-50 text-emerald-800 border-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-900"
-                                  : "bg-destructive/10 text-destructive border-destructive/20"
-                              }`}>
-                                {testResult.success ? <Check className="h-4 w-4 mt-0.5 shrink-0" /> : <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />}
-                                <div>
-                                  <div className="font-semibold">{testResult.success ? "Connection verified" : "Connection failed"}</div>
-                                  <div className="opacity-90 mt-0.5">{testResult.message}</div>
-                                </div>
-                              </div>
+                                  : isAmber
+                                  ? "bg-amber-50 text-amber-900 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-900"
+                                  : "bg-destructive/10 text-destructive border-destructive/20";
+                                const headline = testResult.success
+                                  ? "Connection verified"
+                                  : isMismatch
+                                  ? "API key mismatch"
+                                  : isUnreachable
+                                  ? "Companion plugin not reachable"
+                                  : "Connection failed";
+                                return (
+                                  <div className={`p-3.5 rounded-lg text-sm border ${wrap}`} data-testid={`test-result-${kind ?? (testResult.success ? "ok" : "error")}`}>
+                                    <div className="flex items-start gap-2.5">
+                                      {testResult.success ? <Check className="h-4 w-4 mt-0.5 shrink-0" /> : <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />}
+                                      <div className="min-w-0">
+                                        <div className="font-semibold">{headline}</div>
+                                        <div className="opacity-90 mt-0.5">{testResult.message}</div>
+                                      </div>
+                                    </div>
+                                    {isMismatch && (
+                                      <div className="flex flex-wrap gap-2 pt-2 pl-7">
+                                        <Link href={`/projects/${id}/plugin`}>
+                                          <Button type="button" variant="default" size="sm" className="h-7 text-[11px]">
+                                            <Download className="h-3 w-3" /> Open Plugin tab
+                                          </Button>
+                                        </Link>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })()}
                               {testResult.pluginOutdated && testResult.pluginVersion && testResult.expectedPluginVersion && (
                                 <div className="p-3.5 rounded-lg text-sm flex items-start gap-2.5 bg-amber-50 text-amber-800 border border-amber-100 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-900">
                                   <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />

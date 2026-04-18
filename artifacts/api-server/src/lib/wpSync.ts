@@ -241,9 +241,73 @@ interface PushResult {
 }
 
 
+/**
+ * Three-way classification of why a connection attempt failed (or
+ * succeeded). Surfaces to the UI so we can render distinct callouts
+ * for "all good" vs "plugin key mismatch" vs "plugin not reachable".
+ */
+export type ConnectionKind =
+  | "ok"
+  | "api_key_mismatch"
+  | "plugin_unreachable"
+  | "auth_failed"
+  | "url_invalid"
+  | "missing_credentials";
+
+/**
+ * Lightweight preflight: hits the companion plugin's /status endpoint
+ * with the project's stored X-Api-Key. Used by install/activate routes
+ * to surface a 409 api_key_mismatch *before* attempting the heavier
+ * theme upload, so the UI can route the user to re-download the plugin
+ * instead of showing a confusing 502 with raw 403 JSON.
+ */
+export async function preflightApiKey(
+  config: WpConfig,
+): Promise<{ kind: ConnectionKind; message: string; httpStatus?: number }> {
+  if (!config.wpUrl) return { kind: "missing_credentials", message: "WP URL not set" };
+  if (config.authMode !== "api_key" || !config.wpApiKey) {
+    return { kind: "missing_credentials", message: "API-key auth not configured" };
+  }
+  try {
+    await assertSafeUrl(config.wpUrl);
+  } catch (err) {
+    return { kind: "url_invalid", message: err instanceof Error ? err.message : String(err) };
+  }
+  const url = `${config.wpUrl.replace(/\/$/, "")}/wp-json/ai-cms/v1/status`;
+  try {
+    const res = await fetch(url, {
+      headers: { "X-Api-Key": config.wpApiKey },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (res.status === 401 || res.status === 403) {
+      return {
+        kind: "api_key_mismatch",
+        httpStatus: res.status,
+        message:
+          "The plugin installed on your WordPress site is using a different API key than this project. " +
+          "Re-download the plugin from the Plugin tab and re-upload it on WordPress, then try again.",
+      };
+    }
+    if (!res.ok) {
+      return {
+        kind: "plugin_unreachable",
+        httpStatus: res.status,
+        message: `Plugin status endpoint returned HTTP ${res.status}. Make sure the WP Bridge AI companion plugin is installed and active.`,
+      };
+    }
+    return { kind: "ok", message: "Plugin reachable", httpStatus: res.status };
+  } catch (err) {
+    return {
+      kind: "plugin_unreachable",
+      message: `Could not reach the plugin: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
 export async function testConnection(config: WpConfig): Promise<{
   success: boolean;
   message: string;
+  kind?: ConnectionKind;
   wpVersion?: string;
   siteTitle?: string;
   pluginVersion?: string | null;

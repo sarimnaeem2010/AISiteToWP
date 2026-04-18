@@ -1,21 +1,55 @@
 import { useParams, Link } from "wouter";
 import { useGetProject, useGeneratePlugin } from "@workspace/api-client-react";
-import { ArrowLeft, Download, FileCode2, Copy, Check, Key, ChevronDown } from "lucide-react";
+import { ArrowLeft, Download, FileCode2, Copy, Check, Key, ChevronDown, RefreshCw } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { useQueryClient } from "@tanstack/react-query";
 
 export default function ProjectPlugin() {
   const { id } = useParams<{ id: string }>();
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   const [copied, setCopied] = useState(false);
   const [keyCopied, setKeyCopied] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
 
   const { data: project } = useGetProject(id || "", { query: { enabled: !!id } });
-  const { data: pluginData, isLoading } = useGeneratePlugin(id || "", { query: { enabled: !!id } });
+  const { data: pluginData, isLoading, refetch: refetchPlugin } = useGeneratePlugin(id || "", { query: { enabled: !!id } });
+
+  const regenerateApiKey = async () => {
+    if (!id) return;
+    setRegenerating(true);
+    try {
+      const base = import.meta.env.BASE_URL;
+      const res = await fetch(`${base}api/projects/${id}/regenerate-api-key`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data as { message?: string; error?: string }).message || (data as { error?: string }).error || `HTTP ${res.status}`);
+      toast({
+        title: "API key regenerated",
+        description: "Re-download the plugin .zip below and re-upload it on your WordPress site.",
+      });
+      // Invalidate any cached project + plugin payload so the new key
+      // shows up immediately in this view (and in the workspace).
+      await queryClient.invalidateQueries();
+      await refetchPlugin();
+    } catch (err) {
+      toast({
+        title: "Could not regenerate key",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setRegenerating(false);
+    }
+  };
 
   const handleCopy = () => {
     if (pluginData?.phpCode) {
@@ -64,18 +98,53 @@ export default function ProjectPlugin() {
             </CardTitle>
             <CardDescription>
               Copy this value into the <strong>Plugin API Key</strong> field in WordPress Config.
-              It's already baked into the plugin ZIP you installed.
+              It's already baked into the plugin ZIP below — this is the exact string the plugin PHP
+              checks against on every request.
             </CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-3">
             <div className="flex items-center gap-2">
-              <code className="flex-1 bg-muted px-3 py-2.5 rounded-lg border border-border font-mono text-xs break-all select-all">
+              <code
+                className="flex-1 bg-muted px-3 py-2.5 rounded-lg border border-border font-mono text-xs break-all select-all"
+                data-testid="plugin-api-key-value"
+              >
                 {pluginData.apiKey}
               </code>
-              <Button variant="outline" onClick={handleCopyKey} className="shrink-0">
+              <Button variant="outline" onClick={handleCopyKey} className="shrink-0" data-testid="button-copy-api-key">
                 {keyCopied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                 Copy key
               </Button>
+            </div>
+            <div className="flex items-start justify-between gap-3 pt-1">
+              <p className="text-[11px] text-muted-foreground leading-relaxed">
+                If install or push fails with <span className="font-mono">403 Invalid API key</span>, the plugin
+                installed on WP is using a different value. Either re-upload this plugin .zip, or regenerate
+                the key here and re-upload afterwards.
+              </p>
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button variant="outline" size="sm" className="shrink-0" disabled={regenerating} data-testid="button-regenerate-api-key">
+                    <RefreshCw className={`h-3.5 w-3.5 ${regenerating ? "animate-spin" : ""}`} />
+                    {regenerating ? "Regenerating…" : "Regenerate"}
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Regenerate plugin API key?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      A new key will be generated and stored on this project. The plugin currently
+                      installed on your WordPress site will stop accepting requests until you
+                      re-download the plugin .zip below and re-upload it.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction onClick={regenerateApiKey} data-testid="button-confirm-regenerate-api-key">
+                      Regenerate
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
             </div>
           </CardContent>
         </Card>
