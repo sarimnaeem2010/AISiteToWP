@@ -2,6 +2,8 @@ import express, { type Express } from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import pinoHttp from "pino-http";
+import path from "path";
+import { existsSync } from "fs";
 import router from "./routes";
 import { logger } from "./lib/logger";
 
@@ -64,5 +66,20 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 app.use("/api", router);
+
+// In production, serve the built React frontend as static files.
+// The frontend is built to artifacts/wp-bridge-ai/dist/public relative to the monorepo root.
+if (process.env.NODE_ENV === "production") {
+  const staticDir = path.resolve(__dirname, "../../../artifacts/wp-bridge-ai/dist/public");
+  if (existsSync(staticDir)) {
+    app.use(express.static(staticDir));
+    app.get("*", (_req, res) => {
+      res.sendFile(path.join(staticDir, "index.html"));
+    });
+    logger.info({ staticDir }, "Serving frontend static files");
+  } else {
+    logger.warn({ staticDir }, "Frontend static dir not found — skipping static serving");
+  }
+}
 
 export default app;
