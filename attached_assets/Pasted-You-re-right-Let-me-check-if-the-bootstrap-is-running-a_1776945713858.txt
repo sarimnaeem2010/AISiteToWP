@@ -1,0 +1,179 @@
+You're right. Let me check if the bootstrap is running and if the users table has data.
+
+Searched deploy logs: bootstrap OR admin OR seed
+
+Hide result
+16:45:44
+Error: Failed query: select "id", "username", "password_hash", "is_admin", "display_name", "email", "created_at" from "users" where "users"."username" = $1
+16:48:04
+Error: Failed query: select "id", "username", "password_hash", "is_admin", "display_name", "email", "created_at" from "users" where "users"."username" = $1
+The app is trying to query the users table but it's failing. The table likely doesn't exist or the bootstrap didn't run. Let me check the startup logs more broadly:
+
+Searched deploy logs
+
+Hide result
+16:44:42
+Starting Container
+16:44:44
+CORS allowlist is empty. Set CORS_ALLOWED_ORIGINS (comma-separated origins) for browser access from non-same-origin frontends.
+16:44:44
+Serving frontend static files
+16:44:44
+Server listening
+16:44:46
+request completed
+16:45:36
+request completed
+16:45:36
+request completed
+16:45:36
+request completed
+16:45:36
+request completed
+16:45:36
+request completed
+...and 15 more logs
+The app started fine ("Server listening") but the users table doesn't exist. The bootstrap didn't run. Let me check the startup code to see where bootstrapAdmin() should be called:
+
+Searched repository: **/index.ts
+Read file: artifacts/api-server/src/index.ts
+The index.ts doesn't call bootstrap. Let me check app.ts to see if it's there:
+
+Read file: artifacts/api-server/src/app.ts
+No bootstrap there either. Let me search for where bootstrapAdmin is defined:
+
+Searched repository: **/*bootstrap*
+No bootstrap file. Let me search for where the users table is created:
+
+Searched repository: **/*schema* **/*migration* **/*db*
+Let me check the auth route to see how it's trying to query users:
+
+Read file: artifacts/api-server/src/routes/auth.ts
+The auth routes import usersTable from @workspace/db. Let me check that package:
+
+Searched repository: packages/db/**/*
+Let me search more broadly:
+
+Searched repository: **/db/**
+Found it. Let me check the db index and schema:
+
+Read file: lib/db/src/index.ts × 2
+Now I see the issue. The schema is defined but there's no migration or bootstrap code that creates the tables. The app expects the tables to exist but they're never created.
+
+Yes, I can patch this. I'll create a bootstrap function that runs on startup and creates the tables + seeds the admin user if needed. Let me create a PR:
+
+Created pull request
+I can't create the PR due to repo access. But here's what you need to do:
+
+Create lib/db/src/bootstrap.ts:
+
+import { db, usersTable } from "./index";
+import { hashPassword } from "../../artifacts/api-server/src/lib/adminAuth";
+
+export async function bootstrapDatabase() {
+  try {
+    // Create tables using Drizzle's migrate or raw SQL
+    // Check if users table exists, if not create all tables
+    const result = await db.execute(
+      `CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        username TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        is_admin BOOLEAN NOT NULL DEFAULT false,
+        display_name TEXT,
+        email TEXT,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS sessions (
+        id TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS ai_settings (
+        id INTEGER PRIMARY KEY,
+        enabled BOOLEAN NOT NULL DEFAULT false,
+        api_key_ciphertext TEXT,
+        api_key_last4 TEXT,
+        model TEXT NOT NULL DEFAULT 'gpt-4o-mini',
+        max_tokens INTEGER NOT NULL DEFAULT 4096,
+        master_controller_mode BOOLEAN NOT NULL DEFAULT true,
+        status TEXT NOT NULL DEFAULT 'disabled',
+        status_message TEXT,
+        last_tested_at TIMESTAMP WITH TIME ZONE,
+        updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS ai_cache (
+        id SERIAL PRIMARY KEY,
+        project_id INTEGER NOT NULL,
+        engine TEXT NOT NULL,
+        input_hash TEXT NOT NULL,
+        output JSONB NOT NULL,
+        tokens_used INTEGER,
+        model TEXT,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS ai_token_log (
+        id SERIAL PRIMARY KEY,
+        project_id INTEGER,
+        engine TEXT NOT NULL,
+        model TEXT NOT NULL,
+        tokens_used INTEGER NOT NULL DEFAULT 0,
+        cache_hit BOOLEAN NOT NULL DEFAULT false,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+      );`
+    );
+
+    // Seed admin user if no users exist
+    const [existingUser] = await db.select().from(usersTable).limit(1);
+    if (!existingUser) {
+      const username = process.env.ADMIN_BOOTSTRAP_USERNAME || "admin";
+      const password = process.env.ADMIN_BOOTSTRAP_PASSWORD || "admin123";
+      await db.insert(usersTable).values({
+        username,
+        passwordHash: hashPassword(password),
+        isAdmin: true,
+      });
+      console.log(`✓ Seeded admin user: ${username}`);
+    }
+  } catch (err) {
+    console.error("Bootstrap failed:", err);
+    throw err;
+  }
+}
+Update artifacts/api-server/src/index.ts:
+
+import app from "./app";
+import { logger } from "./lib/logger";
+import { bootstrapDatabase } from "@workspace/db/bootstrap";
+
+const rawPort = process.env["PORT"];
+
+if (!rawPort) {
+  throw new Error(
+    "PORT environment variable is required but was not provided.",
+  );
+}
+
+const port = Number(rawPort);
+
+if (Number.isNaN(port) || port <= 0) {
+  throw new Error(`Invalid PORT value: "${rawPort}"`);
+}
+
+// Bootstrap database before starting server
+bootstrapDatabase()
+  .then(() => {
+    app.listen(port, (err) => {
+      if (err) {
+        logger.error({ err }, "Error listening on port");
+        process.exit(1);
+      }
+
+      logger.info({ port }, "Server listening");
+    });
+  })
+  .catch((err) => {
+    logger.error({ err }, "Database bootstrap failed");
+    process.exit(1);
+  });
