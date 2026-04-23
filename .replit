@@ -78,3 +78,9 @@ externalPort = 3003
 
 [nix]
 channel = "stable-25_05"
+
+[userenv]
+
+[userenv.shared]
+ADMIN_BOOTSTRAP_USERNAME = "admin"
+ADMIN_BOOTSTRAP_PASSWORD = "admin123"
