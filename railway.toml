@@ -1,12 +1,7 @@
 [build]
-builder = "nixpacks"
-buildCommand = "pnpm install --frozen-lockfile && BASE_PATH=/ pnpm --filter @workspace/wp-bridge-ai run build && pnpm --filter @workspace/api-server run build"
+buildCommand = "pnpm install && BASE_PATH=/ pnpm --filter @workspace/wp-bridge-ai run build && pnpm --filter @workspace/api-server run build"
 
 [deploy]
-startCommand = "node --enable-source-maps artifacts/api-server/dist/index.mjs"
+startCommand = "NODE_ENV=production node --enable-source-maps artifacts/api-server/dist/index.mjs"
 healthcheckPath = "/api/healthz"
 healthcheckTimeout = 30
-
-[[deploy.environmentVariables]]
-name = "NODE_ENV"
-value = "production"
