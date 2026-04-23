@@ -1,8 +1,7 @@
 import { ReactNode } from "react";
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, Plus, Zap, Menu } from "lucide-react";
+import { LayoutDashboard, Plus, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 
 function SidebarContent() {
   const [location] = useLocation();
@@ -75,18 +74,7 @@ export function MainLayout({ children }: { children: ReactNode }) {
       </div>
 
       <div className="flex flex-1 flex-col md:pl-64">
-        <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center gap-x-4 border-b border-border bg-background/80 backdrop-blur-md px-4 sm:px-6 lg:px-8 md:hidden">
-          <Sheet>
-            <SheetTrigger asChild>
-              <Button variant="ghost" size="icon" className="-m-2.5 p-2.5 text-foreground md:hidden">
-                <span className="sr-only">Open sidebar</span>
-                <Menu className="h-5 w-5" aria-hidden="true" />
-              </Button>
-            </SheetTrigger>
-            <SheetContent side="left" className="p-0 w-64 bg-sidebar">
-              <SidebarContent />
-            </SheetContent>
-          </Sheet>
+        <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center gap-x-4 border-b border-border bg-background/80 backdrop-blur-md px-4 sm:px-6 lg:px-8">
           <div className="flex flex-1 gap-x-4 self-stretch lg:gap-x-6 items-center">
             <div className="flex items-center gap-2">
               <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
