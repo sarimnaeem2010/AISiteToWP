@@ -18,6 +18,7 @@ import { useToast } from "@/hooks/use-toast";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
+import { AiSectionSidebar } from "@/components/ai-section-sidebar";
 
 // Map common section type strings to a representative lucide icon for the
 // left-rail "Detected sections" list. Falls back to Component for unknown types.
@@ -1376,57 +1377,34 @@ export default function ProjectWorkspace() {
                 </CardContent>
               </Card>
             ) : (
-              <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-6">
-                {/* In-step sections nav (was the page-level rail) */}
-                <aside className="lg:sticky lg:top-[180px] lg:self-start lg:max-h-[calc(100vh-200px)] lg:overflow-y-auto">
-                  <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-                    Detected sections
+              <div className="grid grid-cols-1 lg:grid-cols-[260px_1fr] gap-6">
+                {/* AI-powered section sidebar */}
+                <div className="lg:sticky lg:top-[180px] lg:self-start">
+                  {/* Mobile: compact section dropdown */}
+                  <select
+                    className="lg:hidden w-full h-9 rounded-md border border-input bg-background px-2 text-sm mb-3"
+                    value={activeSection ?? 0}
+                    onChange={(e) => jumpToSection(Number(e.target.value))}
+                    aria-label="Jump to section"
+                    data-testid="section-nav-mobile"
+                  >
+                    {railSections.map((s, i) => (
+                      <option key={i} value={i}>
+                        {String(i + 1).padStart(2, "0")} · {prettyType(s.type)}
+                      </option>
+                    ))}
+                  </select>
+                  {/* Desktop: full AI sidebar */}
+                  <div className="hidden lg:block">
+                    <AiSectionSidebar
+                      sections={railSections as { type: string; content: Record<string, unknown>; rawHtml?: string }[]}
+                      selectedIndex={activeSection}
+                      onSelectSection={jumpToSection}
+                      projectId={id!}
+                      apiBase={apiBase}
+                    />
                   </div>
-                  {railSections.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">No sections detected on the first page.</p>
-                  ) : (
-                    <>
-                      {/* Mobile: compact dropdown */}
-                      <select
-                        className="lg:hidden w-full h-9 rounded-md border border-input bg-background px-2 text-sm"
-                        value={activeSection ?? 0}
-                        onChange={(e) => jumpToSection(Number(e.target.value))}
-                        aria-label="Jump to section"
-                        data-testid="section-nav-mobile"
-                      >
-                        {railSections.map((s, i) => (
-                          <option key={i} value={i}>
-                            {String(i + 1).padStart(2, "0")} · {prettyType(s.type)}
-                          </option>
-                        ))}
-                      </select>
-                      {/* Desktop: full button list */}
-                      <nav className="hidden lg:block space-y-0.5" aria-label="Detected sections">
-                      {railSections.map((s, i) => {
-                        const Icon = sectionIconFor(s.type);
-                        const active = activeSection === i;
-                        return (
-                          <button
-                            key={i}
-                            type="button"
-                            onClick={() => jumpToSection(i)}
-                            aria-current={active ? "true" : undefined}
-                            className={`group flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors ${
-                              active
-                                ? "bg-muted text-foreground font-medium"
-                                : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-                            }`}
-                            data-testid={`section-nav-${i}`}
-                          >
-                            <Icon className={`h-4 w-4 shrink-0 ${active ? "text-primary" : "text-muted-foreground group-hover:text-foreground"}`} />
-                            <span className="truncate">{prettyType(s.type)}</span>
-                          </button>
-                        );
-                      })}
-                      </nav>
-                    </>
-                  )}
-                </aside>
+                </div>
 
                 {/* Section preview cards */}
                 <div className="space-y-4 min-w-0">
