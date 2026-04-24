@@ -800,6 +800,9 @@ export function buildSectionTemplate(
   };
 
   const targets = collectGroupTargets(section);
+  // Parallel array: one entry per group, recording which DOM element
+  // produced it. Used by collapseButtonSiblings to detect sibling runs.
+  const groupEls: (Element | null)[] = [];
 
   for (const el of targets) {
     const tag = el.tagName;
@@ -835,6 +838,7 @@ export function buildSectionTemplate(
         controls.push({ key: altKey, fieldKey: altKey, type: "text", label: "Alt Text", default: alt });
       }
       const labelText = isMeaningfulText(alt) ? alt : "Image";
+      groupEls.push(el);
       groups.push({
         id: gid,
         kind: "image",
@@ -875,6 +879,7 @@ export function buildSectionTemplate(
       addField(linkKey, "url", headingLinkDefault, "heading link");
       el.setAttribute("data-wpb-heading-link", linkKey);
       const isLong = text.length > 80;
+      groupEls.push(el);
       groups.push({
         id: gid,
         kind: "heading",
@@ -922,6 +927,7 @@ export function buildSectionTemplate(
       // that the PHP renderer expands back to one <li> per repeater row.
       while (el.firstChild) el.removeChild(el.firstChild);
       el.textContent = `{{LIST:${itemsKey}}}`;
+      groupEls.push(el);
       groups.push({
         id: gid,
         kind: "list",
@@ -973,6 +979,7 @@ export function buildSectionTemplate(
       // does not need to thread them through the marker itself.
       el.setAttribute("data-wpb-icon", classKey);
       const labelText = cls.length > 32 ? cls.slice(0, 32) + "…" : cls;
+      groupEls.push(el);
       groups.push({
         id: gid,
         kind: "icon",
@@ -1047,6 +1054,7 @@ export function buildSectionTemplate(
       const labelText = text || usableHref || "Link";
       const kind: GroupKind = looksLikeButton(el) ? "button" : "link";
       const labelPrefix = kind === "button" ? "Button" : "Link";
+      groupEls.push(el);
       groups.push({
         id: gid,
         kind,
@@ -1073,6 +1081,7 @@ export function buildSectionTemplate(
       if (!text) continue;
       addField(textKey, "text", text, "text");
       const isLong = text.length > 80;
+      groupEls.push(el);
       groups.push({
         id: gid,
         kind: "text",
@@ -1097,7 +1106,72 @@ export function buildSectionTemplate(
     }
   }
 
+  collapseButtonSiblings(groups, groupEls);
+
   return { template: section.outerHTML, fields, groups, leafTokenCss };
+}
+
+/**
+ * Post-processing pass that merges runs of 3+ consecutive button groups
+ * whose DOM elements share the same parent (e.g. chord selector buttons,
+ * tab pickers, radio-style toggle groups). Instead of cluttering the
+ * Elementor sidebar with N individual "Button — X — Style" sections, the
+ * run is collapsed into one "Button Group (A / B / C…)" entry whose
+ * controls list all per-button text/link fields with short prefixed labels.
+ *
+ * The HTML template is NOT changed — every {{TEXT:key}} placeholder set
+ * during the main loop remains in place and each button still renders with
+ * its original text. The only change is in `groups[]`: N entries → 1 entry.
+ */
+function collapseButtonSiblings(groups: ExtractedGroup[], els: (Element | null)[]): void {
+  const MIN_RUN = 3;
+  let i = 0;
+  while (i < groups.length) {
+    const g = groups[i];
+    const el = els[i];
+    if (!el || (g.kind !== "button" && g.kind !== "link")) {
+      i++;
+      continue;
+    }
+    const parent = el.parentElement;
+    if (!parent) {
+      i++;
+      continue;
+    }
+    let j = i + 1;
+    while (j < groups.length) {
+      const gj = groups[j];
+      const ej = els[j];
+      if (!ej) break;
+      if (gj.kind !== "button" && gj.kind !== "link") break;
+      if (ej.parentElement !== parent) break;
+      j++;
+    }
+    const runLen = j - i;
+    if (runLen >= MIN_RUN) {
+      const runGroups = groups.slice(i, j);
+      const allControls: ExtractedControl[] = [];
+      const shortLabels: string[] = [];
+      for (const rg of runGroups) {
+        const matchLabel = rg.label.match(/—\s*(.+)$/);
+        const shortText = (matchLabel ? matchLabel[1] : rg.label).trim();
+        shortLabels.push(shortText);
+        for (const ctrl of rg.controls) {
+          allControls.push({ ...ctrl, label: `${shortText}: ${ctrl.label}` });
+        }
+      }
+      const preview =
+        shortLabels.slice(0, 5).join(" / ") + (shortLabels.length > 5 ? " …" : "");
+      groups[i] = {
+        ...groups[i],
+        label: `Button Group (${preview})`,
+        controls: allControls,
+      };
+      groups.splice(i + 1, runLen - 1);
+      els.splice(i + 1, runLen - 1);
+    }
+    i++;
+  }
 }
 
 export function extractSectionsFromPage(
